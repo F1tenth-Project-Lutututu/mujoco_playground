@@ -2,6 +2,7 @@ import os
 import functools
 import json
 import inspect
+import numbers
 
 
 # Set necessary environment variables for JAX/MuJoCo performance
@@ -11,6 +12,7 @@ os.environ["XLA_FLAGS"] = (
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["MUJOCO_GL"] = "egl"
 
+import numpy as np
 import wandb
 
 from brax.training.agents.ppo import networks as ppo_networks
@@ -54,6 +56,20 @@ def filter_train_params(train_params):
     return {k: v for k, v in train_params.items() if k in valid_keys}
 
 
+def to_wandb_scalar(value):
+    """Converts JAX/NumPy scalar-like values to wandb-friendly Python numbers."""
+    if isinstance(value, numbers.Number):
+        return float(value)
+    if hasattr(value, "block_until_ready"):
+        value = value.block_until_ready()
+    array = np.asarray(value)
+    if array.size == 1:
+        return float(array.reshape(()))
+    if np.issubdtype(array.dtype, np.number):
+        return float(np.mean(array))
+    return value
+
+
 @single_experiment
 def main(
     env_name: str = "Go1JoystickFlatTerrain",
@@ -68,6 +84,8 @@ def main(
     env_cfg = registry.get_default_config(env_name)
     ppo_config = get_ppo_config(env_name, impl, vision)
     ppo_config.num_evals = 200
+    ppo_config.log_training_metrics = True
+    ppo_config.training_metrics_steps = max(1, ppo_config.num_timesteps // 200)
 
     env_cfg_overrides = {"impl": impl}
     if vision:
@@ -146,11 +164,17 @@ def main(
     
     # Progress callback: logs to wandb and prints to console
     def progress_fn(num_steps, metrics):
-        wandb.log(metrics, step=num_steps)
+        logged_metrics = {
+            key: to_wandb_scalar(value)
+            for key, value in metrics.items()
+        }
+        wandb.log(logged_metrics, step=num_steps)
         if "eval/episode_reward" in metrics:
-            print(f"Step {num_steps}: Reward = {metrics['eval/episode_reward']:.3f}")
+            reward = to_wandb_scalar(metrics["eval/episode_reward"])
+            print(f"Step {num_steps}: Reward = {reward:.3f}")
         elif "episode/sum_reward" in metrics:
-            print(f"Step {num_steps}: Reward = {metrics['episode/sum_reward']:.3f}")
+            reward = to_wandb_scalar(metrics["episode/sum_reward"])
+            print(f"Step {num_steps}: Reward = {reward:.3f}")
         else:
             print(f"Step {num_steps}: logged {len(metrics)} metrics")
 
