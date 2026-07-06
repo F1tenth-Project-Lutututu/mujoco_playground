@@ -26,7 +26,8 @@ from mujoco_playground.config import manipulation_params
 
 from experiment_launcher import single_experiment, run_experiment
 
-DEBUG = len([k for k in os.environ.keys() if "DEBUG" in k.upper()]) > 0
+#DEBUG = len([k for k in os.environ.keys() if "DEBUG" in k.upper()]) > 0
+DEBUG = False
 
 
 def get_ppo_config(env_name: str, impl: str, vision: bool):
@@ -60,16 +61,13 @@ def main(
     vision: bool = False,
     domain_randomization: bool = False,
     playground_config_overrides: str = "",
-    use_wandb: bool = True,
-    wandb_project: str = "",
-    wandb_entity: str = "",
-    wandb_mode: str = "online",
     results_dir: str = "./results",
     seed: int = 1,
 ):
     # Load default environment config and PPO hyperparameters
     env_cfg = registry.get_default_config(env_name)
     ppo_config = get_ppo_config(env_name, impl, vision)
+    ppo_config.num_evals = 200
 
     env_cfg_overrides = {"impl": impl}
     if vision:
@@ -77,10 +75,6 @@ def main(
         env_cfg_overrides["vision_config.nworld"] = ppo_config.num_envs
     if playground_config_overrides:
         env_cfg_overrides.update(json.loads(playground_config_overrides))
-
-    if DEBUG:
-        ppo_config.num_evals = 1
-        wandb_mode = "disabled"
 
     ppo_config.seed = seed
     
@@ -100,23 +94,21 @@ def main(
     print(f"Checkpoints directory: {ckpt_dir}")
 
     # 2. Initialize Weights & Biases
-    if use_wandb:
-        wandb.init(
-            project=wandb_project or f"mujoco-playground-{env_name}",
-            entity=wandb_entity or None,
-            name=run_name,
-            group=group_name,
-            config={
-                "env_config": env_cfg.to_dict(),
-                "env_config_overrides": env_cfg_overrides,
-                "ppo_config": ppo_config.to_dict(),
-                "env_name": env_name,
-                "impl": impl,
-                "vision": vision,
-                "domain_randomization": domain_randomization,
-            },
-            mode=wandb_mode,
-        )
+    wandb.init(
+        project=f"spectral-playground-{env_name}",
+        name=run_name,
+        group=group_name,
+        config={
+            "env_config": env_cfg.to_dict(),
+            "env_config_overrides": env_cfg_overrides,
+            "ppo_config": ppo_config.to_dict(),
+            "env_name": env_name,
+            "impl": impl,
+            "vision": vision,
+            "domain_randomization": domain_randomization,
+        },
+        mode="disabled" if DEBUG else "online",
+    )
 
     # 3. Setup Environment and Randomization
     # Load the environment
@@ -154,8 +146,7 @@ def main(
     
     # Progress callback: logs to wandb and prints to console
     def progress_fn(num_steps, metrics):
-        if use_wandb:
-            wandb.log(metrics, step=num_steps)
+        wandb.log(metrics, step=num_steps)
         if "eval/episode_reward" in metrics:
             print(f"Step {num_steps}: Reward = {metrics['eval/episode_reward']:.3f}")
         elif "episode/sum_reward" in metrics:
@@ -194,8 +185,7 @@ def main(
     make_inference_fn, params, _ = ppo.train(**train_kwargs)
 
     print(f"Training complete. Model saved to {ckpt_dir}")
-    if use_wandb:
-        wandb.finish()
+    wandb.finish()
 
 if __name__ == "__main__":
     run_experiment(main)
