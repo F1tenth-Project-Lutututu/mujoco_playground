@@ -160,7 +160,7 @@ class Joystick(h1_base.H1Env):
         self.mjx_model, state.data, motor_targets, self._n_frames  # pytype: disable=attribute-error
     )
 
-    obs = self._get_obs(data, state.info, state.obs, noise_rng)
+    obs = self._get_obs(data, state.info, state.obs, noise_rng)  # pyrefly: ignore[bad-argument-type]
     joint_angles = data.qpos[7:]
     joint_vel = data.qvel[6:]
     torso_z = data.xpos[self._torso_body_id, -1]
@@ -196,7 +196,7 @@ class Joystick(h1_base.H1Env):
       state.metrics[f"reward/{k}"] = v
 
     done = jp.float32(done)
-    state = state.replace(data=data, obs=obs, reward=reward, done=done)
+    state = state.replace(data=data, obs=obs, reward=reward, done=done)  # pyrefly: ignore[missing-attribute]
     return state
 
   def _get_obs(

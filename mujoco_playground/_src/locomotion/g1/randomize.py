@@ -89,7 +89,7 @@ def domain_randomize(model: mjx.Model, rng: jax.Array):
       "qpos0": 0,
   })
 
-  model = model.tree_replace({
+  model = model.tree_replace({  # pyrefly: ignore[bad-assignment]
       "pair_friction": pair_friction,
       "dof_frictionloss": frictionloss,
       "dof_armature": armature,

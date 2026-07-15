@@ -293,7 +293,7 @@ class Joystick(berkeley_humanoid_base.BerkeleyHumanoidEnv):
     qvel = state.data.qvel
     qvel = qvel.at[:2].set(push * push_magnitude + qvel[:2])
     data = state.data.replace(qvel=qvel)
-    state = state.replace(data=data)
+    state = state.replace(data=data)  # pyrefly: ignore[missing-attribute]
 
     motor_targets = self._default_pose + action * self._config.action_scale
     data = mjx_env.step(

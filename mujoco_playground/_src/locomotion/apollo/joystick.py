@@ -242,8 +242,8 @@ class Joystick(base.ApolloEnv):
     )
     for k, v in rewards.items():
       state.metrics[f"reward/{k}"] = v
-    done = done.astype(reward.dtype)
-    state = state.replace(data=data, obs=obs, reward=reward, done=done)
+    done = done.astype(reward.dtype)  # pyrefly: ignore[missing-attribute]
+    state = state.replace(data=data, obs=obs, reward=reward, done=done)  # pyrefly: ignore[missing-attribute]
     return state
 
   def _get_termination(
@@ -441,5 +441,5 @@ class Joystick(base.ApolloEnv):
     qvel = state.data.qvel
     qvel = qvel.at[:2].set(push * push_magnitude + qvel[:2])
     data = state.data.replace(qvel=qvel)
-    state = state.replace(data=data)
+    state = state.replace(data=data)  # pyrefly: ignore[missing-attribute]
     return state

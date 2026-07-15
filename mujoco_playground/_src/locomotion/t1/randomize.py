@@ -116,7 +116,7 @@ def domain_randomize(model: mjx.Model, rng: jax.Array):
       "dof_damping": 0,
   })
 
-  model = model.tree_replace({
+  model = model.tree_replace({  # pyrefly: ignore[bad-assignment]
       "geom_friction": friction,
       "dof_frictionloss": frictionloss,
       "dof_armature": armature,

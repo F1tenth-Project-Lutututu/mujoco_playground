@@ -201,7 +201,7 @@ class PandaRobotiqPushCube(panda_robotiq.PandaRobotiqBase):
     info["obs_history"] = jp.zeros(self._config.obs_history_len * obs.shape[0])
 
     reward, done = jp.zeros(2)
-    state = mjx_env.State(data, obs, reward, done, metrics, info)
+    state = mjx_env.State(data, obs, reward, done, metrics, info)  # pyrefly: ignore[bad-argument-type]
     return state
 
   def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
@@ -229,7 +229,7 @@ class PandaRobotiqPushCube(panda_robotiq.PandaRobotiqBase):
 
     # step the physics
     data = mjx_env.step(self._mjx_model, state.data, ctrl, self.n_substeps)
-    state = state.replace(data=data)
+    state = state.replace(data=data)  # pyrefly: ignore[missing-attribute]
 
     # calculate rewards
     rewards = self._get_reward(state.data, state.info, action)
@@ -382,7 +382,7 @@ class PandaRobotiqPushCube(panda_robotiq.PandaRobotiqBase):
         mocap_pos=jp.array([new_target_pos]),
         mocap_quat=jp.array([new_target_quat]),
     )
-    return state.replace(data=data)
+    return state.replace(data=data)  # pyrefly: ignore[missing-attribute]
 
   def _get_reward(
       self, data: mjx.Data, info: dict[str, Any], action: jax.Array

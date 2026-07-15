@@ -261,7 +261,7 @@ class CubeReorient(leap_hand_base.LeapHandEnv):
       state.metrics[f"reward/{k}"] = v
 
     done = done.astype(reward.dtype)
-    state = state.replace(data=data, obs=obs, reward=reward, done=done)
+    state = state.replace(data=data, obs=obs, reward=reward, done=done)  # pyrefly: ignore[missing-attribute]
     return state
 
   def _get_termination(self, data: mjx.Data, info: dict[str, Any]) -> jax.Array:
@@ -478,7 +478,7 @@ class CubeReorient(leap_hand_base.LeapHandEnv):
     state.info["pert_dir"] = pert_dir
     state.info["last_pert_step"] = last_pert_step
     data = state.data.replace(xfrc_applied=xfrc)
-    return state.replace(data=data)
+    return state.replace(data=data)  # pyrefly: ignore[missing-attribute]
 
 
 def domain_randomize(model: mjx.Model, rng: jax.Array):
@@ -615,7 +615,7 @@ def domain_randomize(model: mjx.Model, rng: jax.Array):
       "actuator_biasprm": 0,
   })
 
-  model = model.tree_replace({
+  model = model.tree_replace({  # pyrefly: ignore[bad-assignment]
       "geom_friction": geom_friction,
       "body_mass": body_mass,
       "body_inertia": body_inertia,

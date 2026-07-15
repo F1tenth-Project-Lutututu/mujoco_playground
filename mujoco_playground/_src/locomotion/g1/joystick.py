@@ -358,7 +358,7 @@ class Joystick(g1_base.G1Env):
     qvel = state.data.qvel
     qvel = qvel.at[:2].set(push * push_magnitude + qvel[:2])
     data = state.data.replace(qvel=qvel)
-    state = state.replace(data=data)
+    state = state.replace(data=data)  # pyrefly: ignore[missing-attribute]
 
     motor_targets = self._default_pose + action * self._config.action_scale
     data = mjx_env.step(
@@ -419,7 +419,7 @@ class Joystick(g1_base.G1Env):
       state.metrics[f"reward/{k}"] = v
     state.metrics["swing_peak"] = jp.mean(state.info["swing_peak"])
 
-    done = done.astype(reward.dtype)
+    done = done.astype(reward.dtype)  # pyrefly: ignore[missing-attribute]
     state = state.replace(data=data, obs=obs, reward=reward, done=done)
     return state
 

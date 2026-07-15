@@ -173,7 +173,7 @@ def domain_randomize(
       light_castshadow,
   ) = rand(jax.random.split(rng, num_worlds), light_positions)
 
-  mjx_model = mjx_model.tree_replace({
+  mjx_model = mjx_model.tree_replace({  # pyrefly: ignore[bad-assignment]
       'geom_rgba': geom_rgba,
       'geom_matid': geom_matid,
       'cam_pos': cam_pos,

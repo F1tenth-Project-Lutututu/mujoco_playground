@@ -65,7 +65,7 @@ def get_load_path(root, load_run=-1, checkpoint=-1):
   if load_run == -1 or load_run == "-1":
     load_run = last_run
   else:
-    load_run = os.path.join(root, load_run)
+    load_run = os.path.join(root, load_run)  # pyrefly: ignore[no-matching-overload]
 
   if checkpoint == -1:
     models = [file for file in os.listdir(load_run) if "model" in file]
@@ -78,7 +78,7 @@ def get_load_path(root, load_run=-1, checkpoint=-1):
   return load_path
 
 
-class RSLRLBraxWrapper(VecEnv):
+class RSLRLBraxWrapper(VecEnv):  # pyrefly: ignore[invalid-inheritance]
   """Wrapper for Brax environments that interop with torch."""
 
   def __init__(
@@ -194,7 +194,7 @@ class RSLRLBraxWrapper(VecEnv):
       if k not in info_ret["log"]:
         info_ret["log"][k] = _jax_to_torch(v).float().mean().item()
 
-    obs = TensorDict(obs, batch_size=[self.num_envs])
+    obs = TensorDict(obs, batch_size=[self.num_envs])  # pyrefly: ignore[not-callable]
     return obs, reward, done, info_ret
 
   def reset(self):
@@ -208,7 +208,7 @@ class RSLRLBraxWrapper(VecEnv):
     else:
       obs = _jax_to_torch(self.env_state.obs)
       obs = {"state": obs}
-    return TensorDict(obs, batch_size=[self.num_envs])
+    return TensorDict(obs, batch_size=[self.num_envs])  # pyrefly: ignore[not-callable]
 
   def get_observations(self):
    return self.reset()

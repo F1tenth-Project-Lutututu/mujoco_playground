@@ -281,7 +281,7 @@ class Joystick(spot_base.SpotEnv):
     state.metrics["swing_peak"] = jp.mean(state.info["swing_peak"])
 
     done = done.astype(reward.dtype)
-    state = state.replace(data=data, obs=obs, reward=reward, done=done)
+    state = state.replace(data=data, obs=obs, reward=reward, done=done)  # pyrefly: ignore[missing-attribute]
     return state
 
   def _get_termination(self, data: mjx.Data) -> jax.Array:
@@ -566,7 +566,7 @@ class Joystick(spot_base.SpotEnv):
           force * state.info["pert_dir"]
       )
       data = state.data.replace(xfrc_applied=xfrc_applied)
-      state = state.replace(data=data)
+      state = state.replace(data=data)  # pyrefly: ignore[missing-attribute]
       state.info["steps_since_last_pert"] = jp.where(
           state.info["pert_steps"] >= state.info["pert_duration"],
           0,
@@ -591,7 +591,7 @@ class Joystick(spot_base.SpotEnv):
           gen_dir(rng),
           state.info["pert_dir"],
       )
-      return state.replace(data=data)
+      return state.replace(data=data)  # pyrefly: ignore[missing-attribute]
 
     return jax.lax.cond(
         state.info["steps_since_last_pert"]

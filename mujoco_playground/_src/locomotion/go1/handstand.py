@@ -225,7 +225,7 @@ class Handstand(go1_base.Go1Env):
       state.metrics[f"reward/{k}"] = v
 
     done = done.astype(reward.dtype)
-    state = state.replace(data=data, obs=obs, reward=reward, done=done)
+    state = state.replace(data=data, obs=obs, reward=reward, done=done)  # pyrefly: ignore[missing-attribute]
     return state
 
   def _get_termination(

@@ -249,7 +249,7 @@ class PandaPickCubeCartesian(pick.PandaPickCube):
       rgb = adjust_brightness(rgb, brightness)
       obs = {'pixels/view_0': rgb}
 
-    return mjx_env.State(data, obs, reward, done, metrics, info)
+    return mjx_env.State(data, obs, reward, done, metrics, info)  # pyrefly: ignore[bad-argument-type]
 
   def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
     """Runs one timestep of the environment's dynamics."""
@@ -381,7 +381,7 @@ class PandaPickCubeCartesian(pick.PandaPickCube):
       rgb = adjust_brightness(rgb, state.info['brightness'])
       obs = {'pixels/view_0': rgb}
 
-    return state.replace(
+    return state.replace(  # pyrefly: ignore[missing-attribute]
         data=data,
         obs=obs,
         reward=reward,

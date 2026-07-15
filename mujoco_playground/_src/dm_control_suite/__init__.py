@@ -119,7 +119,7 @@ def register_environment(
       env_class: The environment class.
       cfg_class: The default configuration
   """
-  _envs[env_name] = env_class
+  _envs[env_name] = env_class  # pyrefly: ignore[unsupported-operation]
   _cfgs[env_name] = cfg_class
 
 
