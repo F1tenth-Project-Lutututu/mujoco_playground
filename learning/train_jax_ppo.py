@@ -106,6 +106,11 @@ _NUM_TIMESTEPS = flags.DEFINE_integer(
 _NUM_VIDEOS = flags.DEFINE_integer(
     "num_videos", 1, "Number of videos to record after training."
 )
+_CAMERA = flags.DEFINE_string(
+    "camera",
+    "track",
+    "Camera used for rollout videos.",
+)
 _NUM_EVALS = flags.DEFINE_integer("num_evals", 5, "Number of evaluations")
 _REWARD_SCALING = flags.DEFINE_float("reward_scaling", 0.1, "Reward scaling")
 _EPISODE_LENGTH = flags.DEFINE_integer("episode_length", 1000, "Episode length")
@@ -550,10 +555,22 @@ def main(argv):
   scene_option.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = False
   scene_option.flags[mujoco.mjtVisFlag.mjVIS_PERTFORCE] = False
   scene_option.flags[mujoco.mjtVisFlag.mjVIS_CONTACTFORCE] = False
+  camera = _CAMERA.value
+  if camera is None:
+    track_camera_id = mujoco.mj_name2id(
+        infer_env.mj_model, mujoco.mjtObj.mjOBJ_CAMERA, "track"
+    )
+    if track_camera_id != -1:
+      camera = "track"
+  print(f"Camera for rendering: {camera or 'default'}")
   for i, rollout in enumerate(trajectories):
     traj = rollout[::render_every]
     frames = infer_env.render(
-        traj, height=480, width=640, scene_option=scene_option
+        traj,
+        camera=camera,
+        height=480,
+        width=640,
+        scene_option=scene_option,
     )
     media.write_video(logdir / f"rollout{i}.mp4", frames, fps=fps)
     print(f"Rollout video saved as '{logdir}/rollout{i}.mp4'.")
