@@ -19,11 +19,14 @@ import functools
 import json
 import os
 import time
+from typing import Optional
 import warnings
 
 from absl import app
 from absl import flags
 from absl import logging
+from brax.training import logger as brax_logger
+from brax.training.agents.ppo import losses as ppo_losses
 from brax.training.agents.ppo import networks as ppo_networks
 from brax.training.agents.ppo import networks_vision as ppo_networks_vision
 from brax.training.agents.ppo import train as ppo
@@ -39,6 +42,7 @@ from mujoco_playground import wrapper
 from mujoco_playground.config import dm_control_suite_params
 from mujoco_playground.config import locomotion_params
 from mujoco_playground.config import manipulation_params
+import numpy as np
 try:
   import tensorboardX
 except ImportError:
@@ -128,6 +132,12 @@ _NUM_UPDATES_PER_BATCH = flags.DEFINE_integer(
 _DISCOUNTING = flags.DEFINE_float("discounting", 0.97, "Discounting")
 _LEARNING_RATE = flags.DEFINE_float("learning_rate", 5e-4, "Learning rate")
 _ENTROPY_COST = flags.DEFINE_float("entropy_cost", 5e-3, "Entropy cost")
+_MEAN_ACTION_RATE_COST = flags.DEFINE_float(
+    "mean_action_rate_cost",
+    0.0,
+    "Coefficient for an auxiliary squared rate loss on deterministic policy "
+    "means. A positive value disables the environment action-rate reward.",
+)
 _NUM_ENVS = flags.DEFINE_integer("num_envs", 1024, "Number of environments")
 _NUM_EVAL_ENVS = flags.DEFINE_integer(
     "num_eval_envs", 128, "Number of evaluation environments"
@@ -202,6 +212,221 @@ def get_rl_config(env_name: str) -> config_dict.ConfigDict:
     return dm_control_suite_params.brax_ppo_config(env_name, _IMPL.value)
 
   raise ValueError(f"Env {env_name} not found in {registry.ALL_ENVS}.")
+
+
+_LOSS_METRICS = {
+    "total_loss": "losses/total",
+    "policy_loss": "losses/policy",
+    "v_loss": "losses/value",
+    "entropy_loss": "losses/entropy_regularization",
+    "mean_action_rate_loss": "losses/mean_action_rate",
+}
+_STABILITY_METRICS = {
+    "kl_mean": "stability/kl_divergence",
+    "mean_action_rate": "stability/mean_action_rate",
+    "policy_dist_mean_std": "stability/action_std_mean",
+    "policy_dist_max_std": "stability/action_std_max",
+    "policy_dist_min_std": "stability/action_std_min",
+    "policy_dist_mean_loc": "stability/action_mean_mean",
+    "policy_dist_max_loc": "stability/action_mean_max",
+    "policy_dist_min_loc": "stability/action_mean_min",
+}
+_BRAX_COMPUTE_PPO_LOSS = ppo_losses.compute_ppo_loss
+
+
+def _mean_action_rate(
+    actions: jax.Array, episode_done: Optional[jax.Array] = None
+) -> jax.Array:
+  """Mean squared change of consecutive actions, excluding reset boundaries."""
+  action_delta = actions[:, 1:] - actions[:, :-1]
+  squared_rate = jp.sum(jp.square(action_delta), axis=-1)
+  if episode_done is None:
+    return jp.mean(squared_rate)
+
+  # episode_done[:, t] means that action t ended an episode. The difference
+  # from action t to t+1 therefore crosses a reset and is not a control-rate
+  # transition belonging to either episode.
+  valid_transition = 1.0 - episode_done[:, :-1].astype(squared_rate.dtype)
+  return jp.sum(squared_rate * valid_transition) / jp.maximum(
+      jp.sum(valid_transition), 1.0
+  )
+
+
+def _compute_ppo_loss_with_mean_action_rate(
+    params,
+    normalizer_params,
+    data,
+    rng,
+    *,
+    ppo_network,
+    mean_action_rate_cost: float,
+    **kwargs,
+):
+  """Adds policy-mean smoothness diagnostics and an optional auxiliary loss."""
+  total_loss, metrics = _BRAX_COMPUTE_PPO_LOSS(
+      params,
+      normalizer_params,
+      data,
+      rng,
+      ppo_network=ppo_network,
+      **kwargs,
+  )
+
+  action_distribution = ppo_network.parametric_action_distribution
+  behavior_distribution_params = data.extras["policy_extras"][
+      "distribution_params"
+  ]
+  behavior_mean_actions = action_distribution.mode(
+      behavior_distribution_params
+  )
+  episode_done = data.extras["state_extras"]["episode_done"]
+  behavior_mean_action_rate = _mean_action_rate(
+      behavior_mean_actions, episode_done
+  )
+
+  optimized_mean_action_rate = behavior_mean_action_rate
+  if mean_action_rate_cost > 0.0:
+    # Re-evaluate the current policy so gradients from this term update the
+    # actor. Stored behavior distribution parameters are gradient-free.
+    current_distribution_params = ppo_network.policy_network.apply(
+        normalizer_params, params.policy, data.observation
+    )
+    current_mean_actions = action_distribution.mode(
+        current_distribution_params
+    )
+    optimized_mean_action_rate = _mean_action_rate(
+        current_mean_actions, episode_done
+    )
+
+  mean_action_rate_loss = mean_action_rate_cost * optimized_mean_action_rate
+  total_loss = total_loss + mean_action_rate_loss
+  metrics = {
+      **metrics,
+      "total_loss": total_loss,
+      "mean_action_rate": behavior_mean_action_rate,
+      "mean_action_rate_loss": mean_action_rate_loss,
+  }
+  return total_loss, metrics
+
+
+class _EpisodeMetricsLoggerWithStd(brax_logger.EpisodeMetricsLogger):
+  """Brax episode logger that reports both means and standard deviations."""
+
+  def log_metrics(self, pad=35):
+    self._log_count += 1
+    now = time.time()
+    steps_per_second = (self._num_steps - self._last_log_steps) / (
+        now - self._last_log_time + 1e-8
+    )
+    self._last_log_time = now
+    log_string = (
+        f"\n{'Steps':>{pad}} Env: {self._num_steps} Log: {self._log_count}\n"
+    )
+    aggregated_metrics = {"sps": steps_per_second}
+    log_string += f"{'Steps per second:':>{pad}} {steps_per_second:.0f}\n"
+
+    for metric_name, values in self._ep_metrics_buffer.items():
+      aggregated_metrics[metric_name] = np.mean(values)
+      aggregated_metrics[f"{metric_name}_std"] = np.std(values)
+      log_string += (
+          f"{f'Episode {metric_name}:':>{pad}}"
+          f" {aggregated_metrics[metric_name]:.4f} +-"
+          f" {aggregated_metrics[f'{metric_name}_std']:.4f}\n"
+      )
+
+    for metric_name, values in self._train_metrics_buffer.items():
+      aggregated_metrics[metric_name] = np.mean(values)
+      log_string += (
+          f"{f'Train {metric_name}:':>{pad}}"
+          f" {aggregated_metrics[metric_name]:.6f}\n"
+      )
+
+    logging.info(log_string)
+    if self._progress_fn is not None:
+      self._progress_fn(
+          int(self._num_steps),
+          {
+              f"episode/{name}": value
+              for name, value in aggregated_metrics.items()
+          },
+      )
+
+
+def _wandb_metric_name(name: str) -> str:
+  """Places a Brax metric into a focused W&B section."""
+  if name.startswith("training/"):
+    metric = name.removeprefix("training/")
+    if metric in _LOSS_METRICS:
+      return _LOSS_METRICS[metric]
+    if metric in _STABILITY_METRICS:
+      return _STABILITY_METRICS[metric]
+    if metric == "learning_rate":
+      return "optimization/learning_rate"
+    if metric in ("sps", "walltime"):
+      return f"performance/train_{metric}"
+    return f"optimization/{metric}"
+
+  if name.startswith("episode/"):
+    metric = name.removeprefix("episode/")
+    # EpisodeMetricsLogger also reports PPO diagnostics under episode/.
+    if metric in _LOSS_METRICS:
+      return _LOSS_METRICS[metric]
+    if metric in _STABILITY_METRICS:
+      return _STABILITY_METRICS[metric]
+    if metric == "learning_rate":
+      return "optimization/learning_rate"
+    if metric == "sum_reward":
+      return "train_reward_means/total"
+    if metric == "sum_reward_std":
+      return "train_reward_stds/total"
+    if metric.startswith("reward/"):
+      reward_name = metric.removeprefix("reward/")
+      if reward_name.endswith("_std"):
+        return f"train_reward_stds/{reward_name.removesuffix('_std')}"
+      return f"train_reward_means/{reward_name}"
+    if metric == "sps":
+      return "performance/rollout_sps"
+    return f"rollouts/train_{metric}"
+
+  if name.startswith("eval/episode_reward"):
+    metric = name.removeprefix("eval/episode_reward")
+    if not metric:
+      return "eval_reward_means/total"
+    if metric == "_std":
+      return "eval_reward_stds/total"
+    reward_name = metric.removeprefix("/")
+    if reward_name.endswith("_std"):
+      return f"eval_reward_stds/{reward_name.removesuffix('_std')}"
+    return f"eval_reward_means/{reward_name}"
+
+  if name.startswith("eval/"):
+    metric = name.removeprefix("eval/")
+    performance_names = {
+        "sps": "eval_sps",
+        "walltime": "eval_walltime",
+        "epoch_eval_time": "eval_epoch_time",
+    }
+    if metric in performance_names:
+      return f"performance/{performance_names[metric]}"
+    if metric.startswith("episode_"):
+      return f"rollouts/eval_{metric.removeprefix('episode_')}"
+    return f"rollouts/eval_{metric}"
+
+  return f"misc/{name}"
+
+
+def _wandb_metrics(metrics, entropy_cost: float):
+  """Renames Brax metrics and adds diagnostics derivable without approximation."""
+  renamed = {_wandb_metric_name(name): value for name, value in metrics.items()}
+
+  entropy_loss = metrics.get("training/entropy_loss")
+  if entropy_loss is None:
+    entropy_loss = metrics.get("episode/entropy_loss")
+  if entropy_loss is not None and entropy_cost:
+    # Brax defines entropy_loss = -entropy_cost * policy_entropy.
+    renamed["stability/policy_entropy"] = -entropy_loss / entropy_cost
+
+  return renamed
 
 
 def rscope_fn(full_states, obs, rew, done):
@@ -291,6 +516,18 @@ def main(argv):
     env_cfg_overrides["vision_config.nworld"] = ppo_params.num_envs
   if _PLAYGROUND_CONFIG_OVERRIDES.value is not None:
     env_cfg_overrides.update(json.loads(_PLAYGROUND_CONFIG_OVERRIDES.value))
+  if _MEAN_ACTION_RATE_COST.value < 0.0:
+    raise ValueError("--mean_action_rate_cost must be non-negative.")
+  if _MEAN_ACTION_RATE_COST.value > 0.0:
+    try:
+      env_cfg.reward_config.scales.action_rate = 0.0
+    except (AttributeError, KeyError) as error:
+      raise ValueError(
+          f"{_ENV_NAME.value} does not define an action_rate reward term."
+      ) from error
+    # Apply this after user overrides so the sampled-action penalty cannot be
+    # accidentally active together with the auxiliary policy-mean loss.
+    env_cfg_overrides["reward_config.scales.action_rate"] = 0.0
 
   env = registry.load(
       _ENV_NAME.value, config=env_cfg, config_overrides=env_cfg_overrides
@@ -327,9 +564,38 @@ def main(argv):
           "wandb is required for --use_wandb. "
           "Install via: pip install wandb"
       )
-    wandb.init(project="mjxrl", name=exp_name)
-    wandb.config.update(env_cfg.to_dict())
-    wandb.config.update({"env_name": _ENV_NAME.value})
+    wandb.init(
+        project="mjxrl",
+        name=exp_name,
+        config={
+            "environment": env_cfg.to_dict(),
+            "ppo": ppo_params.to_dict(),
+            "env_name": _ENV_NAME.value,
+            "impl": _IMPL.value,
+            "seed": _SEED.value,
+            "domain_randomization": _DOMAIN_RANDOMIZATION.value,
+            "mean_action_rate_cost": _MEAN_ACTION_RATE_COST.value,
+            "environment_action_rate_disabled": (
+                _MEAN_ACTION_RATE_COST.value > 0.0
+            ),
+        },
+    )
+    wandb.define_metric("environment_steps")
+    for section in (
+        "train_reward_means",
+        "train_reward_stds",
+        "eval_reward_means",
+        "eval_reward_stds",
+        "losses",
+        "stability",
+        "optimization",
+        "rollouts",
+        "performance",
+        "misc",
+    ):
+      wandb.define_metric(
+          f"{section}/*", step_metric="environment_steps"
+      )
 
   # Initialize TensorBoard if required
   writer = None
@@ -389,6 +655,14 @@ def main(argv):
   if "num_eval_envs" in training_params:
     del training_params["num_eval_envs"]
 
+  # Brax only reports means for completed training episodes by default. Use a
+  # compatible logger that also exposes the corresponding standard deviations.
+  brax_logger.EpisodeMetricsLogger = _EpisodeMetricsLoggerWithStd
+  ppo_losses.compute_ppo_loss = functools.partial(
+      _compute_ppo_loss_with_mean_action_rate,
+      mean_action_rate_cost=_MEAN_ACTION_RATE_COST.value,
+  )
+
   train_fn = functools.partial(
       ppo.train,
       **training_params,
@@ -409,7 +683,10 @@ def main(argv):
 
     # Log to Weights & Biases
     if _USE_WANDB.value and not _PLAY_ONLY.value:
-      wandb.log(metrics, step=num_steps)
+      wandb.log({
+          "environment_steps": num_steps,
+          **_wandb_metrics(metrics, ppo_params.entropy_cost),
+      })
 
     # Log to TensorBoard
     if _USE_TB.value and not _PLAY_ONLY.value and writer is not None:
