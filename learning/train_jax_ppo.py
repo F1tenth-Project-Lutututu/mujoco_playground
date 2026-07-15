@@ -116,6 +116,12 @@ _NUM_TIMESTEPS = flags.DEFINE_integer(
 _NUM_VIDEOS = flags.DEFINE_integer(
     "num_videos", 1, "Number of videos to record after training."
 )
+_RENDER_VIDEOS = flags.DEFINE_boolean(
+    "render_videos",
+    False,
+    "Render rollout videos after training. Enable only with a working EGL, "
+    "OSMesa, or GLFW backend.",
+)
 _CAMERA = flags.DEFINE_string(
     "camera",
     "track",
@@ -766,6 +772,14 @@ def main(argv):
     print(f"Time to JIT compile: {times[1] - times[0]}")
     print(f"Time to train: {times[-1] - times[1]}")
 
+  if not _RENDER_VIDEOS.value:
+    print("Skipping post-training inference and video rendering.")
+    if writer is not None:
+      writer.close()
+    if _USE_WANDB.value and not _PLAY_ONLY.value:
+      wandb.finish()
+    return
+
   print("Starting inference...")
 
   # Create inference function.
@@ -861,6 +875,11 @@ def main(argv):
     )
     media.write_video(logdir / f"rollout{i}.mp4", frames, fps=fps)
     print(f"Rollout video saved as '{logdir}/rollout{i}.mp4'.")
+
+  if writer is not None:
+    writer.close()
+  if _USE_WANDB.value and not _PLAY_ONLY.value:
+    wandb.finish()
 
 
 def run():
