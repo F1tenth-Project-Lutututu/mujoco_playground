@@ -66,6 +66,7 @@ def default_config() -> config_dict.ConfigDict:
               stand_still=-1.0,
               # Regularization.
               torques=-0.0002,
+              torque_high_freq=0.0,
               action_rate=-0.01,
               energy=-0.001,
               # Feet.
@@ -76,6 +77,8 @@ def default_config() -> config_dict.ConfigDict:
           ),
           tracking_sigma=0.25,
           max_foot_height=0.1,
+          torque_highpass_cutoff_hz=5.0,
+          torque_spectrum_cutoffs_hz=(1.0, 2.0, 5.0, 10.0, 15.0, 20.0),
       ),
       pert_config=config_dict.create(
           enable=False,
@@ -147,6 +150,44 @@ class Joystick(go1_base.Go1Env):
     self._cmd_a = jp.array(self._config.command_config.a)
     self._cmd_b = jp.array(self._config.command_config.b)
 
+    cutoff_hz = self._config.reward_config.torque_highpass_cutoff_hz
+    nyquist_hz = 0.5 / self.dt
+    if not 0.0 < cutoff_hz < nyquist_hz:
+      raise ValueError(
+          "reward_config.torque_highpass_cutoff_hz must be between 0 and "
+          f"the control-rate Nyquist frequency ({nyquist_hz} Hz), got "
+          f"{cutoff_hz} Hz."
+      )
+    self._torque_lowpass_alpha = jp.exp(-2.0 * jp.pi * cutoff_hz * self.dt)
+
+    high_freq_scale = self._config.reward_config.scales.torque_high_freq
+    if high_freq_scale > 0.0:
+      raise ValueError(
+          "reward_config.scales.torque_high_freq must be non-positive."
+      )
+    if high_freq_scale < 0.0:
+      self._config.reward_config.scales.action_rate = 0.0
+
+    spectrum_cutoffs_hz = tuple(
+        self._config.reward_config.torque_spectrum_cutoffs_hz
+    )
+    if not spectrum_cutoffs_hz:
+      raise ValueError(
+          "reward_config.torque_spectrum_cutoffs_hz must not be empty."
+      )
+    if any(not 0.0 < cutoff < nyquist_hz for cutoff in spectrum_cutoffs_hz):
+      raise ValueError(
+          "All reward_config.torque_spectrum_cutoffs_hz values must be "
+          f"between 0 and {nyquist_hz} Hz, got {spectrum_cutoffs_hz}."
+      )
+    self._torque_spectrum_alphas = jp.exp(
+        -2.0 * jp.pi * jp.array(spectrum_cutoffs_hz) * self.dt
+    )
+    self._torque_spectrum_metric_names = tuple(
+        f"torque_spectrum/highpass_{cutoff:g}hz_per_step"
+        for cutoff in spectrum_cutoffs_hz
+    )
+
   def reset(self, rng: jax.Array) -> mjx_env.State:
     qpos = self._init_q
     qvel = jp.zeros(self.mjx_model.nv)
@@ -216,6 +257,11 @@ class Joystick(go1_base.Go1Env):
         "steps_until_next_cmd": steps_until_next_cmd,
         "last_act": jp.zeros(self.mjx_model.nu),
         "last_last_act": jp.zeros(self.mjx_model.nu),
+        "torque_lowpass": data.actuator_force,
+        "torque_spectrum_lowpass": jp.broadcast_to(
+            data.actuator_force,
+            (len(self._torque_spectrum_metric_names), self.mjx_model.nu),
+        ),
         "feet_air_time": jp.zeros(4),
         "last_contact": jp.zeros(4, dtype=bool),
         "swing_peak": jp.zeros(4),
@@ -232,6 +278,9 @@ class Joystick(go1_base.Go1Env):
     for k in self._config.reward_config.scales.keys():
       metrics[f"reward/{k}"] = jp.zeros(())
     metrics["reward_without_action_rate"] = jp.zeros(())
+    metrics["torque_spectrum/total_energy_per_step"] = jp.zeros(())
+    for metric_name in self._torque_spectrum_metric_names:
+      metrics[metric_name] = jp.zeros(())
     metrics["swing_peak"] = jp.zeros(())
 
     obs = self._get_obs(data, info)
@@ -270,8 +319,44 @@ class Joystick(go1_base.Go1Env):
     obs = self._get_obs(data, state.info)
     done = self._get_termination(data)
 
+    previous_torque_lowpass = jp.where(
+        state.info.get("episode_done", False),
+        data.actuator_force,
+        state.info["torque_lowpass"],
+    )
+    torque_lowpass = (
+        self._torque_lowpass_alpha * previous_torque_lowpass
+        + (1.0 - self._torque_lowpass_alpha) * data.actuator_force
+    )
+    torque_highpass = data.actuator_force - torque_lowpass
+
+    torque_spectrum_previous_lowpass = jp.where(
+        state.info.get("episode_done", False),
+        data.actuator_force[None, :],
+        state.info["torque_spectrum_lowpass"],
+    )
+    torque_spectrum_lowpass = (
+        self._torque_spectrum_alphas[:, None]
+        * torque_spectrum_previous_lowpass
+        + (1.0 - self._torque_spectrum_alphas[:, None])
+        * data.actuator_force[None, :]
+    )
+    torque_spectrum_highpass = (
+        data.actuator_force[None, :] - torque_spectrum_lowpass
+    )
+    torque_spectrum_energy = jp.sum(
+        jp.square(torque_spectrum_highpass), axis=-1
+    )
+
     rewards = self._get_reward(
-        data, action, state.info, state.metrics, done, first_contact, contact
+        data,
+        action,
+        state.info,
+        state.metrics,
+        done,
+        first_contact,
+        contact,
+        torque_highpass,
     )
     rewards = {
         k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
@@ -285,6 +370,8 @@ class Joystick(go1_base.Go1Env):
 
     state.info["last_last_act"] = state.info["last_act"]
     state.info["last_act"] = action
+    state.info["torque_lowpass"] = torque_lowpass
+    state.info["torque_spectrum_lowpass"] = torque_spectrum_lowpass
     state.info["steps_until_next_cmd"] -= 1
     state.info["rng"], key1, key2 = jax.random.split(state.info["rng"], 3)
     state.info["command"] = jp.where(
@@ -303,6 +390,13 @@ class Joystick(go1_base.Go1Env):
     for k, v in rewards.items():
       state.metrics[f"reward/{k}"] = v
     state.metrics["reward_without_action_rate"] = reward_without_action_rate
+    state.metrics["torque_spectrum/total_energy_per_step"] = jp.sum(
+        jp.square(data.actuator_force)
+    )
+    for metric_name, energy in zip(
+        self._torque_spectrum_metric_names, torque_spectrum_energy
+    ):
+      state.metrics[metric_name] = energy
     state.metrics["swing_peak"] = jp.mean(state.info["swing_peak"])
 
     done = done.astype(reward.dtype)
@@ -406,6 +500,7 @@ class Joystick(go1_base.Go1Env):
       done: jax.Array,
       first_contact: jax.Array,
       contact: jax.Array,
+      torque_highpass: jax.Array,
   ) -> dict[str, jax.Array]:
     del metrics  # Unused.
     return {
@@ -422,6 +517,7 @@ class Joystick(go1_base.Go1Env):
         "termination": self._cost_termination(done),
         "pose": self._reward_pose(data.qpos[7:]),
         "torques": self._cost_torques(data.actuator_force),
+        "torque_high_freq": self._cost_torque_high_freq(torque_highpass),
         "action_rate": self._cost_action_rate(
             action, info["last_act"], info["last_last_act"]
         ),
@@ -476,6 +572,12 @@ class Joystick(go1_base.Go1Env):
   def _cost_torques(self, torques: jax.Array) -> jax.Array:
     # Penalize torques.
     return jp.sqrt(jp.sum(jp.square(torques))) + jp.sum(jp.abs(torques))
+
+  def _cost_torque_high_freq(
+      self, highpass_torques: jax.Array
+  ) -> jax.Array:
+    """Penalizes torque energy above the configured cutoff frequency."""
+    return jp.sum(jp.square(highpass_torques))
 
   def _cost_energy(
       self, qvel: jax.Array, qfrc_actuator: jax.Array

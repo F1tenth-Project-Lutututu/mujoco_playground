@@ -395,6 +395,8 @@ def _wandb_metric_name(name: str) -> str:
       return "train_reward_means/total_without_action_rate"
     if metric == "reward_without_action_rate_std":
       return "train_reward_stds/total_without_action_rate"
+    if metric.startswith("torque_spectrum/"):
+      return f"torque_spectrum/train/{metric.removeprefix('torque_spectrum/')}"
     if metric.startswith("reward/"):
       reward_name = metric.removeprefix("reward/")
       if reward_name.endswith("_std"):
@@ -403,6 +405,10 @@ def _wandb_metric_name(name: str) -> str:
     if metric == "sps":
       return "performance/rollout_sps"
     return f"rollouts/train_{metric}"
+
+  if name.startswith("eval/episode_torque_spectrum/"):
+    metric = name.removeprefix("eval/episode_torque_spectrum/")
+    return f"torque_spectrum/eval/{metric}"
 
   if name.startswith("eval/episode_reward"):
     metric = name.removeprefix("eval/episode_reward")
@@ -586,6 +592,8 @@ def main(argv):
       )
     wandb_group = _WANDB_EXPERIMENT_NAME.value or _ENV_NAME.value
     wandb_run_name = f"{wandb_group}-seed{_SEED.value}"
+    reward_scales = env_cfg.get("reward_config", {}).get("scales", {})
+    environment_action_rate_scale = reward_scales.get("action_rate")
     wandb.init(
         project="mjxrl",
         group=wandb_group,
@@ -599,8 +607,9 @@ def main(argv):
             "domain_randomization": _DOMAIN_RANDOMIZATION.value,
             "mean_action_rate_cost": _MEAN_ACTION_RATE_COST.value,
             "environment_action_rate_disabled": (
-                _MEAN_ACTION_RATE_COST.value > 0.0
+                environment_action_rate_scale == 0.0
             ),
+            "environment_action_rate_scale": environment_action_rate_scale,
             "wandb_experiment_name": wandb_group,
         },
     )
@@ -613,6 +622,7 @@ def main(argv):
         "losses",
         "stability",
         "optimization",
+        "torque_spectrum",
         "rollouts",
         "performance",
         "misc",
