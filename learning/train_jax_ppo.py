@@ -391,6 +391,10 @@ def _wandb_metric_name(name: str) -> str:
       return "train_reward_means/total"
     if metric == "sum_reward_std":
       return "train_reward_stds/total"
+    if metric == "reward_without_action_rate":
+      return "train_reward_means/total_without_action_rate"
+    if metric == "reward_without_action_rate_std":
+      return "train_reward_stds/total_without_action_rate"
     if metric.startswith("reward/"):
       reward_name = metric.removeprefix("reward/")
       if reward_name.endswith("_std"):
@@ -406,6 +410,10 @@ def _wandb_metric_name(name: str) -> str:
       return "eval_reward_means/total"
     if metric == "_std":
       return "eval_reward_stds/total"
+    if metric == "_without_action_rate":
+      return "eval_reward_means/total_without_action_rate"
+    if metric == "_without_action_rate_std":
+      return "eval_reward_stds/total_without_action_rate"
     reward_name = metric.removeprefix("/")
     if reward_name.endswith("_std"):
       return f"eval_reward_stds/{reward_name.removesuffix('_std')}"

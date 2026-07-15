@@ -231,6 +231,7 @@ class Joystick(go1_base.Go1Env):
     metrics = {}
     for k in self._config.reward_config.scales.keys():
       metrics[f"reward/{k}"] = jp.zeros(())
+    metrics["reward_without_action_rate"] = jp.zeros(())
     metrics["swing_peak"] = jp.zeros(())
 
     obs = self._get_obs(data, info)
@@ -276,6 +277,11 @@ class Joystick(go1_base.Go1Env):
         k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
     }
     reward = jp.clip(sum(rewards.values()) * self.dt, 0.0, 10000.0)
+    reward_without_action_rate = jp.clip(
+        sum(v for k, v in rewards.items() if k != "action_rate") * self.dt,
+        0.0,
+        10000.0,
+    )
 
     state.info["last_last_act"] = state.info["last_act"]
     state.info["last_act"] = action
@@ -296,6 +302,7 @@ class Joystick(go1_base.Go1Env):
     state.info["swing_peak"] *= ~contact
     for k, v in rewards.items():
       state.metrics[f"reward/{k}"] = v
+    state.metrics["reward_without_action_rate"] = reward_without_action_rate
     state.metrics["swing_peak"] = jp.mean(state.info["swing_peak"])
 
     done = done.astype(reward.dtype)
