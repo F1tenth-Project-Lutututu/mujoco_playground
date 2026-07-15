@@ -97,6 +97,12 @@ _USE_WANDB = flags.DEFINE_boolean(
     False,
     "Use Weights & Biases for logging (ignored in play-only mode)",
 )
+_WANDB_EXPERIMENT_NAME = flags.DEFINE_string(
+    "wandb_experiment_name",
+    None,
+    "W&B group name. The run name is '<group>-seed<seed>'. Defaults to the "
+    "environment name.",
+)
 _USE_TB = flags.DEFINE_boolean(
     "use_tb", False, "Use TensorBoard for logging (ignored in play-only mode)"
 )
@@ -564,9 +570,12 @@ def main(argv):
           "wandb is required for --use_wandb. "
           "Install via: pip install wandb"
       )
+    wandb_group = _WANDB_EXPERIMENT_NAME.value or _ENV_NAME.value
+    wandb_run_name = f"{wandb_group}-seed{_SEED.value}"
     wandb.init(
         project="mjxrl",
-        name=exp_name,
+        group=wandb_group,
+        name=wandb_run_name,
         config={
             "environment": env_cfg.to_dict(),
             "ppo": ppo_params.to_dict(),
@@ -578,6 +587,7 @@ def main(argv):
             "environment_action_rate_disabled": (
                 _MEAN_ACTION_RATE_COST.value > 0.0
             ),
+            "wandb_experiment_name": wandb_group,
         },
     )
     wandb.define_metric("environment_steps")
