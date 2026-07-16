@@ -38,8 +38,8 @@ When the coefficient is positive, the environment's sampled-action rate reward
 is disabled automatically. The unweighted deterministic mean-action rate is
 logged for both baseline and auxiliary-loss runs so they can be compared.
 
-W&B runs can be grouped under a user-defined experiment name. Each run is named
-from that group and its seed:
+W&B runs can be grouped under a user-defined experiment name. Each run name is
+prefixed with the date in `YYMMDD` format:
 
 ```bash
 python train_jax_ppo.py \
@@ -49,8 +49,10 @@ python train_jax_ppo.py \
   --seed=1
 ```
 
-This creates group `go1-action-smoothing` and run
-`go1-action-smoothing-seed1` in the `mjxrl` W&B project.
+This creates group `go1-action-smoothing` and a run such as
+`260716-go1-action-smoothing-seed1`. Models are saved under the same name in
+`logs/260716-go1-action-smoothing-seed1/checkpoints`, making the local
+checkpoints easy to match to their W&B run.
 
 Post-training rollout rendering is disabled by default so training works on
 headless cluster nodes without an OpenGL backend. Enable it explicitly on a
@@ -90,9 +92,14 @@ common task-reward metric for comparing either smoothing method. The existing
 
 Unscaled high-pass torque energies are always logged at 1, 2, 5, 10, 15, and
 20 Hz, together with total torque energy, under the `torque_spectrum` W&B
-section. These diagnostics are active for baseline, action-rate, and high-pass
-penalty runs, allowing their torque-frequency profiles to be compared without
-reward-scale effects. They use the configured `torque_highpass_order` as well.
+section. These online diagnostics always use an order-1 measurement filter,
+independently of the regularization filter order, so runs remain comparable.
+
+Evaluation additionally logs `fft_above_<cutoff>hz_energy_per_step` metrics
+computed from the complete torque rollout with a real FFT. These report the
+mean torque energy above each cutoff using a common, order-independent
+measurement. Torque-energy standard deviations are intentionally omitted;
+reward and other episode metrics continue to include their standard deviations.
 
 ## Training with RSL-RL
 

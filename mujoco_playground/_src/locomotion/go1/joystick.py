@@ -28,6 +28,9 @@ from mujoco_playground._src.locomotion.go1 import base as go1_base
 from mujoco_playground._src.locomotion.go1 import go1_constants as consts
 
 
+_TORQUE_SPECTRUM_DIAGNOSTIC_ORDER = 1
+
+
 def default_config() -> config_dict.ConfigDict:
   return config_dict.create(
       ctrl_dt=0.02,
@@ -201,11 +204,13 @@ class Joystick(go1_base.Go1Env):
         for cutoff in spectrum_cutoffs_hz
     )
 
-  def _initial_highpass_state(self, signal: jax.Array) -> jax.Array:
+  def _initial_highpass_state(
+      self, signal: jax.Array, order: int
+  ) -> jax.Array:
     """Returns cascade state that initially produces zero filter output."""
     state_shape = (
         *signal.shape[:-1],
-        self._torque_highpass_order,
+        order,
         signal.shape[-1],
     )
     return jp.zeros(state_shape, dtype=signal.dtype).at[..., 0, :].set(signal)
@@ -216,12 +221,13 @@ class Joystick(go1_base.Go1Env):
       previous_lowpass: jax.Array,
       alpha: jax.Array,
       reset: jax.Array,
+      order: int,
   ) -> tuple[jax.Array, jax.Array]:
     """Applies cascaded one-pole high-pass sections to the input signal."""
     filtered = signal
     lowpass_states = []
     alpha = jp.asarray(alpha)[..., None]
-    for stage in range(self._torque_highpass_order):
+    for stage in range(order):
       previous_stage_lowpass = jp.where(
           reset, filtered, previous_lowpass[..., stage, :]
       )
@@ -301,13 +307,17 @@ class Joystick(go1_base.Go1Env):
         "steps_until_next_cmd": steps_until_next_cmd,
         "last_act": jp.zeros(self.mjx_model.nu),
         "last_last_act": jp.zeros(self.mjx_model.nu),
-        "torque_lowpass": self._initial_highpass_state(data.actuator_force),
+        "torque_lowpass": self._initial_highpass_state(
+            data.actuator_force, self._torque_highpass_order
+        ),
         "torque_spectrum_lowpass": self._initial_highpass_state(
             jp.broadcast_to(
                 data.actuator_force,
                 (len(self._torque_spectrum_metric_names), self.mjx_model.nu),
-            )
+            ),
+            _TORQUE_SPECTRUM_DIAGNOSTIC_ORDER,
         ),
+        "torque_for_spectrum": data.actuator_force,
         "feet_air_time": jp.zeros(4),
         "last_contact": jp.zeros(4, dtype=bool),
         "swing_peak": jp.zeros(4),
@@ -371,6 +381,7 @@ class Joystick(go1_base.Go1Env):
         state.info["torque_lowpass"],
         self._torque_lowpass_alpha,
         state.info.get("episode_done", False),
+        self._torque_highpass_order,
     )
     torque_spectrum_highpass, torque_spectrum_lowpass = (
         self._apply_highpass_filter(
@@ -381,6 +392,7 @@ class Joystick(go1_base.Go1Env):
             state.info["torque_spectrum_lowpass"],
             self._torque_spectrum_alphas,
             state.info.get("episode_done", False),
+            _TORQUE_SPECTRUM_DIAGNOSTIC_ORDER,
         )
     )
     torque_spectrum_energy = jp.sum(
@@ -421,6 +433,7 @@ class Joystick(go1_base.Go1Env):
     state.info["last_act"] = action
     state.info["torque_lowpass"] = torque_lowpass
     state.info["torque_spectrum_lowpass"] = torque_spectrum_lowpass
+    state.info["torque_for_spectrum"] = data.actuator_force
     state.info["steps_until_next_cmd"] -= 1
     state.info["rng"], key1, key2 = jax.random.split(state.info["rng"], 3)
     state.info["command"] = jp.where(

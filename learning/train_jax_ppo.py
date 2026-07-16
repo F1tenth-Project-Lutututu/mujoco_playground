@@ -25,6 +25,8 @@ import warnings
 from absl import app
 from absl import flags
 from absl import logging
+from brax import envs as brax_envs
+from brax.training import acting
 from brax.training import logger as brax_logger
 from brax.training.agents.ppo import losses as ppo_losses
 from brax.training.agents.ppo import networks as ppo_networks
@@ -339,12 +341,18 @@ class _EpisodeMetricsLoggerWithStd(brax_logger.EpisodeMetricsLogger):
 
     for metric_name, values in self._ep_metrics_buffer.items():
       aggregated_metrics[metric_name] = np.mean(values)
-      aggregated_metrics[f"{metric_name}_std"] = np.std(values)
-      log_string += (
-          f"{f'Episode {metric_name}:':>{pad}}"
-          f" {aggregated_metrics[metric_name]:.4f} +-"
-          f" {aggregated_metrics[f'{metric_name}_std']:.4f}\n"
-      )
+      if metric_name.startswith("torque_spectrum/"):
+        log_string += (
+            f"{f'Episode {metric_name}:':>{pad}}"
+            f" {aggregated_metrics[metric_name]:.4f}\n"
+        )
+      else:
+        aggregated_metrics[f"{metric_name}_std"] = np.std(values)
+        log_string += (
+            f"{f'Episode {metric_name}:':>{pad}}"
+            f" {aggregated_metrics[metric_name]:.4f} +-"
+            f" {aggregated_metrics[f'{metric_name}_std']:.4f}\n"
+        )
 
     for metric_name, values in self._train_metrics_buffer.items():
       aggregated_metrics[metric_name] = np.mean(values)
@@ -362,6 +370,146 @@ class _EpisodeMetricsLoggerWithStd(brax_logger.EpisodeMetricsLogger):
               for name, value in aggregated_metrics.items()
           },
       )
+
+
+def _torque_fft_energy_metrics(
+    torques: np.ndarray,
+    active_steps: np.ndarray,
+    sample_period: float,
+    cutoffs_hz: tuple[float, ...],
+) -> dict[str, float]:
+  """Returns rollout-mean torque energies above fixed FFT cutoffs."""
+  episode_metrics = {cutoff: [] for cutoff in cutoffs_hz}
+  total_energies = []
+  for env_index in range(torques.shape[1]):
+    episode_steps = int(np.sum(active_steps[:, env_index]))
+    if episode_steps == 0:
+      continue
+    episode_torques = torques[:episode_steps, env_index]
+    total_energies.append(np.mean(np.sum(np.square(episode_torques), axis=-1)))
+
+    spectrum = np.fft.rfft(episode_torques, axis=0)
+    bin_energy = np.square(np.abs(spectrum)) / episode_steps**2
+    if episode_steps > 1:
+      # Account for the negative-frequency half omitted by rfft.  DC and the
+      # Nyquist bin (for even lengths) occur only once.
+      upper = -1 if episode_steps % 2 == 0 else None
+      bin_energy[1:upper] *= 2.0
+    frequencies = np.fft.rfftfreq(episode_steps, d=sample_period)
+    for cutoff in cutoffs_hz:
+      episode_metrics[cutoff].append(
+          np.sum(bin_energy[frequencies >= cutoff])
+      )
+
+  metrics = {
+      "total_energy_per_step": float(np.mean(total_energies))
+      if total_energies
+      else 0.0
+  }
+  for cutoff, values in episode_metrics.items():
+    metrics[f"fft_above_{cutoff:g}hz_energy_per_step"] = (
+        float(np.mean(values)) if values else 0.0
+    )
+  return metrics
+
+
+class _EvaluatorWithTorqueFft:
+  """Brax evaluator that adds order-independent rollout torque FFT metrics."""
+
+  def __init__(
+      self,
+      eval_env,
+      eval_policy_fn,
+      num_eval_envs,
+      episode_length,
+      action_repeat,
+      key,
+      *,
+      torque_sample_period: float,
+      torque_fft_cutoffs_hz: tuple[float, ...],
+  ):
+    self._key = key
+    self._eval_walltime = 0.0
+    self._torque_sample_period = torque_sample_period
+    self._torque_fft_cutoffs_hz = torque_fft_cutoffs_hz
+    fft_nyquist_hz = 0.5 / torque_sample_period
+    if any(cutoff > fft_nyquist_hz for cutoff in torque_fft_cutoffs_hz):
+      raise ValueError(
+          "Torque FFT cutoffs must not exceed the evaluation sampling "
+          f"Nyquist frequency ({fft_nyquist_hz:g} Hz). Reduce the cutoffs "
+          "or use --action_repeat=1."
+      )
+
+    eval_env = brax_envs.training.EvalWrapper(eval_env)
+
+    def generate_eval_unroll(policy_params, key):
+      reset_keys = jax.random.split(key, num_eval_envs)
+      state = eval_env.reset(reset_keys)
+      policy = eval_policy_fn(policy_params)
+
+      def step(carry, _):
+        current_state, current_key = carry
+        current_key, action_key = jax.random.split(current_key)
+        actions, _ = policy(current_state.obs, action_key)
+        active = current_state.info["eval_metrics"].active_episodes
+        next_state = eval_env.step(current_state, actions)
+        torque = next_state.info["torque_for_spectrum"]
+        return (next_state, current_key), (torque, active)
+
+      (state, _), (torques, active_steps) = jax.lax.scan(
+          step,
+          (state, key),
+          (),
+          length=episode_length // action_repeat,
+      )
+      return state, torques, active_steps
+
+    self._generate_eval_unroll = jax.jit(generate_eval_unroll)
+    self._steps_per_unroll = episode_length * num_eval_envs
+
+  def run_evaluation(
+      self, policy_params, training_metrics, aggregate_episodes=True
+  ):
+    """Runs evaluation and adds mean-only FFT torque metrics."""
+    self._key, unroll_key = jax.random.split(self._key)
+    start = time.time()
+    eval_state, torques, active_steps = self._generate_eval_unroll(
+        policy_params, unroll_key
+    )
+    eval_metrics = eval_state.info["eval_metrics"]
+    eval_metrics.active_episodes.block_until_ready()
+    epoch_eval_time = time.time() - start
+
+    metrics = {}
+    for name, value in eval_metrics.episode_metrics.items():
+      metrics[f"eval/episode_{name}"] = (
+          np.mean(value) if aggregate_episodes else value
+      )
+      if not name.startswith("torque_spectrum/"):
+        metrics[f"eval/episode_{name}_std"] = (
+            np.std(value) if aggregate_episodes else value
+        )
+
+    fft_metrics = _torque_fft_energy_metrics(
+        np.asarray(torques),
+        np.asarray(active_steps),
+        self._torque_sample_period,
+        self._torque_fft_cutoffs_hz,
+    )
+    metrics.update({
+        f"eval/episode_torque_spectrum/{name}": value
+        for name, value in fft_metrics.items()
+    })
+    metrics["eval/avg_episode_length"] = np.mean(eval_metrics.episode_steps)
+    metrics["eval/std_episode_length"] = np.std(eval_metrics.episode_steps)
+    metrics["eval/epoch_eval_time"] = epoch_eval_time
+    metrics["eval/sps"] = self._steps_per_unroll / epoch_eval_time
+    self._eval_walltime += epoch_eval_time
+    return {
+        "eval/walltime": self._eval_walltime,
+        **training_metrics,
+        **metrics,
+    }
 
 
 def _wandb_metric_name(name: str) -> str:
@@ -578,16 +726,17 @@ def main(argv):
     print(f"Environment Config Overrides:\n{env_cfg_overrides}\n")
   print(f"PPO Training Parameters:\n{ppo_params}")
 
-  # Generate unique experiment name
+  # Use the same name for the W&B run and its local model directory.
   now = datetime.datetime.now()
-  timestamp = now.strftime("%Y%m%d-%H%M%S")
-  exp_name = f"{_ENV_NAME.value}-{timestamp}"
+  date_prefix = now.strftime("%y%m%d")
+  wandb_group = _WANDB_EXPERIMENT_NAME.value or _ENV_NAME.value
+  run_name = f"{date_prefix}-{wandb_group}-seed{_SEED.value}"
   if _SUFFIX.value is not None:
-    exp_name += f"-{_SUFFIX.value}"
-  print(f"Experiment name: {exp_name}")
+    run_name += f"-{_SUFFIX.value}"
+  print(f"Run name: {run_name}")
 
   # Set up logging directory
-  logdir = epath.Path(_LOGDIR.value or "logs").resolve() / exp_name
+  logdir = epath.Path(_LOGDIR.value or "logs").resolve() / run_name
   logdir.mkdir(parents=True, exist_ok=True)
   print(f"Logs are being stored in: {logdir}")
 
@@ -598,14 +747,12 @@ def main(argv):
           "wandb is required for --use_wandb. "
           "Install via: pip install wandb"
       )
-    wandb_group = _WANDB_EXPERIMENT_NAME.value or _ENV_NAME.value
-    wandb_run_name = f"{wandb_group}-seed{_SEED.value}"
     reward_scales = env_cfg.get("reward_config", {}).get("scales", {})
     environment_action_rate_scale = reward_scales.get("action_rate")
     wandb.init(
         project="spectral_playground_highpass",
         group=wandb_group,
-        name=wandb_run_name,
+        name=run_name,
         config={
             "environment": env_cfg.to_dict(),
             "ppo": ppo_params.to_dict(),
@@ -700,6 +847,17 @@ def main(argv):
   # Brax only reports means for completed training episodes by default. Use a
   # compatible logger that also exposes the corresponding standard deviations.
   brax_logger.EpisodeMetricsLogger = _EpisodeMetricsLoggerWithStd
+  torque_fft_cutoffs_hz = tuple(
+      env_cfg.get("reward_config", {}).get(
+          "torque_spectrum_cutoffs_hz", ()
+      )
+  )
+  if torque_fft_cutoffs_hz:
+    acting.Evaluator = functools.partial(
+        _EvaluatorWithTorqueFft,
+        torque_sample_period=env.dt * ppo_params.action_repeat,
+        torque_fft_cutoffs_hz=torque_fft_cutoffs_hz,
+    )
   ppo_losses.compute_ppo_loss = functools.partial(
       _compute_ppo_loss_with_mean_action_rate,
       mean_action_rate_cost=_MEAN_ACTION_RATE_COST.value,
