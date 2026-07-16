@@ -603,7 +603,7 @@ def main(argv):
     reward_scales = env_cfg.get("reward_config", {}).get("scales", {})
     environment_action_rate_scale = reward_scales.get("action_rate")
     wandb.init(
-        project="mjxrl",
+        project="spectral_playground_highpass",
         group=wandb_group,
         name=wandb_run_name,
         config={
