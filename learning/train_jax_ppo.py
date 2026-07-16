@@ -18,6 +18,7 @@ import datetime
 import functools
 import json
 import os
+import sys
 import time
 from typing import Optional
 import warnings
@@ -28,6 +29,7 @@ from absl import logging
 from brax import envs as brax_envs
 from brax.training import acting
 from brax.training import logger as brax_logger
+from brax.training import networks as brax_networks
 from brax.training.agents.ppo import losses as ppo_losses
 from brax.training.agents.ppo import networks as ppo_networks
 from brax.training.agents.ppo import networks_vision as ppo_networks_vision
@@ -211,19 +213,115 @@ _LOGDIR = flags.DEFINE_string(
 )
 
 
-def get_rl_config(env_name: str) -> config_dict.ConfigDict:
-  if env_name in mujoco_playground.manipulation._envs:
-    if _VISION.value:
-      return manipulation_params.brax_vision_ppo_config(env_name, _IMPL.value)
-    return manipulation_params.brax_ppo_config(env_name, _IMPL.value)
-  elif env_name in mujoco_playground.locomotion._envs:
-    return locomotion_params.brax_ppo_config(env_name, _IMPL.value)
-  elif env_name in mujoco_playground.dm_control_suite._envs:
-    if _VISION.value:
-      return dm_control_suite_params.brax_vision_ppo_config(
-          env_name, _IMPL.value
+_RUN_CONFIG_FILENAME = "run_config.json"
+_RUN_CONFIG_VERSION = 1
+
+
+def _resolve_checkpoint_path(
+    checkpoint_path: Optional[str],
+) -> Optional[epath.Path]:
+  """Resolves a checkpoint directory, selecting its latest numeric child."""
+  if checkpoint_path is None:
+    return None
+
+  path = epath.Path(checkpoint_path).resolve()
+  if not path.is_dir() or path.name.isdigit():
+    return path
+
+  checkpoints = [
+      child
+      for child in path.iterdir()
+      if child.is_dir() and child.name.isdigit()
+  ]
+  if not checkpoints:
+    raise ValueError(f"No numeric checkpoint directories found in {path}.")
+  return max(checkpoints, key=lambda child: int(child.name))
+
+
+def _checkpoint_config_dir(checkpoint_path: epath.Path) -> epath.Path:
+  """Returns the directory containing run-level checkpoint configuration."""
+  if checkpoint_path.name.isdigit():
+    return checkpoint_path.parent
+  if checkpoint_path.is_file() and checkpoint_path.parent.name.isdigit():
+    return checkpoint_path.parent.parent
+  return checkpoint_path if checkpoint_path.is_dir() else checkpoint_path.parent
+
+
+def _load_run_config(
+    checkpoint_path: Optional[epath.Path],
+) -> Optional[dict]:
+  """Loads a full run config, with support for legacy environment configs."""
+  if checkpoint_path is None:
+    return None
+
+  config_dir = _checkpoint_config_dir(checkpoint_path)
+  run_config_path = config_dir / _RUN_CONFIG_FILENAME
+  if run_config_path.exists():
+    with run_config_path.open("r", encoding="utf-8") as fp:
+      run_config = json.load(fp)
+    version = run_config.get("schema_version")
+    if version != _RUN_CONFIG_VERSION:
+      raise ValueError(
+          f"Unsupported run config version {version!r} in {run_config_path}; "
+          f"expected {_RUN_CONFIG_VERSION}."
       )
-    return dm_control_suite_params.brax_ppo_config(env_name, _IMPL.value)
+    print(f"Loaded run configuration from: {run_config_path}")
+    return run_config
+
+  legacy_config_path = config_dir / "config.json"
+  if legacy_config_path.exists():
+    with legacy_config_path.open("r", encoding="utf-8") as fp:
+      environment_config = json.load(fp)
+    print(f"Loaded legacy environment configuration from: {legacy_config_path}")
+    return {
+        "schema_version": 0,
+        "environment_config": environment_config,
+        "impl": environment_config.get("impl"),
+        "vision": environment_config.get("vision", False),
+    }
+
+  print(f"No saved run configuration found beside: {checkpoint_path}")
+  return None
+
+
+def _saved_or_flag(run_config: Optional[dict], name: str, flag):
+  """Returns an explicit flag value, then a saved value, then the default."""
+  if flag.present or run_config is None or run_config.get(name) is None:
+    return flag.value
+  return run_config[name]
+
+
+def _load_checkpoint_network_config(
+    config_path: epath.Path,
+) -> config_dict.ConfigDict:
+  """Loads Brax network config, including optional null initializers."""
+  with config_path.open("r", encoding="utf-8") as fp:
+    network_config = json.load(fp)
+
+  kwargs = network_config["network_factory_kwargs"]
+  activation = kwargs.get("activation")
+  if isinstance(activation, str):
+    kwargs["activation"] = brax_networks.ACTIVATION[activation]
+  for name, initializer in tuple(kwargs.items()):
+    if name.endswith("kernel_init_fn") and isinstance(initializer, str):
+      kwargs[name] = brax_networks.KERNEL_INITIALIZER[initializer]
+
+  return config_dict.ConfigDict(network_config)
+
+
+def get_rl_config(
+    env_name: str, vision: bool, impl: str
+) -> config_dict.ConfigDict:
+  if env_name in mujoco_playground.manipulation._envs:
+    if vision:
+      return manipulation_params.brax_vision_ppo_config(env_name, impl)
+    return manipulation_params.brax_ppo_config(env_name, impl)
+  elif env_name in mujoco_playground.locomotion._envs:
+    return locomotion_params.brax_ppo_config(env_name, impl)
+  elif env_name in mujoco_playground.dm_control_suite._envs:
+    if vision:
+      return dm_control_suite_params.brax_vision_ppo_config(env_name, impl)
+    return dm_control_suite_params.brax_ppo_config(env_name, impl)
 
   raise ValueError(f"Env {env_name} not found in {registry.ALL_ENVS}.")
 
@@ -638,10 +736,44 @@ def main(argv):
     import warp as wp  # pylint: disable=g-import-not-at-top
     wp.config.kernel_cache_dir = _WARP_KERNEL_CACHE_DIR.value
 
-  # Load environment configuration
-  env_cfg = registry.get_default_config(_ENV_NAME.value)
+  restore_checkpoint_path = _resolve_checkpoint_path(
+      _LOAD_CHECKPOINT_PATH.value
+  )
+  run_config = _load_run_config(restore_checkpoint_path)
 
-  ppo_params = get_rl_config(_ENV_NAME.value)
+  env_name = _saved_or_flag(run_config, "env_name", _ENV_NAME)
+  impl = _saved_or_flag(run_config, "impl", _IMPL)
+  vision = _saved_or_flag(run_config, "vision", _VISION)
+  seed = _saved_or_flag(run_config, "seed", _SEED)
+  domain_randomization = _saved_or_flag(
+      run_config, "domain_randomization", _DOMAIN_RANDOMIZATION
+  )
+  mean_action_rate_cost = _saved_or_flag(
+      run_config, "mean_action_rate_cost", _MEAN_ACTION_RATE_COST
+  )
+
+  if run_config and "environment_config" in run_config:
+    env_cfg = config_dict.ConfigDict(run_config["environment_config"])
+  else:
+    env_cfg = registry.get_default_config(env_name)
+
+  if run_config and "ppo_config" in run_config:
+    ppo_params = config_dict.ConfigDict(run_config["ppo_config"])
+  else:
+    ppo_params = get_rl_config(env_name, vision, impl)
+
+  checkpoint_network_config = None
+  if restore_checkpoint_path is not None:
+    network_config_path = restore_checkpoint_path / "ppo_network_config.json"
+    if network_config_path.exists():
+      checkpoint_network_config = _load_checkpoint_network_config(
+          network_config_path
+      )
+      if not _NORMALIZE_OBSERVATIONS.present:
+        ppo_params.normalize_observations = (
+            checkpoint_network_config.normalize_observations
+        )
+      print(f"Loaded policy network configuration from: {network_config_path}")
 
   if _NUM_TIMESTEPS.present:
     ppo_params.num_timesteps = _NUM_TIMESTEPS.value
@@ -692,27 +824,27 @@ def main(argv):
   if _VALUE_OBS_KEY.present:
     ppo_params.network_factory.value_obs_key = _VALUE_OBS_KEY.value
 
-  env_cfg_overrides = {"impl": _IMPL.value}
-  if _VISION.value:
+  env_cfg_overrides = {"impl": impl}
+  if vision:
     env_cfg_overrides["vision"] = True
     env_cfg_overrides["vision_config.nworld"] = ppo_params.num_envs
   if _PLAYGROUND_CONFIG_OVERRIDES.value is not None:
     env_cfg_overrides.update(json.loads(_PLAYGROUND_CONFIG_OVERRIDES.value))
-  if _MEAN_ACTION_RATE_COST.value < 0.0:
+  if mean_action_rate_cost < 0.0:
     raise ValueError("--mean_action_rate_cost must be non-negative.")
-  if _MEAN_ACTION_RATE_COST.value > 0.0:
+  if mean_action_rate_cost > 0.0:
     try:
       env_cfg.reward_config.scales.action_rate = 0.0
     except (AttributeError, KeyError) as error:
       raise ValueError(
-          f"{_ENV_NAME.value} does not define an action_rate reward term."
+          f"{env_name} does not define an action_rate reward term."
       ) from error
     # Apply this after user overrides so the sampled-action penalty cannot be
     # accidentally active together with the auxiliary policy-mean loss.
     env_cfg_overrides["reward_config.scales.action_rate"] = 0.0
 
   env = registry.load(
-      _ENV_NAME.value, config=env_cfg, config_overrides=env_cfg_overrides
+      env_name, config=env_cfg, config_overrides=env_cfg_overrides
   )
   if _RUN_EVALS.present:
     ppo_params.run_evals = _RUN_EVALS.value
@@ -729,8 +861,8 @@ def main(argv):
   # Use the same name for the W&B run and its local model directory.
   now = datetime.datetime.now()
   date_prefix = now.strftime("%y%m%d")
-  wandb_group = _WANDB_EXPERIMENT_NAME.value or _ENV_NAME.value
-  run_name = f"{date_prefix}-{wandb_group}-seed{_SEED.value}"
+  wandb_group = _WANDB_EXPERIMENT_NAME.value or env_name
+  run_name = f"{date_prefix}-{wandb_group}-seed{seed}"
   if _SUFFIX.value is not None:
     run_name += f"-{_SUFFIX.value}"
   print(f"Run name: {run_name}")
@@ -756,11 +888,11 @@ def main(argv):
         config={
             "environment": env_cfg.to_dict(),
             "ppo": ppo_params.to_dict(),
-            "env_name": _ENV_NAME.value,
-            "impl": _IMPL.value,
-            "seed": _SEED.value,
-            "domain_randomization": _DOMAIN_RANDOMIZATION.value,
-            "mean_action_rate_cost": _MEAN_ACTION_RATE_COST.value,
+            "env_name": env_name,
+            "impl": impl,
+            "seed": seed,
+            "domain_randomization": domain_randomization,
+            "mean_action_rate_cost": mean_action_rate_cost,
             "environment_action_rate_disabled": (
                 environment_action_rate_scale == 0.0
             ),
@@ -791,23 +923,10 @@ def main(argv):
   if _USE_TB.value and not _PLAY_ONLY.value and tensorboardX is not None:
     writer = tensorboardX.SummaryWriter(logdir)
 
-  # Handle checkpoint loading
-  if _LOAD_CHECKPOINT_PATH.value is not None:
-    # Convert to absolute path
-    ckpt_path = epath.Path(_LOAD_CHECKPOINT_PATH.value).resolve()
-    if ckpt_path.is_dir():
-      latest_ckpts = list(ckpt_path.glob("*"))
-      latest_ckpts = [ckpt for ckpt in latest_ckpts if ckpt.is_dir()]
-      latest_ckpts.sort(key=lambda x: int(x.name))
-      latest_ckpt = latest_ckpts[-1]
-      restore_checkpoint_path = latest_ckpt
-      print(f"Restoring from: {restore_checkpoint_path}")
-    else:
-      restore_checkpoint_path = ckpt_path
-      print(f"Restoring from checkpoint: {restore_checkpoint_path}")
+  if restore_checkpoint_path is not None:
+    print(f"Restoring from checkpoint: {restore_checkpoint_path}")
   else:
     print("No checkpoint path provided, not restoring from checkpoint")
-    restore_checkpoint_path = None
 
   # Set up checkpoint directory
   ckpt_path = logdir / "checkpoints"
@@ -818,25 +937,59 @@ def main(argv):
   with open(ckpt_path / "config.json", "w", encoding="utf-8") as fp:
     json.dump(env_cfg.to_dict(), fp, indent=4)
 
+  full_run_config = {
+      "schema_version": _RUN_CONFIG_VERSION,
+      "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+      "env_name": env_name,
+      "impl": impl,
+      "vision": vision,
+      "seed": seed,
+      "domain_randomization": domain_randomization,
+      "mean_action_rate_cost": mean_action_rate_cost,
+      "environment_config": env_cfg.to_dict(),
+      "environment_config_overrides": env_cfg_overrides,
+      "ppo_config": ppo_params.to_dict(),
+      "command": sys.argv,
+  }
+  with open(ckpt_path / _RUN_CONFIG_FILENAME, "w", encoding="utf-8") as fp:
+    json.dump(full_run_config, fp, indent=4)
+
   training_params = dict(ppo_params)
   if "network_factory" in training_params:
     del training_params["network_factory"]
 
   network_fn = (
       ppo_networks_vision.make_ppo_networks_vision
-      if _VISION.value
+      if vision
       else ppo_networks.make_ppo_networks
   )
-  if hasattr(ppo_params, "network_factory"):
+  if checkpoint_network_config is not None:
+    network_factory_kwargs = dict(
+        checkpoint_network_config.network_factory_kwargs
+    )
+    if _POLICY_HIDDEN_LAYER_SIZES.present:
+      network_factory_kwargs["policy_hidden_layer_sizes"] = tuple(
+          map(int, _POLICY_HIDDEN_LAYER_SIZES.value)
+      )
+    if _VALUE_HIDDEN_LAYER_SIZES.present:
+      network_factory_kwargs["value_hidden_layer_sizes"] = tuple(
+          map(int, _VALUE_HIDDEN_LAYER_SIZES.value)
+      )
+    if _POLICY_OBS_KEY.present:
+      network_factory_kwargs["policy_obs_key"] = _POLICY_OBS_KEY.value
+    if _VALUE_OBS_KEY.present:
+      network_factory_kwargs["value_obs_key"] = _VALUE_OBS_KEY.value
+    network_factory = functools.partial(network_fn, **network_factory_kwargs)
+  elif hasattr(ppo_params, "network_factory"):
     network_factory = functools.partial(
         network_fn, **ppo_params.network_factory
     )
   else:
     network_factory = network_fn
 
-  if _DOMAIN_RANDOMIZATION.value:
+  if domain_randomization:
     training_params["randomization_fn"] = registry.get_domain_randomizer(
-        _ENV_NAME.value
+        env_name
     )
 
   num_eval_envs = ppo_params.get("num_eval_envs", 128)
@@ -860,19 +1013,19 @@ def main(argv):
     )
   ppo_losses.compute_ppo_loss = functools.partial(
       _compute_ppo_loss_with_mean_action_rate,
-      mean_action_rate_cost=_MEAN_ACTION_RATE_COST.value,
+      mean_action_rate_cost=mean_action_rate_cost,
   )
 
   train_fn = functools.partial(
       ppo.train,
       **training_params,
       network_factory=network_factory,
-      seed=_SEED.value,
+      seed=seed,
       restore_checkpoint_path=restore_checkpoint_path,
       save_checkpoint_path=ckpt_path,
       wrap_env_fn=wrapper.wrap_for_brax_training,
       num_eval_envs=num_eval_envs,
-      vision=_VISION.value,
+      vision=vision,
   )
 
   times = [time.monotonic()]
@@ -903,11 +1056,11 @@ def main(argv):
         )
 
   eval_env_overrides = dict(env_cfg_overrides)
-  if _VISION.value:
+  if vision:
     eval_env_overrides["vision_config.nworld"] = num_eval_envs
   eval_env = registry.load(
-      _ENV_NAME.value,
-      config=registry.get_default_config(_ENV_NAME.value),
+      env_name,
+      config=config_dict.ConfigDict(env_cfg.to_dict()),
       config_overrides=eval_env_overrides,
   )
 
@@ -916,9 +1069,9 @@ def main(argv):
     # Interactive visualisation of policy checkpoints
     from rscope import brax as rscope_utils
 
-    if not _VISION.value:
+    if not vision:
       rscope_env = registry.load(
-          _ENV_NAME.value, config=env_cfg, config_overrides=env_cfg_overrides
+          env_name, config=env_cfg, config_overrides=env_cfg_overrides
       )
       rscope_env = wrapper.wrap_for_brax_training(
           rscope_env,
@@ -932,10 +1085,10 @@ def main(argv):
     rscope_handle = rscope_utils.BraxRolloutSaver(
         rscope_env,
         ppo_params,
-        _VISION.value,
+        vision,
         _RSCOPE_ENVS.value,
         _DETERMINISTIC_RSCOPE.value,
-        jax.random.PRNGKey(_SEED.value),
+        jax.random.PRNGKey(seed),
         rscope_fn,
     )
 
@@ -971,11 +1124,11 @@ def main(argv):
   jit_inference_fn = jax.jit(inference_fn)
 
   infer_env_overrides = dict(env_cfg_overrides)
-  if _VISION.value:
+  if vision:
     infer_env_overrides["vision_config.nworld"] = _NUM_VIDEOS.value
   infer_env = registry.load(
-      _ENV_NAME.value,
-      config=registry.get_default_config(_ENV_NAME.value),
+      env_name,
+      config=config_dict.ConfigDict(env_cfg.to_dict()),
       config_overrides=infer_env_overrides,
   )
 
@@ -986,7 +1139,7 @@ def main(argv):
       action_repeat=ppo_params.get("action_repeat", 1),
   )
 
-  rng = jax.random.split(jax.random.PRNGKey(_SEED.value), _NUM_VIDEOS.value)
+  rng = jax.random.split(jax.random.PRNGKey(seed), _NUM_VIDEOS.value)
   reset_states = jax.jit(wrapped_infer_env.reset)(rng)
 
   empty_data = reset_states.data.__class__(
@@ -1021,7 +1174,7 @@ def main(argv):
     )
     return traj
 
-  traj_stacked = do_rollout(reset_states, jax.random.PRNGKey(_SEED.value + 1))
+  traj_stacked = do_rollout(reset_states, jax.random.PRNGKey(seed + 1))
   # traj_stacked has shape (time, nworld, ...), swap to (nworld, time, ...).
   traj_stacked = jax.tree.map(lambda x: jp.moveaxis(x, 0, 1), traj_stacked)
   trajectories = [None] * _NUM_VIDEOS.value

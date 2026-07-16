@@ -67,6 +67,24 @@ python train_jax_ppo.py \
 Without `--render_videos`, training, checkpointing, and metric logging still
 complete normally.
 
+Each new JAX PPO run saves a versioned `run_config.json` next to its
+checkpoints.  It contains the effective environment and PPO/network
+configuration together with the environment name, implementation, vision and
+randomization settings, seed, auxiliary-loss coefficient, and original
+command.  Loading a checkpoint automatically restores these settings; flags
+provided explicitly on the new command line take precedence.  For example:
+
+```bash
+python learning/train_jax_ppo.py \
+  --play_only \
+  --render_videos \
+  --load_checkpoint_path=logs/260716-go1-action-smoothing-seed1/checkpoints
+```
+
+Older checkpoint directories containing only `config.json` are also supported:
+their environment configuration is restored automatically, while settings not
+present in that legacy file continue to use defaults or explicit flags.
+
 The Go1 joystick environment also provides an optional configurable-order
 high-pass torque penalty. Its scale is zero by default; enable it and choose a
 cutoff in Hz and an order from 1 through 4 with environment overrides:
