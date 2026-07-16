@@ -98,7 +98,7 @@ def default_config() -> config_dict.ConfigDict:
           max_foot_height=0.1,
           torque_highpass_cutoff_hz=5.0,
           torque_highpass_order=1,
-          torque_highpass_difference_order=0,
+          torque_highpass_difference_order=0.0,
           torque_spectrum_cutoffs_hz=(1.0, 2.0, 5.0, 10.0, 15.0, 20.0),
       ),
       pert_config=config_dict.create(
@@ -202,19 +202,27 @@ class Joystick(go1_base.Go1Env):
     )
     if (
         isinstance(difference_order, bool)
-        or not isinstance(difference_order, (int, np.integer))
-        or not 0 <= difference_order <= 4
+        or not isinstance(
+            difference_order, (int, float, np.integer, np.floating)
+        )
+        or not np.isfinite(difference_order)
+        or not 0.0 <= difference_order <= 4.0
     ):
       raise ValueError(
-          "reward_config.torque_highpass_difference_order must be an integer "
+          "reward_config.torque_highpass_difference_order must be a number "
           f"between 0 and 4, got {difference_order}."
       )
-    self._torque_highpass_difference_order = int(difference_order)
+    self._torque_highpass_difference_order = float(difference_order)
+    self._torque_difference_lower_order = int(np.floor(difference_order))
+    self._torque_difference_upper_order = int(np.ceil(difference_order))
+    self._torque_difference_mix = float(
+        difference_order - self._torque_difference_lower_order
+    )
     difference_gain_at_cutoff = 2.0 * np.sin(
         np.pi * cutoff_hz * self.dt
     )
-    self._torque_difference_scale = float(
-        difference_gain_at_cutoff ** (-self._torque_highpass_difference_order)
+    self._torque_difference_scale_base = float(
+        1.0 / difference_gain_at_cutoff
     )
 
     high_freq_scale = self._config.reward_config.scales.torque_high_freq
@@ -301,22 +309,33 @@ class Joystick(go1_base.Go1Env):
       previous_inputs: jax.Array,
       reset: jax.Array,
   ) -> tuple[jax.Array, jax.Array]:
-    """Applies the configured number of consecutive finite differences."""
-    if self._torque_highpass_difference_order == 0:
-      return signal, previous_inputs
-
+    """Returns interpolated adjacent-order energy and updated filter state."""
     differenced = signal
+    normalized_signals = [signal]
     next_inputs = []
-    for difference in range(self._torque_highpass_difference_order):
+    for difference in range(self._torque_difference_upper_order):
       previous_input = jp.where(
           reset, differenced, previous_inputs[difference]
       )
       next_inputs.append(differenced)
       differenced = differenced - previous_input
-    return (
-        differenced * self._torque_difference_scale,
-        jp.stack(next_inputs),
+      normalized_signals.append(
+          differenced * self._torque_difference_scale_base ** (difference + 1)
+      )
+
+    lower_energy = jp.sum(
+        jp.square(normalized_signals[self._torque_difference_lower_order])
     )
+    upper_energy = jp.sum(
+        jp.square(normalized_signals[self._torque_difference_upper_order])
+    )
+    cost = (
+        (1.0 - self._torque_difference_mix) * lower_energy
+        + self._torque_difference_mix * upper_energy
+    )
+    if not next_inputs:
+      return cost, previous_inputs
+    return cost, jp.stack(next_inputs)
 
   def reset(self, rng: jax.Array) -> mjx_env.State:
     qpos = self._init_q
@@ -398,7 +417,7 @@ class Joystick(go1_base.Go1Env):
             self._torque_spectrum_steady_state,
         ),
         "torque_difference_inputs": jp.zeros(
-            (self._torque_highpass_difference_order, self.mjx_model.nu)
+            (self._torque_difference_upper_order, self.mjx_model.nu)
         ),
         "torque_for_spectrum": data.actuator_force,
         "feet_air_time": jp.zeros(4),
@@ -483,7 +502,7 @@ class Joystick(go1_base.Go1Env):
         jp.square(torque_spectrum_highpass), axis=-1
     )
 
-    torque_high_freq_signal, torque_difference_inputs = (
+    torque_high_freq_cost, torque_difference_inputs = (
         self._apply_torque_differences(
             torque_highpass,
             state.info["torque_difference_inputs"],
@@ -499,7 +518,7 @@ class Joystick(go1_base.Go1Env):
         done,
         first_contact,
         contact,
-        torque_high_freq_signal,
+        torque_high_freq_cost,
     )
     rewards = {
         k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
@@ -660,7 +679,7 @@ class Joystick(go1_base.Go1Env):
       done: jax.Array,
       first_contact: jax.Array,
       contact: jax.Array,
-      torque_high_freq_signal: jax.Array,
+      torque_high_freq_cost: jax.Array,
   ) -> dict[str, jax.Array]:
     del metrics  # Unused.
     return {
@@ -677,9 +696,7 @@ class Joystick(go1_base.Go1Env):
         "termination": self._cost_termination(done),
         "pose": self._reward_pose(data.qpos[7:]),
         "torques": self._cost_torques(data.actuator_force),
-        "torque_high_freq": self._cost_torque_high_freq(
-            torque_high_freq_signal
-        ),
+        "torque_high_freq": torque_high_freq_cost,
         "action_rate": self._cost_action_rate(
             action, info["last_act"], info["last_last_act"]
         ),
@@ -734,12 +751,6 @@ class Joystick(go1_base.Go1Env):
   def _cost_torques(self, torques: jax.Array) -> jax.Array:
     # Penalize torques.
     return jp.sqrt(jp.sum(jp.square(torques))) + jp.sum(jp.abs(torques))
-
-  def _cost_torque_high_freq(
-      self, highpass_torques: jax.Array
-  ) -> jax.Array:
-    """Penalizes the configured high-frequency torque signal energy."""
-    return jp.sum(jp.square(highpass_torques))
 
   def _cost_energy(
       self, qvel: jax.Array, qfrc_actuator: jax.Array

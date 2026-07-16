@@ -14,6 +14,23 @@ FILTER_ORDERS = (1, 2, 3, 4)
 DIFFERENCE_ORDERS = (0.0, 0.5, 1.0, 1.5, 2.0)
 
 
+def interpolated_difference_weight(
+    energy_weight: np.ndarray,
+    normalized_difference_weight: np.ndarray,
+    difference_order: float,
+) -> np.ndarray:
+  """Matches the environment's adjacent-integer energy interpolation."""
+  lower_order = np.floor(difference_order)
+  upper_order = np.ceil(difference_order)
+  interpolation = difference_order - lower_order
+  lower_weight = energy_weight * normalized_difference_weight**lower_order
+  upper_weight = energy_weight * normalized_difference_weight**upper_order
+  return (
+      (1.0 - interpolation) * lower_weight
+      + interpolation * upper_weight
+  )
+
+
 def plot_response(cutoff_hz: float, output_path: Path) -> None:
   """Plots both high-pass modes and consecutive-torque differences."""
   frequencies_hz = np.linspace(0.0, SAMPLE_RATE_HZ / 2.0, 2000)
@@ -198,7 +215,9 @@ def plot_difference_order_comparison(
       1, 2, figsize=(14, 5.8), sharex=False, constrained_layout=True
   )
   for difference_order, color in zip(DIFFERENCE_ORDERS, colors):
-    weight = energy_weight * difference_weight**difference_order
+    weight = interpolated_difference_weight(
+        energy_weight, difference_weight, difference_order
+    )
     label = f"m = {difference_order:g}"
     axes[0].plot(
         frequencies_hz,
@@ -239,8 +258,11 @@ def plot_difference_order_comparison(
   visible_frequencies = frequencies_hz <= 20.0
   maximum_visible_weight = max(
       np.max(
-          energy_weight[visible_frequencies]
-          * difference_weight[visible_frequencies] ** difference_order
+          interpolated_difference_weight(
+              energy_weight[visible_frequencies],
+              difference_weight[visible_frequencies],
+              difference_order,
+          )
       )
       for difference_order in DIFFERENCE_ORDERS
   )

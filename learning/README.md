@@ -88,8 +88,9 @@ zero, so the two smoothing penalties are not applied together.
 
 The `torque_highpass_difference_order` parameter, denoted by `m`, controls how
 strongly the penalty grows with frequency after the Butterworth high-pass
-filter. It accepts integers from 0 through 4. The repeated difference is
-normalized at the configured cutoff, giving the squared frequency weighting
+filter. It accepts any finite number from 0 through 4. For integer `m`, the
+repeated difference is normalized at the configured cutoff, giving the squared
+frequency weighting
 
 `|H_HP(f)|^2 [sin(pi f / f_s) / sin(pi f_c / f_s)]^(2m)`.
 
@@ -97,15 +98,20 @@ Consequently, every value of `m` has weight 0.5 at the Butterworth cutoff
 `f_c`. Increasing `m` changes the steepness without moving that shared
 absolute reference point, and weights above the cutoff can grow beyond 1.
 
-`m=0` is the high-pass energy penalty, `m=1` squares its first difference
-(the previous `rate` mode), and higher values repeatedly difference the signal
-for progressively steeper high-frequency weighting. For example, use `m=2`
-with:
+For fractional `m = k + alpha`, the environment linearly interpolates the
+penalty energies at the adjacent integer orders:
+
+`W_m(f) = (1 - alpha) W_k(f) + alpha W_(k+1)(f)`.
+
+This remains causal and preserves the same cutoff weight. `m=0` is the
+high-pass energy penalty, while `m=1` is its first-difference penalty.
+
+For example, use `m=1.5` with:
 
 ```bash
 python train_jax_ppo.py \
   --env_name=Go1JoystickFlatTerrain \
-  --playground_config_overrides='{"reward_config.scales.torque_high_freq": -1e-5, "reward_config.torque_highpass_cutoff_hz": 5.0, "reward_config.torque_highpass_order": 2, "reward_config.torque_highpass_difference_order": 2}'
+  --playground_config_overrides='{"reward_config.scales.torque_high_freq": -1e-5, "reward_config.torque_highpass_cutoff_hz": 5.0, "reward_config.torque_highpass_order": 2, "reward_config.torque_highpass_difference_order": 1.5}'
 ```
 
 Different values of `m` have different numerical scales, so tune
