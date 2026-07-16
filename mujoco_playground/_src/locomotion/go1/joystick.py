@@ -22,6 +22,7 @@ from ml_collections import config_dict
 from mujoco import mjx
 from mujoco.mjx._src import math
 import numpy as np
+from scipy import signal as scipy_signal
 
 from mujoco_playground._src import mjx_env
 from mujoco_playground._src.locomotion.go1 import base as go1_base
@@ -29,6 +30,21 @@ from mujoco_playground._src.locomotion.go1 import go1_constants as consts
 
 
 _TORQUE_SPECTRUM_DIAGNOSTIC_ORDER = 1
+
+
+def _butterworth_highpass_sos(
+    cutoff_hz: float, order: int, sample_rate_hz: float
+) -> tuple[jax.Array, jax.Array]:
+  """Designs a digital Butterworth high-pass filter and its steady state."""
+  sos = scipy_signal.butter(
+      order,
+      cutoff_hz,
+      btype="highpass",
+      fs=sample_rate_hz,
+      output="sos",
+  ).astype(np.float32)
+  steady_state = scipy_signal.sosfilt_zi(sos).astype(np.float32)
+  return jp.asarray(sos), jp.asarray(steady_state)
 
 
 def default_config() -> config_dict.ConfigDict:
@@ -82,6 +98,7 @@ def default_config() -> config_dict.ConfigDict:
           max_foot_height=0.1,
           torque_highpass_cutoff_hz=5.0,
           torque_highpass_order=1,
+          torque_highpass_difference_order=0,
           torque_spectrum_cutoffs_hz=(1.0, 2.0, 5.0, 10.0, 15.0, 20.0),
       ),
       pert_config=config_dict.create(
@@ -162,8 +179,6 @@ class Joystick(go1_base.Go1Env):
           f"the control-rate Nyquist frequency ({nyquist_hz} Hz), got "
           f"{cutoff_hz} Hz."
       )
-    self._torque_lowpass_alpha = jp.exp(-2.0 * jp.pi * cutoff_hz * self.dt)
-
     highpass_order = self._config.reward_config.torque_highpass_order
     if (
         isinstance(highpass_order, bool)
@@ -175,6 +190,32 @@ class Joystick(go1_base.Go1Env):
           f"1 and 4, got {highpass_order}."
       )
     self._torque_highpass_order = int(highpass_order)
+    (
+        self._torque_highpass_sos,
+        self._torque_highpass_steady_state,
+    ) = _butterworth_highpass_sos(
+        cutoff_hz, self._torque_highpass_order, 1.0 / self.dt
+    )
+
+    difference_order = (
+        self._config.reward_config.torque_highpass_difference_order
+    )
+    if (
+        isinstance(difference_order, bool)
+        or not isinstance(difference_order, (int, np.integer))
+        or not 0 <= difference_order <= 4
+    ):
+      raise ValueError(
+          "reward_config.torque_highpass_difference_order must be an integer "
+          f"between 0 and 4, got {difference_order}."
+      )
+    self._torque_highpass_difference_order = int(difference_order)
+    difference_gain_at_cutoff = 2.0 * np.sin(
+        np.pi * cutoff_hz * self.dt
+    )
+    self._torque_difference_scale = float(
+        difference_gain_at_cutoff ** (-self._torque_highpass_difference_order)
+    )
 
     high_freq_scale = self._config.reward_config.scales.torque_high_freq
     if high_freq_scale > 0.0:
@@ -196,8 +237,19 @@ class Joystick(go1_base.Go1Env):
           "All reward_config.torque_spectrum_cutoffs_hz values must be "
           f"between 0 and {nyquist_hz} Hz, got {spectrum_cutoffs_hz}."
       )
-    self._torque_spectrum_alphas = jp.exp(
-        -2.0 * jp.pi * jp.array(spectrum_cutoffs_hz) * self.dt
+    spectrum_filters = [
+        _butterworth_highpass_sos(
+            cutoff,
+            _TORQUE_SPECTRUM_DIAGNOSTIC_ORDER,
+            1.0 / self.dt,
+        )
+        for cutoff in spectrum_cutoffs_hz
+    ]
+    self._torque_spectrum_sos = jp.stack(
+        [filter_sos for filter_sos, _ in spectrum_filters]
+    )
+    self._torque_spectrum_steady_state = jp.stack(
+        [steady_state for _, steady_state in spectrum_filters]
     )
     self._torque_spectrum_metric_names = tuple(
         f"torque_spectrum/highpass_{cutoff:g}hz_per_step"
@@ -205,38 +257,66 @@ class Joystick(go1_base.Go1Env):
     )
 
   def _initial_highpass_state(
-      self, signal: jax.Array, order: int
+      self, signal: jax.Array, steady_state: jax.Array
   ) -> jax.Array:
-    """Returns cascade state that initially produces zero filter output."""
-    state_shape = (
-        *signal.shape[:-1],
-        order,
-        signal.shape[-1],
-    )
-    return jp.zeros(state_shape, dtype=signal.dtype).at[..., 0, :].set(signal)
+    """Returns filter state that initially produces zero high-pass output."""
+    return steady_state[..., None] * signal[..., None, None, :]
 
   def _apply_highpass_filter(
       self,
       signal: jax.Array,
-      previous_lowpass: jax.Array,
-      alpha: jax.Array,
+      previous_state: jax.Array,
+      sos: jax.Array,
+      steady_state: jax.Array,
       reset: jax.Array,
-      order: int,
   ) -> tuple[jax.Array, jax.Array]:
-    """Applies cascaded one-pole high-pass sections to the input signal."""
+    """Applies a Butterworth SOS filter in direct-form II transposed form."""
+    initial_state = self._initial_highpass_state(signal, steady_state)
+    previous_state = jp.where(reset, initial_state, previous_state)
     filtered = signal
-    lowpass_states = []
-    alpha = jp.asarray(alpha)[..., None]
-    for stage in range(order):
-      previous_stage_lowpass = jp.where(
-          reset, filtered, previous_lowpass[..., stage, :]
+    next_states = []
+    for section in range(sos.shape[-2]):
+      coefficients = sos[..., section, :]
+      section_state = previous_state[..., section, :, :]
+      output = (
+          coefficients[..., 0, None] * filtered
+          + section_state[..., 0, :]
       )
-      stage_lowpass = (
-          alpha * previous_stage_lowpass + (1.0 - alpha) * filtered
+      state_0 = (
+          coefficients[..., 1, None] * filtered
+          - coefficients[..., 4, None] * output
+          + section_state[..., 1, :]
       )
-      filtered = filtered - stage_lowpass
-      lowpass_states.append(stage_lowpass)
-    return filtered, jp.stack(lowpass_states, axis=-2)
+      state_1 = (
+          coefficients[..., 2, None] * filtered
+          - coefficients[..., 5, None] * output
+      )
+      filtered = output
+      next_states.append(jp.stack((state_0, state_1), axis=-2))
+    return filtered, jp.stack(next_states, axis=-3)
+
+  def _apply_torque_differences(
+      self,
+      signal: jax.Array,
+      previous_inputs: jax.Array,
+      reset: jax.Array,
+  ) -> tuple[jax.Array, jax.Array]:
+    """Applies the configured number of consecutive finite differences."""
+    if self._torque_highpass_difference_order == 0:
+      return signal, previous_inputs
+
+    differenced = signal
+    next_inputs = []
+    for difference in range(self._torque_highpass_difference_order):
+      previous_input = jp.where(
+          reset, differenced, previous_inputs[difference]
+      )
+      next_inputs.append(differenced)
+      differenced = differenced - previous_input
+    return (
+        differenced * self._torque_difference_scale,
+        jp.stack(next_inputs),
+    )
 
   def reset(self, rng: jax.Array) -> mjx_env.State:
     qpos = self._init_q
@@ -307,15 +387,18 @@ class Joystick(go1_base.Go1Env):
         "steps_until_next_cmd": steps_until_next_cmd,
         "last_act": jp.zeros(self.mjx_model.nu),
         "last_last_act": jp.zeros(self.mjx_model.nu),
-        "torque_lowpass": self._initial_highpass_state(
-            data.actuator_force, self._torque_highpass_order
+        "torque_highpass_state": self._initial_highpass_state(
+            data.actuator_force, self._torque_highpass_steady_state
         ),
-        "torque_spectrum_lowpass": self._initial_highpass_state(
+        "torque_spectrum_filter_state": self._initial_highpass_state(
             jp.broadcast_to(
                 data.actuator_force,
                 (len(self._torque_spectrum_metric_names), self.mjx_model.nu),
             ),
-            _TORQUE_SPECTRUM_DIAGNOSTIC_ORDER,
+            self._torque_spectrum_steady_state,
+        ),
+        "torque_difference_inputs": jp.zeros(
+            (self._torque_highpass_difference_order, self.mjx_model.nu)
         ),
         "torque_for_spectrum": data.actuator_force,
         "feet_air_time": jp.zeros(4),
@@ -376,27 +459,36 @@ class Joystick(go1_base.Go1Env):
     obs = self._get_obs(data, state.info)
     done = self._get_termination(data)
 
-    torque_highpass, torque_lowpass = self._apply_highpass_filter(
+    episode_reset = state.info.get("episode_done", False)
+    torque_highpass, torque_highpass_state = self._apply_highpass_filter(
         data.actuator_force,
-        state.info["torque_lowpass"],
-        self._torque_lowpass_alpha,
-        state.info.get("episode_done", False),
-        self._torque_highpass_order,
+        state.info["torque_highpass_state"],
+        self._torque_highpass_sos,
+        self._torque_highpass_steady_state,
+        episode_reset,
     )
-    torque_spectrum_highpass, torque_spectrum_lowpass = (
+    torque_spectrum_highpass, torque_spectrum_filter_state = (
         self._apply_highpass_filter(
             jp.broadcast_to(
                 data.actuator_force,
                 (len(self._torque_spectrum_metric_names), self.mjx_model.nu),
             ),
-            state.info["torque_spectrum_lowpass"],
-            self._torque_spectrum_alphas,
-            state.info.get("episode_done", False),
-            _TORQUE_SPECTRUM_DIAGNOSTIC_ORDER,
+            state.info["torque_spectrum_filter_state"],
+            self._torque_spectrum_sos,
+            self._torque_spectrum_steady_state,
+            episode_reset,
         )
     )
     torque_spectrum_energy = jp.sum(
         jp.square(torque_spectrum_highpass), axis=-1
+    )
+
+    torque_high_freq_signal, torque_difference_inputs = (
+        self._apply_torque_differences(
+            torque_highpass,
+            state.info["torque_difference_inputs"],
+            episode_reset,
+        )
     )
 
     rewards = self._get_reward(
@@ -407,7 +499,7 @@ class Joystick(go1_base.Go1Env):
         done,
         first_contact,
         contact,
-        torque_highpass,
+        torque_high_freq_signal,
     )
     rewards = {
         k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
@@ -431,8 +523,11 @@ class Joystick(go1_base.Go1Env):
 
     state.info["last_last_act"] = state.info["last_act"]
     state.info["last_act"] = action
-    state.info["torque_lowpass"] = torque_lowpass
-    state.info["torque_spectrum_lowpass"] = torque_spectrum_lowpass
+    state.info["torque_highpass_state"] = torque_highpass_state
+    state.info["torque_spectrum_filter_state"] = (
+        torque_spectrum_filter_state
+    )
+    state.info["torque_difference_inputs"] = torque_difference_inputs
     state.info["torque_for_spectrum"] = data.actuator_force
     state.info["steps_until_next_cmd"] -= 1
     state.info["rng"], key1, key2 = jax.random.split(state.info["rng"], 3)
@@ -565,7 +660,7 @@ class Joystick(go1_base.Go1Env):
       done: jax.Array,
       first_contact: jax.Array,
       contact: jax.Array,
-      torque_highpass: jax.Array,
+      torque_high_freq_signal: jax.Array,
   ) -> dict[str, jax.Array]:
     del metrics  # Unused.
     return {
@@ -582,7 +677,9 @@ class Joystick(go1_base.Go1Env):
         "termination": self._cost_termination(done),
         "pose": self._reward_pose(data.qpos[7:]),
         "torques": self._cost_torques(data.actuator_force),
-        "torque_high_freq": self._cost_torque_high_freq(torque_highpass),
+        "torque_high_freq": self._cost_torque_high_freq(
+            torque_high_freq_signal
+        ),
         "action_rate": self._cost_action_rate(
             action, info["last_act"], info["last_last_act"]
         ),
@@ -641,7 +738,7 @@ class Joystick(go1_base.Go1Env):
   def _cost_torque_high_freq(
       self, highpass_torques: jax.Array
   ) -> jax.Array:
-    """Penalizes torque energy above the configured cutoff frequency."""
+    """Penalizes the configured high-frequency torque signal energy."""
     return jp.sum(jp.square(highpass_torques))
 
   def _cost_energy(
