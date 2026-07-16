@@ -65,6 +65,35 @@ python train_jax_ppo.py \
 Without `--render_videos`, training, checkpointing, and metric logging still
 complete normally.
 
+The Go1 joystick environment also provides an optional configurable-order
+high-pass torque penalty. Its scale is zero by default; enable it and choose a
+cutoff in Hz and an order from 1 through 4 with environment overrides:
+
+```bash
+python train_jax_ppo.py \
+  --env_name=Go1JoystickFlatTerrain \
+  --playground_config_overrides='{"reward_config.scales.torque_high_freq": -1e-5, "reward_config.torque_highpass_cutoff_hz": 5.0, "reward_config.torque_highpass_order": 2}'
+```
+
+The filter samples actuator torque at the 50 Hz control rate, so the cutoff
+must be greater than 0 and less than the 25 Hz Nyquist frequency. Order 1 is
+the default and preserves the original behavior; higher orders cascade the
+same high-pass section for a steeper roll-off. The resulting component is
+logged as `reward/torque_high_freq`. Enabling this penalty with a negative
+scale automatically sets the sampled-action `action_rate` scale to zero, so
+the two smoothing penalties are not applied together.
+
+Training and evaluation also log `total_without_regularization`, which excludes
+both the `action_rate` and `torque_high_freq` reward terms. This provides a
+common task-reward metric for comparing either smoothing method. The existing
+`total_without_action_rate` metric remains available separately.
+
+Unscaled high-pass torque energies are always logged at 1, 2, 5, 10, 15, and
+20 Hz, together with total torque energy, under the `torque_spectrum` W&B
+section. These diagnostics are active for baseline, action-rate, and high-pass
+penalty runs, allowing their torque-frequency profiles to be compared without
+reward-scale effects. They use the configured `torque_highpass_order` as well.
+
 ## Training with RSL-RL
 
 To train with RSL-RL, you can use the `train_rsl_rl.py` script. This script uses the RSL-RL algorithm to train an agent on a given environment.

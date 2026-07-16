@@ -395,6 +395,10 @@ def _wandb_metric_name(name: str) -> str:
       return "train_reward_means/total_without_action_rate"
     if metric == "reward_without_action_rate_std":
       return "train_reward_stds/total_without_action_rate"
+    if metric == "reward_without_regularization":
+      return "train_reward_means/total_without_regularization"
+    if metric == "reward_without_regularization_std":
+      return "train_reward_stds/total_without_regularization"
     if metric.startswith("torque_spectrum/"):
       return f"torque_spectrum/train/{metric.removeprefix('torque_spectrum/')}"
     if metric.startswith("reward/"):
@@ -420,6 +424,10 @@ def _wandb_metric_name(name: str) -> str:
       return "eval_reward_means/total_without_action_rate"
     if metric == "_without_action_rate_std":
       return "eval_reward_stds/total_without_action_rate"
+    if metric == "_without_regularization":
+      return "eval_reward_means/total_without_regularization"
+    if metric == "_without_regularization_std":
+      return "eval_reward_stds/total_without_regularization"
     reward_name = metric.removeprefix("/")
     if reward_name.endswith("_std"):
       return f"eval_reward_stds/{reward_name.removesuffix('_std')}"

@@ -278,6 +278,7 @@ class Joystick(go1_base.Go1Env):
     for k in self._config.reward_config.scales.keys():
       metrics[f"reward/{k}"] = jp.zeros(())
     metrics["reward_without_action_rate"] = jp.zeros(())
+    metrics["reward_without_regularization"] = jp.zeros(())
     metrics["torque_spectrum/total_energy_per_step"] = jp.zeros(())
     for metric_name in self._torque_spectrum_metric_names:
       metrics[metric_name] = jp.zeros(())
@@ -367,6 +368,16 @@ class Joystick(go1_base.Go1Env):
         0.0,
         10000.0,
     )
+    reward_without_regularization = jp.clip(
+        sum(
+            v
+            for k, v in rewards.items()
+            if k not in ("action_rate", "torque_high_freq")
+        )
+        * self.dt,
+        0.0,
+        10000.0,
+    )
 
     state.info["last_last_act"] = state.info["last_act"]
     state.info["last_act"] = action
@@ -390,6 +401,9 @@ class Joystick(go1_base.Go1Env):
     for k, v in rewards.items():
       state.metrics[f"reward/{k}"] = v
     state.metrics["reward_without_action_rate"] = reward_without_action_rate
+    state.metrics["reward_without_regularization"] = (
+        reward_without_regularization
+    )
     state.metrics["torque_spectrum/total_energy_per_step"] = jp.sum(
         jp.square(data.actuator_force)
     )
