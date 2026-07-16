@@ -78,6 +78,7 @@ def default_config() -> config_dict.ConfigDict:
           tracking_sigma=0.25,
           max_foot_height=0.1,
           torque_highpass_cutoff_hz=5.0,
+          torque_highpass_order=1,
           torque_spectrum_cutoffs_hz=(1.0, 2.0, 5.0, 10.0, 15.0, 20.0),
       ),
       pert_config=config_dict.create(
@@ -160,6 +161,18 @@ class Joystick(go1_base.Go1Env):
       )
     self._torque_lowpass_alpha = jp.exp(-2.0 * jp.pi * cutoff_hz * self.dt)
 
+    highpass_order = self._config.reward_config.torque_highpass_order
+    if (
+        isinstance(highpass_order, bool)
+        or not isinstance(highpass_order, (int, np.integer))
+        or not 1 <= highpass_order <= 4
+    ):
+      raise ValueError(
+          "reward_config.torque_highpass_order must be an integer between "
+          f"1 and 4, got {highpass_order}."
+      )
+    self._torque_highpass_order = int(highpass_order)
+
     high_freq_scale = self._config.reward_config.scales.torque_high_freq
     if high_freq_scale > 0.0:
       raise ValueError(
@@ -187,6 +200,37 @@ class Joystick(go1_base.Go1Env):
         f"torque_spectrum/highpass_{cutoff:g}hz_per_step"
         for cutoff in spectrum_cutoffs_hz
     )
+
+  def _initial_highpass_state(self, signal: jax.Array) -> jax.Array:
+    """Returns cascade state that initially produces zero filter output."""
+    state_shape = (
+        *signal.shape[:-1],
+        self._torque_highpass_order,
+        signal.shape[-1],
+    )
+    return jp.zeros(state_shape, dtype=signal.dtype).at[..., 0, :].set(signal)
+
+  def _apply_highpass_filter(
+      self,
+      signal: jax.Array,
+      previous_lowpass: jax.Array,
+      alpha: jax.Array,
+      reset: jax.Array,
+  ) -> tuple[jax.Array, jax.Array]:
+    """Applies cascaded one-pole high-pass sections to the input signal."""
+    filtered = signal
+    lowpass_states = []
+    alpha = jp.asarray(alpha)[..., None]
+    for stage in range(self._torque_highpass_order):
+      previous_stage_lowpass = jp.where(
+          reset, filtered, previous_lowpass[..., stage, :]
+      )
+      stage_lowpass = (
+          alpha * previous_stage_lowpass + (1.0 - alpha) * filtered
+      )
+      filtered = filtered - stage_lowpass
+      lowpass_states.append(stage_lowpass)
+    return filtered, jp.stack(lowpass_states, axis=-2)
 
   def reset(self, rng: jax.Array) -> mjx_env.State:
     qpos = self._init_q
@@ -257,10 +301,12 @@ class Joystick(go1_base.Go1Env):
         "steps_until_next_cmd": steps_until_next_cmd,
         "last_act": jp.zeros(self.mjx_model.nu),
         "last_last_act": jp.zeros(self.mjx_model.nu),
-        "torque_lowpass": data.actuator_force,
-        "torque_spectrum_lowpass": jp.broadcast_to(
-            data.actuator_force,
-            (len(self._torque_spectrum_metric_names), self.mjx_model.nu),
+        "torque_lowpass": self._initial_highpass_state(data.actuator_force),
+        "torque_spectrum_lowpass": self._initial_highpass_state(
+            jp.broadcast_to(
+                data.actuator_force,
+                (len(self._torque_spectrum_metric_names), self.mjx_model.nu),
+            )
         ),
         "feet_air_time": jp.zeros(4),
         "last_contact": jp.zeros(4, dtype=bool),
@@ -320,30 +366,22 @@ class Joystick(go1_base.Go1Env):
     obs = self._get_obs(data, state.info)
     done = self._get_termination(data)
 
-    previous_torque_lowpass = jp.where(
-        state.info.get("episode_done", False),
+    torque_highpass, torque_lowpass = self._apply_highpass_filter(
         data.actuator_force,
         state.info["torque_lowpass"],
-    )
-    torque_lowpass = (
-        self._torque_lowpass_alpha * previous_torque_lowpass
-        + (1.0 - self._torque_lowpass_alpha) * data.actuator_force
-    )
-    torque_highpass = data.actuator_force - torque_lowpass
-
-    torque_spectrum_previous_lowpass = jp.where(
+        self._torque_lowpass_alpha,
         state.info.get("episode_done", False),
-        data.actuator_force[None, :],
-        state.info["torque_spectrum_lowpass"],
     )
-    torque_spectrum_lowpass = (
-        self._torque_spectrum_alphas[:, None]
-        * torque_spectrum_previous_lowpass
-        + (1.0 - self._torque_spectrum_alphas[:, None])
-        * data.actuator_force[None, :]
-    )
-    torque_spectrum_highpass = (
-        data.actuator_force[None, :] - torque_spectrum_lowpass
+    torque_spectrum_highpass, torque_spectrum_lowpass = (
+        self._apply_highpass_filter(
+            jp.broadcast_to(
+                data.actuator_force,
+                (len(self._torque_spectrum_metric_names), self.mjx_model.nu),
+            ),
+            state.info["torque_spectrum_lowpass"],
+            self._torque_spectrum_alphas,
+            state.info.get("episode_done", False),
+        )
     )
     torque_spectrum_energy = jp.sum(
         jp.square(torque_spectrum_highpass), axis=-1
