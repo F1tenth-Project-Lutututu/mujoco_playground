@@ -25,6 +25,28 @@ from learning import train_jax_ppo
 
 class RunConfigTest(absltest.TestCase):
 
+  def test_merge_saved_config_fills_new_nested_defaults(self):
+    defaults = {
+        "impl": "warp",
+        "reward_config": {
+            "new_field": 3.0,
+            "scales": {"action_rate": -0.01, "new_reward": 0.0},
+        },
+    }
+    saved = {
+        "impl": "jax",
+        "reward_config": {"scales": {"action_rate": -0.02}},
+    }
+
+    merged = train_jax_ppo._merge_saved_config(defaults, saved)
+
+    self.assertEqual(merged["impl"], "jax")
+    self.assertEqual(merged["reward_config"]["new_field"], 3.0)
+    self.assertEqual(
+        merged["reward_config"]["scales"],
+        {"action_rate": -0.02, "new_reward": 0.0},
+    )
+
   def test_resolve_checkpoint_path_selects_latest_numeric_directory(self):
     root = epath.Path(self.create_tempdir().full_path)
     (root / "000000000010").mkdir()

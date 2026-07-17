@@ -85,9 +85,72 @@ Older checkpoint directories containing only `config.json` are also supported:
 their environment configuration is restored automatically, while settings not
 present in that legacy file continue to use defaults or explicit flags.
 
+### Reproducible policy evaluation
+
+Use the constant-command evaluator to compare policies with matched reset
+seeds and scenarios. It records per-rollout CSV files and aggregate JSON/CSV
+reports, with optional videos and compressed raw signals (`signals.npz`):
+
+```bash
+python learning/evaluate_policy.py \
+  --checkpoint=eagle/260716-go1-newhf1em6-f5o2m30-seed0/checkpoints \
+  --env_name=Go1JoystickFlatTerrain \
+  --num_rollouts=8
+```
+
+Evaluation requires a CUDA-backed JAX device by default and fails rather than
+silently falling back to CPU. Install the `cuda` extra and verify that
+`jax.devices()` lists a GPU. Video rendering and full `signals.npz` trajectory
+archives are disabled by default; enable them explicitly with `--render_video`
+or `--save_signals` when needed.
+
+`--env_name` is only needed for older checkpoints that predate
+`run_config.json`. The default suite tests standing, forward and backward
+motion, lateral motion, turning, and a combined command. Supply a custom suite
+as JSON when needed:
+
+```bash
+python learning/evaluate_policy.py \
+  --checkpoint=<checkpoints-or-specific-checkpoint> \
+  --commands='{"slow": [0.3, 0, 0], "fast_turn": [0.8, 0, 1.0]}'
+```
+
+For fair comparisons, use the same command JSON, rollout count, episode length,
+and seed for every policy. The primary task score is
+`eval_reward_means/total_without_regularization`; unlike total reward, it does
+not favor either an action-rate or high-pass regularizer. Physical tracking
+RMSE, fall rate, action differences, torque differences, mechanical energy,
+and order-independent FFT energy above fixed cutoffs provide complementary
+measurements. Add `--use_wandb` to upload the summary and output directory as a
+W&B evaluation artifact.
+
+To evaluate the latest checkpoint of every model directory under `./eagle` on
+the same random tasks, configure the constants at the top of the batch script
+and run:
+
+```bash
+python learning/evaluate_all_models.py
+```
+
+Successful results are cached. On later runs, the script skips models whose
+checkpoint, evaluation settings, evaluator/environment code, and locked
+dependencies are unchanged. Set `REUSE_UNCHANGED_RESULTS = False` to force a
+complete reevaluation.
+
+The batch evaluator runs all models in one Python process, avoiding repeated
+Python startup and allowing JAX compilation caches to remain available between
+models. Its progress bar reports completed models, elapsed time, processing
+rate, and estimated remaining time; cached models are excluded from the ETA.
+For fair tasks and compilation reuse, the batch uses one common default
+environment configuration. Checkpoint weights are dynamic inputs to the jitted
+rollout, so compatible models reuse the first compiled executable. Set
+`USE_SAVED_ENVIRONMENT_CONFIG = True` only when reproducing each model's
+training environment is more important than common-task evaluation and maximal
+compilation reuse.
+
 The Go1 joystick environment also provides an optional configurable-order
 high-pass torque penalty. Its scale is zero by default; enable it and choose a
-cutoff in Hz and an order from 1 through 4 with environment overrides:
+cutoff in Hz and an order from 1 through 8 with environment overrides:
 
 ```bash
 python train_jax_ppo.py \
@@ -97,7 +160,7 @@ python train_jax_ppo.py \
 
 The filter samples actuator torque at the 50 Hz control rate, so the cutoff
 must be greater than 0 and less than the 25 Hz Nyquist frequency. Order 1 is
-the default. Orders 1 through 4 use a proper digital Butterworth high-pass
+the default. Orders 1 through 8 use a proper digital Butterworth high-pass
 filter represented as numerically stable second-order sections, so the
 configured cutoff remains the -3 dB point for every order. The resulting
 component is logged as `reward/torque_high_freq`. Enabling this penalty with a
@@ -106,7 +169,7 @@ zero, so the two smoothing penalties are not applied together.
 
 The `torque_highpass_difference_order` parameter, denoted by `m`, controls how
 strongly the penalty grows with frequency after the Butterworth high-pass
-filter. It accepts any finite number from 0 through 4. For integer `m`, the
+filter. It accepts any finite number from 0 through 8. For integer `m`, the
 repeated difference is normalized at the configured cutoff, giving the squared
 frequency weighting
 
@@ -150,6 +213,46 @@ computed from the complete torque rollout with a real FFT. These report the
 mean torque energy above each cutoff using a common, order-independent
 measurement. Torque-energy standard deviations are intentionally omitted;
 reward and other episode metrics continue to include their standard deviations.
+
+Action, motor-target, and torque smoothness reports also include Mean Squared
+Second Derivative (MSSD), implemented as the mean squared discrete second
+difference per degree of freedom, and Mean Savitzky-Golay Filter Deviation
+(MSGFD), implemented as the mean absolute deviation from a Savitzky-Golay
+smoothed signal. MSGFD uses an 11-sample, order-3 filter by default; customize
+it with `--savgol_window_length` and `--savgol_polyorder`. Both settings are
+stored in evaluation metadata. The visual comparison includes action MSSD and
+MSGFD panels by default.
+
+The evaluator also reports physical totals and tracking diagnostics used by the
+comparison plots: absolute mechanical energy in joules, integrated absolute
+actuator torque in N·m·s, RMS body-orientation error in degrees, RMS roll/pitch
+angular velocity in rad/s, and mean absolute swing-peak foot-height error in
+millimetres. Foot height is measured for completed swings at touchdown against
+the environment's configured `max_foot_height`; that target is saved in report
+metadata.
+
+Configure `METHODS`, `METRICS`, and the other uppercase constants at the top of
+`compare_policy_evaluations.py`, then compare the evaluations with:
+
+```bash
+python learning/compare_policy_evaluations.py
+```
+
+The figure contains one grouped-bar panel for each primary comparison metric,
+with matched command scenarios and rollout standard-deviation error bars. The
+plotted data is also saved to `evaluation_comparison.csv`. Set `SHOW = True` to
+open an interactive window in addition to saving the image.
+
+For random-task evaluations, the script additionally writes
+`evaluation_comparison_paired.png` and `.csv`. This report subtracts the
+configured `PAIRED_REFERENCE` result from every other method on each matched
+task. Its boxplots therefore show within-task method differences without
+between-task difficulty inflating the variability. Individual translucent
+points are task differences, boxes show their distribution, and black diamonds
+show the paired mean with a 95% confidence interval. Positive deltas mean the
+method has a larger metric value than the reference; whether that is desirable
+depends on the metric (positive is better for reward, but negative is better
+for errors and smoothness costs).
 
 ## Training with RSL-RL
 

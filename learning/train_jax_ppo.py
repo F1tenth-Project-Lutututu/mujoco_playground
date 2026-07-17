@@ -291,6 +291,22 @@ def _saved_or_flag(run_config: Optional[dict], name: str, flag):
   return run_config[name]
 
 
+def _merge_saved_config(default_config: dict, saved_config: dict) -> dict:
+  """Overlays saved values while retaining fields added to today's schema."""
+  merged = {}
+  for key in default_config.keys() | saved_config.keys():
+    default_value = default_config.get(key)
+    if key not in saved_config:
+      merged[key] = default_value
+      continue
+    saved_value = saved_config[key]
+    if isinstance(default_value, dict) and isinstance(saved_value, dict):
+      merged[key] = _merge_saved_config(default_value, saved_value)
+    else:
+      merged[key] = saved_value
+  return merged
+
+
 def _load_checkpoint_network_config(
     config_path: epath.Path,
 ) -> config_dict.ConfigDict:
@@ -752,15 +768,21 @@ def main(argv):
       run_config, "mean_action_rate_cost", _MEAN_ACTION_RATE_COST
   )
 
+  default_env_cfg = registry.get_default_config(env_name)
   if run_config and "environment_config" in run_config:
-    env_cfg = config_dict.ConfigDict(run_config["environment_config"])
+    env_cfg = config_dict.ConfigDict(_merge_saved_config(
+        default_env_cfg.to_dict(), run_config["environment_config"]
+    ))
   else:
-    env_cfg = registry.get_default_config(env_name)
+    env_cfg = default_env_cfg
 
+  default_ppo_params = get_rl_config(env_name, vision, impl)
   if run_config and "ppo_config" in run_config:
-    ppo_params = config_dict.ConfigDict(run_config["ppo_config"])
+    ppo_params = config_dict.ConfigDict(_merge_saved_config(
+        default_ppo_params.to_dict(), run_config["ppo_config"]
+    ))
   else:
-    ppo_params = get_rl_config(env_name, vision, impl)
+    ppo_params = default_ppo_params
 
   checkpoint_network_config = None
   if restore_checkpoint_path is not None:

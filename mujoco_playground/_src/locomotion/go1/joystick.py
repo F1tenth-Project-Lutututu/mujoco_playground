@@ -30,6 +30,8 @@ from mujoco_playground._src.locomotion.go1 import go1_constants as consts
 
 
 _TORQUE_SPECTRUM_DIAGNOSTIC_ORDER = 1
+_MAX_TORQUE_HIGHPASS_ORDER = 8
+_MAX_TORQUE_DIFFERENCE_ORDER = 8.0
 
 
 def _butterworth_highpass_sos(
@@ -45,6 +47,33 @@ def _butterworth_highpass_sos(
   ).astype(np.float32)
   steady_state = scipy_signal.sosfilt_zi(sos).astype(np.float32)
   return jp.asarray(sos), jp.asarray(steady_state)
+
+
+def _validate_torque_highpass_order(value: Any) -> int:
+  if (
+      isinstance(value, bool)
+      or not isinstance(value, (int, np.integer))
+      or not 1 <= value <= _MAX_TORQUE_HIGHPASS_ORDER
+  ):
+    raise ValueError(
+        "reward_config.torque_highpass_order must be an integer between "
+        f"1 and {_MAX_TORQUE_HIGHPASS_ORDER}, got {value}."
+    )
+  return int(value)
+
+
+def _validate_torque_difference_order(value: Any) -> float:
+  if (
+      isinstance(value, bool)
+      or not isinstance(value, (int, float, np.integer, np.floating))
+      or not np.isfinite(value)
+      or not 0.0 <= value <= _MAX_TORQUE_DIFFERENCE_ORDER
+  ):
+    raise ValueError(
+        "reward_config.torque_highpass_difference_order must be a number "
+        f"between 0 and {_MAX_TORQUE_DIFFERENCE_ORDER:g}, got {value}."
+    )
+  return float(value)
 
 
 def default_config() -> config_dict.ConfigDict:
@@ -179,17 +208,9 @@ class Joystick(go1_base.Go1Env):
           f"the control-rate Nyquist frequency ({nyquist_hz} Hz), got "
           f"{cutoff_hz} Hz."
       )
-    highpass_order = self._config.reward_config.torque_highpass_order
-    if (
-        isinstance(highpass_order, bool)
-        or not isinstance(highpass_order, (int, np.integer))
-        or not 1 <= highpass_order <= 4
-    ):
-      raise ValueError(
-          "reward_config.torque_highpass_order must be an integer between "
-          f"1 and 4, got {highpass_order}."
-      )
-    self._torque_highpass_order = int(highpass_order)
+    self._torque_highpass_order = _validate_torque_highpass_order(
+        self._config.reward_config.torque_highpass_order
+    )
     (
         self._torque_highpass_sos,
         self._torque_highpass_steady_state,
@@ -197,22 +218,12 @@ class Joystick(go1_base.Go1Env):
         cutoff_hz, self._torque_highpass_order, 1.0 / self.dt
     )
 
-    difference_order = (
-        self._config.reward_config.torque_highpass_difference_order
-    )
-    if (
-        isinstance(difference_order, bool)
-        or not isinstance(
-            difference_order, (int, float, np.integer, np.floating)
+    self._torque_highpass_difference_order = (
+        _validate_torque_difference_order(
+            self._config.reward_config.torque_highpass_difference_order
         )
-        or not np.isfinite(difference_order)
-        or not 0.0 <= difference_order <= 4.0
-    ):
-      raise ValueError(
-          "reward_config.torque_highpass_difference_order must be a number "
-          f"between 0 and 4, got {difference_order}."
-      )
-    self._torque_highpass_difference_order = float(difference_order)
+    )
+    difference_order = self._torque_highpass_difference_order
     self._torque_difference_lower_order = int(np.floor(difference_order))
     self._torque_difference_upper_order = int(np.ceil(difference_order))
     self._torque_difference_mix = float(
