@@ -217,6 +217,18 @@ _RUN_CONFIG_FILENAME = "run_config.json"
 _RUN_CONFIG_VERSION = 1
 
 
+def _run_logdir(
+    base_logdir: Optional[str], env_name: str, run_name: str
+) -> epath.Path:
+  """Returns the environment-scoped directory for a training run."""
+  return epath.Path(base_logdir or "logs").resolve() / env_name / run_name
+
+
+def _wandb_project_name(env_name: str) -> str:
+  """Returns the environment-scoped W&B project name."""
+  return f"spectral_playground_highpass_{env_name}"
+
+
 def _resolve_checkpoint_path(
     checkpoint_path: Optional[str],
 ) -> Optional[epath.Path]:
@@ -890,7 +902,7 @@ def main(argv):
   print(f"Run name: {run_name}")
 
   # Set up logging directory
-  logdir = epath.Path(_LOGDIR.value or "logs").resolve() / run_name
+  logdir = _run_logdir(_LOGDIR.value, env_name, run_name)
   logdir.mkdir(parents=True, exist_ok=True)
   print(f"Logs are being stored in: {logdir}")
 
@@ -904,7 +916,7 @@ def main(argv):
     reward_scales = env_cfg.get("reward_config", {}).get("scales", {})
     environment_action_rate_scale = reward_scales.get("action_rate")
     wandb.init(
-        project="spectral_playground_highpass",
+        project=_wandb_project_name(env_name),
         group=wandb_group,
         name=run_name,
         config={

@@ -25,6 +25,26 @@ from learning import train_jax_ppo
 
 class RunConfigTest(absltest.TestCase):
 
+  def test_run_logdir_has_environment_parent(self):
+    root = self.create_tempdir().full_path
+
+    logdir = train_jax_ppo._run_logdir(
+        root, "Go1JoystickFlatTerrain", "260717-experiment-seed0"
+    )
+
+    self.assertEqual(
+        logdir,
+        epath.Path(root).resolve()
+        / "Go1JoystickFlatTerrain"
+        / "260717-experiment-seed0",
+    )
+
+  def test_wandb_project_name_includes_environment(self):
+    self.assertEqual(
+        train_jax_ppo._wandb_project_name("Go1JoystickFlatTerrain"),
+        "spectral_playground_highpass_Go1JoystickFlatTerrain",
+    )
+
   def test_merge_saved_config_fills_new_nested_defaults(self):
     defaults = {
         "impl": "warp",

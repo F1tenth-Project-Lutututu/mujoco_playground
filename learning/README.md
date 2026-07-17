@@ -49,10 +49,13 @@ python train_jax_ppo.py \
   --seed=1
 ```
 
-This creates group `go1-action-smoothing` and a run such as
-`260716-go1-action-smoothing-seed1`. Models are saved under the same name in
-`logs/260716-go1-action-smoothing-seed1/checkpoints`, making the local
-checkpoints easy to match to their W&B run.
+This creates project
+`spectral_playground_highpass_Go1JoystickFlatTerrain`, group
+`go1-action-smoothing`, and a run such as
+`260716-go1-action-smoothing-seed1`. Models are saved under the environment
+and run names in
+`logs/Go1JoystickFlatTerrain/260716-go1-action-smoothing-seed1/checkpoints`,
+making the local checkpoints easy to match to their W&B run.
 
 Post-training rollout rendering is disabled by default so training works on
 headless cluster nodes without an OpenGL backend. Enable it explicitly on a
@@ -78,7 +81,8 @@ provided explicitly on the new command line take precedence.  For example:
 python learning/train_jax_ppo.py \
   --play_only \
   --render_videos \
-  --load_checkpoint_path=logs/260716-go1-action-smoothing-seed1/checkpoints
+  --load_checkpoint_path=\
+logs/Go1JoystickFlatTerrain/260716-go1-action-smoothing-seed1/checkpoints
 ```
 
 Older checkpoint directories containing only `config.json` are also supported:
