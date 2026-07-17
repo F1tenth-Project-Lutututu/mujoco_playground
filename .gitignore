@@ -7,3 +7,11 @@ mujoco_menagerie
 checkpoints/
 logs
 .mujoco_playground_asset_cache/
+*.png
+*.csv
+*.json
+*.mp4
+*.npz
+*.wandb
+*.log
+wandb/
