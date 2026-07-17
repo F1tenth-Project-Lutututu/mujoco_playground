@@ -83,6 +83,8 @@ packages = ["mujoco_playground", "learning"]
 [project.scripts]
 train-jax-ppo = "learning.train_jax_ppo:run"
 train-rsl-ppo = "learning.train_rsl_rl:run"
+evaluate-policy = "learning.evaluate_policy:main"
+compare-policy-evaluations = "learning.compare_policy_evaluations:main"
 
 [tool.ruff]
 lint.select = [
