@@ -72,6 +72,18 @@ class JoystickTorqueHighpassTest(absltest.TestCase):
     self.assertEqual(next_inputs.shape, (7, 12))
     self.assertTrue(jp.isfinite(cost))
 
+  def test_actuator_capacities_use_largest_absolute_force_limit(self):
+    capacities = joystick._actuator_force_capacities(  # pylint: disable=protected-access
+        [[-23.7, 23.7], [-30.0, 35.55]]
+    )
+    np.testing.assert_allclose(capacities, [23.7, 35.55])
+
+  def test_actuator_capacities_reject_invalid_limits(self):
+    with self.assertRaisesRegex(ValueError, "finite, positive force limits"):
+      joystick._actuator_force_capacities(  # pylint: disable=protected-access
+          [[0.0, 0.0]]
+      )
+
   def test_rejects_orders_above_supported_maximum(self):
     with self.assertRaisesRegex(ValueError, "between 1 and 8"):
       joystick._validate_torque_highpass_order(9)  # pylint: disable=protected-access

@@ -108,10 +108,12 @@ silently falling back to CPU. Install the `cuda` extra and verify that
 archives are disabled by default; enable them explicitly with `--render_video`
 or `--save_signals` when needed.
 
-`--env_name` is only needed for older checkpoints that predate
-`run_config.json`. The default suite tests standing, forward and backward
-motion, lateral motion, turning, and a combined command. Supply a custom suite
-as JSON when needed:
+For older checkpoints that predate `run_config.json`, the environment name is
+inferred from a matching parent directory such as
+`Go1JoystickFlatTerrain/<run>/checkpoints`. Use `--env_name` when the legacy
+path does not contain a registered environment name. The default suite tests
+standing, forward and backward motion, lateral motion, turning, and a combined
+command. Supply a custom suite as JSON when needed:
 
 ```bash
 python learning/evaluate_policy.py \
@@ -141,6 +143,21 @@ checkpoint, evaluation settings, evaluator/environment code, and locked
 dependencies are unchanged. Set `REUSE_UNCHANGED_RESULTS = False` to force a
 complete reevaluation.
 
+To plot a mean torque spectrogram over random tasks, first evaluate with
+`--save_signals`, then pass one or more evaluation directories to the plotter:
+
+```bash
+python learning/plot_policy_spectrogram.py \
+  evaluations/model-seed0/checkpoint \
+  evaluations/model-seed1/checkpoint \
+  --output=mean_torque_spectrogram.png \
+  --max_frequency_hz=25
+```
+
+The plot averages power over active tasks, actuator channels, and supplied
+policy seeds. An `.npz` companion containing frequencies, times, mean power
+spectral density, and contributing sample counts is written beside the image.
+
 The batch evaluator runs all models in one Python process, avoiding repeated
 Python startup and allowing JAX compilation caches to remain available between
 models. Its progress bar reports completed models, elapsed time, processing
@@ -162,9 +179,29 @@ python train_jax_ppo.py \
   --playground_config_overrides='{"reward_config.scales.torque_high_freq": -1e-5, "reward_config.torque_highpass_cutoff_hz": 5.0, "reward_config.torque_highpass_order": 2, "reward_config.torque_highpass_difference_order": 0}'
 ```
 
-The filter samples actuator torque at the 50 Hz control rate, so the cutoff
-must be greater than 0 and less than the 25 Hz Nyquist frequency. Order 1 is
-the default. Orders 1 through 8 use a proper digital Butterworth high-pass
+By default the penalty filters actuator torque. To filter the normalized policy
+actions instead, set `reward_config.torque_highpass_signal` to `"action"`:
+
+```sh
+  --playground_config_overrides='{"reward_config.scales.torque_high_freq": -1e-3, "reward_config.torque_highpass_signal": "action"}'
+```
+
+The action and torque signals have different units and magnitudes, so retune
+`reward_config.scales.torque_high_freq` when switching between them. The
+`torque_spectrum/*` diagnostic metrics remain based on actuator torque.
+
+When filtering torque, each actuator torque is divided by its maximum absolute
+force limit before filtering and computing energy. Thus every actuator is
+penalized according to the fraction of its own torque capacity, rather than
+letting higher-capacity joints dominate. Set
+`reward_config.torque_highpass_normalize_by_capacity` to `false` to recover the
+legacy penalty in squared N·m. This option does not affect action filtering or
+the physical-unit `torque_spectrum/*` diagnostics. Capacity normalization
+changes the penalty magnitude, so its reward scale must be retuned.
+
+The filter samples the selected signal at the 50 Hz control rate, so the
+cutoff must be greater than 0 and less than the 25 Hz Nyquist frequency. Order
+1 is the default. Orders 1 through 8 use a proper digital Butterworth high-pass
 filter represented as numerically stable second-order sections, so the
 configured cutoff remains the -3 dB point for every order. The resulting
 component is logged as `reward/torque_high_freq`. Enabling this penalty with a

@@ -86,6 +86,23 @@ def _validate_highpass_penalty_signal(value: Any) -> str:
   return value
 
 
+def _actuator_force_capacities(force_ranges: Any) -> jax.Array:
+  """Returns the largest absolute torque allowed for every actuator."""
+  force_ranges = np.asarray(force_ranges)
+  if force_ranges.ndim != 2 or force_ranges.shape[-1] != 2:
+    raise ValueError(
+        "Actuator force limits must have shape (num_actuators, 2), got "
+        f"{force_ranges.shape}."
+    )
+  capacities = np.max(np.abs(force_ranges), axis=-1)
+  if not np.all(np.isfinite(capacities)) or np.any(capacities <= 0.0):
+    raise ValueError(
+        "All actuators need finite, positive force limits to normalize the "
+        f"high-pass torque penalty, got {force_ranges}."
+    )
+  return jp.asarray(capacities)
+
+
 def default_config() -> config_dict.ConfigDict:
   return config_dict.create(
       ctrl_dt=0.02,
@@ -139,6 +156,7 @@ def default_config() -> config_dict.ConfigDict:
           torque_highpass_order=1,
           torque_highpass_difference_order=0.0,
           torque_highpass_signal="torque",
+          torque_highpass_normalize_by_capacity=True,
           torque_spectrum_cutoffs_hz=(1.0, 2.0, 5.0, 10.0, 15.0, 20.0),
       ),
       pert_config=config_dict.create(
@@ -248,6 +266,9 @@ class Joystick(go1_base.Go1Env):
     )
     self._torque_highpass_signal = _validate_highpass_penalty_signal(
         self._config.reward_config.torque_highpass_signal
+    )
+    self._torque_capacities = _actuator_force_capacities(
+        self._mj_model.actuator_forcerange
     )
 
     high_freq_scale = self._config.reward_config.scales.torque_high_freq
@@ -433,10 +454,12 @@ class Joystick(go1_base.Go1Env):
         "last_last_act": jp.zeros(self.mjx_model.nu),
         "torque_highpass_state": self._initial_highpass_state(
             (
-                data.actuator_force
-                if self._torque_highpass_signal == "torque"
-                else jp.zeros(self.mjx_model.nu)
-            ),
+                data.actuator_force / self._torque_capacities
+                if self._config.reward_config.torque_highpass_normalize_by_capacity
+                else data.actuator_force
+            )
+            if self._torque_highpass_signal == "torque"
+            else jp.zeros(self.mjx_model.nu),
             self._torque_highpass_steady_state,
         ),
         "torque_spectrum_filter_state": self._initial_highpass_state(
@@ -510,7 +533,11 @@ class Joystick(go1_base.Go1Env):
 
     episode_reset = state.info.get("episode_done", False)
     highpass_penalty_signal = (
-        data.actuator_force
+        (
+            data.actuator_force / self._torque_capacities
+            if self._config.reward_config.torque_highpass_normalize_by_capacity
+            else data.actuator_force
+        )
         if self._torque_highpass_signal == "torque"
         else action
     )
