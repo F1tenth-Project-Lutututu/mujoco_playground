@@ -32,6 +32,7 @@ from mujoco_playground._src.locomotion.go1 import go1_constants as consts
 _TORQUE_SPECTRUM_DIAGNOSTIC_ORDER = 1
 _MAX_TORQUE_HIGHPASS_ORDER = 8
 _MAX_TORQUE_DIFFERENCE_ORDER = 8.0
+_HIGHPASS_PENALTY_SIGNALS = ("torque", "action")
 
 
 def _butterworth_highpass_sos(
@@ -74,6 +75,15 @@ def _validate_torque_difference_order(value: Any) -> float:
         f"between 0 and {_MAX_TORQUE_DIFFERENCE_ORDER:g}, got {value}."
     )
   return float(value)
+
+
+def _validate_highpass_penalty_signal(value: Any) -> str:
+  if value not in _HIGHPASS_PENALTY_SIGNALS:
+    raise ValueError(
+        "reward_config.torque_highpass_signal must be one of "
+        f"{_HIGHPASS_PENALTY_SIGNALS}, got {value!r}."
+    )
+  return value
 
 
 def default_config() -> config_dict.ConfigDict:
@@ -128,6 +138,7 @@ def default_config() -> config_dict.ConfigDict:
           torque_highpass_cutoff_hz=5.0,
           torque_highpass_order=1,
           torque_highpass_difference_order=0.0,
+          torque_highpass_signal="torque",
           torque_spectrum_cutoffs_hz=(1.0, 2.0, 5.0, 10.0, 15.0, 20.0),
       ),
       pert_config=config_dict.create(
@@ -234,6 +245,9 @@ class Joystick(go1_base.Go1Env):
     )
     self._torque_difference_scale_base = float(
         1.0 / difference_gain_at_cutoff
+    )
+    self._torque_highpass_signal = _validate_highpass_penalty_signal(
+        self._config.reward_config.torque_highpass_signal
     )
 
     high_freq_scale = self._config.reward_config.scales.torque_high_freq
@@ -418,7 +432,12 @@ class Joystick(go1_base.Go1Env):
         "last_act": jp.zeros(self.mjx_model.nu),
         "last_last_act": jp.zeros(self.mjx_model.nu),
         "torque_highpass_state": self._initial_highpass_state(
-            data.actuator_force, self._torque_highpass_steady_state
+            (
+                data.actuator_force
+                if self._torque_highpass_signal == "torque"
+                else jp.zeros(self.mjx_model.nu)
+            ),
+            self._torque_highpass_steady_state,
         ),
         "torque_spectrum_filter_state": self._initial_highpass_state(
             jp.broadcast_to(
@@ -490,8 +509,13 @@ class Joystick(go1_base.Go1Env):
     done = self._get_termination(data)
 
     episode_reset = state.info.get("episode_done", False)
+    highpass_penalty_signal = (
+        data.actuator_force
+        if self._torque_highpass_signal == "torque"
+        else action
+    )
     torque_highpass, torque_highpass_state = self._apply_highpass_filter(
-        data.actuator_force,
+        highpass_penalty_signal,
         state.info["torque_highpass_state"],
         self._torque_highpass_sos,
         self._torque_highpass_steady_state,

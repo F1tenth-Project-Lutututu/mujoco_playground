@@ -48,6 +48,10 @@ class JoystickTorqueHighpassTest(absltest.TestCase):
         joystick._validate_torque_difference_order(6.5),  # pylint: disable=protected-access
         6.5,
     )
+    self.assertEqual(
+        joystick._validate_highpass_penalty_signal("action"),  # pylint: disable=protected-access
+        "action",
+    )
 
   def test_seven_difference_stages_run_under_jit(self):
     difference_filter = types.SimpleNamespace(
@@ -73,6 +77,8 @@ class JoystickTorqueHighpassTest(absltest.TestCase):
       joystick._validate_torque_highpass_order(9)  # pylint: disable=protected-access
     with self.assertRaisesRegex(ValueError, "between 0 and 8"):
       joystick._validate_torque_difference_order(8.5)  # pylint: disable=protected-access
+    with self.assertRaisesRegex(ValueError, "torque_highpass_signal"):
+      joystick._validate_highpass_penalty_signal("motor_target")  # pylint: disable=protected-access
 
 
 if __name__ == "__main__":
