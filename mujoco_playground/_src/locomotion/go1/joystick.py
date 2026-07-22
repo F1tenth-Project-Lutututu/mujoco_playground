@@ -86,6 +86,22 @@ def _validate_highpass_penalty_signal(value: Any) -> str:
   return value
 
 
+def _validate_observe_highpass_state(value: Any) -> bool:
+  if not isinstance(value, (bool, np.bool_)):
+    raise ValueError(
+        "reward_config.torque_highpass_observe_state must be a boolean."
+    )
+  return bool(value)
+
+
+def _highpass_memory_observation(info: dict[str, Any]) -> jax.Array:
+  """Flattens all causal memory used by the high-pass reward."""
+  return jp.concatenate((
+      jp.ravel(info["torque_highpass_state"]),
+      jp.ravel(info["torque_difference_inputs"]),
+  ))
+
+
 def _actuator_force_capacities(force_ranges: Any) -> jax.Array:
   """Returns the largest absolute torque allowed for every actuator."""
   force_ranges = np.asarray(force_ranges)
@@ -101,6 +117,41 @@ def _actuator_force_capacities(force_ranges: Any) -> jax.Array:
         f"high-pass torque penalty, got {force_ranges}."
     )
   return jp.asarray(capacities)
+
+
+def _validate_adaptive_highpass_config(
+    enabled: Any, min_weight: Any, max_weight: Any, sigma: Any
+) -> tuple[bool, float, float, float]:
+  """Validates adaptive high-pass penalty configuration."""
+  values = (min_weight, max_weight, sigma)
+  if not isinstance(enabled, (bool, np.bool_)):
+    raise ValueError("torque_highpass_adaptive_weight must be a boolean.")
+  if any(
+      isinstance(value, bool)
+      or not isinstance(value, (int, float, np.integer, np.floating))
+      or not np.isfinite(value)
+      for value in values
+  ):
+    raise ValueError(
+        "Adaptive high-pass weights and sigma must be finite numbers."
+    )
+  if not 0.0 <= min_weight <= max_weight:
+    raise ValueError(
+        "Adaptive high-pass weights must satisfy 0 <= min_weight <= max_weight."
+    )
+  if sigma <= 0.0:
+    raise ValueError("torque_highpass_adaptive_sigma must be positive.")
+  return bool(enabled), float(min_weight), float(max_weight), float(sigma)
+
+
+def _adaptive_highpass_weight(
+    disturbance: jax.Array,
+    min_weight: float,
+    max_weight: float,
+    sigma: float,
+) -> jax.Array:
+  """Decreases the penalty smoothly as disturbance increases."""
+  return min_weight + (max_weight - min_weight) * jp.exp(-disturbance / sigma)
 
 
 def default_config() -> config_dict.ConfigDict:
@@ -157,6 +208,11 @@ def default_config() -> config_dict.ConfigDict:
           torque_highpass_difference_order=0.0,
           torque_highpass_signal="torque",
           torque_highpass_normalize_by_capacity=True,
+          torque_highpass_observe_state=False,
+          torque_highpass_adaptive_weight=False,
+          torque_highpass_adaptive_min_weight=0.1,
+          torque_highpass_adaptive_max_weight=1.0,
+          torque_highpass_adaptive_sigma=0.25,
           torque_spectrum_cutoffs_hz=(1.0, 2.0, 5.0, 10.0, 15.0, 20.0),
       ),
       pert_config=config_dict.create(
@@ -173,6 +229,7 @@ def default_config() -> config_dict.ConfigDict:
       ),
       impl="warp",
       naconmax=4 * 8192,
+      naccdmax=4 * 8192,
       njmax=40,
   )
 
@@ -188,6 +245,7 @@ class Joystick(go1_base.Go1Env):
   ):
     if task.startswith("rough"):
       config.naconmax = 8 * 8192
+      config.naccdmax = 8 * 8192
       config.njmax = 12 + 48
     super().__init__(
         xml_path=consts.task_to_xml(task).as_posix(),
@@ -247,10 +305,8 @@ class Joystick(go1_base.Go1Env):
         cutoff_hz, self._torque_highpass_order, 1.0 / self.dt
     )
 
-    self._torque_highpass_difference_order = (
-        _validate_torque_difference_order(
-            self._config.reward_config.torque_highpass_difference_order
-        )
+    self._torque_highpass_difference_order = _validate_torque_difference_order(
+        self._config.reward_config.torque_highpass_difference_order
     )
     difference_order = self._torque_highpass_difference_order
     self._torque_difference_lower_order = int(np.floor(difference_order))
@@ -258,17 +314,27 @@ class Joystick(go1_base.Go1Env):
     self._torque_difference_mix = float(
         difference_order - self._torque_difference_lower_order
     )
-    difference_gain_at_cutoff = 2.0 * np.sin(
-        np.pi * cutoff_hz * self.dt
-    )
-    self._torque_difference_scale_base = float(
-        1.0 / difference_gain_at_cutoff
-    )
+    difference_gain_at_cutoff = 2.0 * np.sin(np.pi * cutoff_hz * self.dt)
+    self._torque_difference_scale_base = float(1.0 / difference_gain_at_cutoff)
     self._torque_highpass_signal = _validate_highpass_penalty_signal(
         self._config.reward_config.torque_highpass_signal
     )
+    self._torque_highpass_observe_state = _validate_observe_highpass_state(
+        self._config.reward_config.torque_highpass_observe_state
+    )
     self._torque_capacities = _actuator_force_capacities(
         self._mj_model.actuator_forcerange
+    )
+    (
+        self._torque_highpass_adaptive_weight,
+        self._torque_highpass_adaptive_min_weight,
+        self._torque_highpass_adaptive_max_weight,
+        self._torque_highpass_adaptive_sigma,
+    ) = _validate_adaptive_highpass_config(
+        self._config.reward_config.torque_highpass_adaptive_weight,
+        self._config.reward_config.torque_highpass_adaptive_min_weight,
+        self._config.reward_config.torque_highpass_adaptive_max_weight,
+        self._config.reward_config.torque_highpass_adaptive_sigma,
     )
 
     high_freq_scale = self._config.reward_config.scales.torque_high_freq
@@ -332,10 +398,7 @@ class Joystick(go1_base.Go1Env):
     for section in range(sos.shape[-2]):
       coefficients = sos[..., section, :]
       section_state = previous_state[..., section, :, :]
-      output = (
-          coefficients[..., 0, None] * filtered
-          + section_state[..., 0, :]
-      )
+      output = coefficients[..., 0, None] * filtered + section_state[..., 0, :]
       state_0 = (
           coefficients[..., 1, None] * filtered
           - coefficients[..., 4, None] * output
@@ -360,9 +423,7 @@ class Joystick(go1_base.Go1Env):
     normalized_signals = [signal]
     next_inputs = []
     for difference in range(self._torque_difference_upper_order):
-      previous_input = jp.where(
-          reset, differenced, previous_inputs[difference]
-      )
+      previous_input = jp.where(reset, differenced, previous_inputs[difference])
       next_inputs.append(differenced)
       differenced = differenced - previous_input
       normalized_signals.append(
@@ -376,9 +437,8 @@ class Joystick(go1_base.Go1Env):
         jp.square(normalized_signals[self._torque_difference_upper_order])
     )
     cost = (
-        (1.0 - self._torque_difference_mix) * lower_energy
-        + self._torque_difference_mix * upper_energy
-    )
+        1.0 - self._torque_difference_mix
+    ) * lower_energy + self._torque_difference_mix * upper_energy
     if not next_inputs:
       return cost, previous_inputs
     return cost, jp.stack(next_inputs)
@@ -410,6 +470,7 @@ class Joystick(go1_base.Go1Env):
         ctrl=qpos[7:],
         impl=self.mjx_model.impl.value,
         naconmax=self._config.naconmax,
+        naccdmax=self._config.naccdmax,
         njmax=self._config.njmax,
     )
     data = mjx.forward(self.mjx_model, data)
@@ -490,6 +551,12 @@ class Joystick(go1_base.Go1Env):
       metrics[f"reward/{k}"] = jp.zeros(())
     metrics["reward_without_action_rate"] = jp.zeros(())
     metrics["reward_without_regularization"] = jp.zeros(())
+    metrics["torque_highpass/disturbance"] = jp.zeros(())
+    metrics["torque_highpass/adaptive_weight"] = jp.asarray(
+        self._torque_highpass_adaptive_max_weight
+        if self._torque_highpass_adaptive_weight
+        else 1.0
+    )
     metrics["torque_spectrum/total_energy_per_step"] = jp.zeros(())
     for metric_name in self._torque_spectrum_metric_names:
       metrics[metric_name] = jp.zeros(())
@@ -528,7 +595,6 @@ class Joystick(go1_base.Go1Env):
     p_fz = p_f[..., -1]
     state.info["swing_peak"] = jp.maximum(state.info["swing_peak"], p_fz)
 
-    obs = self._get_obs(data, state.info)
     done = self._get_termination(data)
 
     episode_reset = state.info.get("episode_done", False)
@@ -571,6 +637,26 @@ class Joystick(go1_base.Go1Env):
             episode_reset,
         )
     )
+    tracking_disturbance = jp.sum(
+        jp.square(state.info["command"][:2] - self.get_local_linvel(data)[:2])
+    ) + jp.square(state.info["command"][2] - self.get_gyro(data)[2])
+    orientation_disturbance = jp.sum(jp.square(self.get_upvector(data)[:2]))
+    highpass_disturbance = tracking_disturbance + orientation_disturbance
+    highpass_adaptive_weight = jp.asarray(1.0)
+    if self._torque_highpass_adaptive_weight:
+      highpass_adaptive_weight = _adaptive_highpass_weight(
+          highpass_disturbance,
+          self._torque_highpass_adaptive_min_weight,
+          self._torque_highpass_adaptive_max_weight,
+          self._torque_highpass_adaptive_sigma,
+      )
+    torque_high_freq_cost *= highpass_adaptive_weight
+
+    # Advance reward memory before constructing the returned observation so
+    # an observing policy receives the memory belonging to the returned state.
+    state.info["torque_highpass_state"] = torque_highpass_state
+    state.info["torque_difference_inputs"] = torque_difference_inputs
+    obs = self._get_obs(data, state.info)
 
     rewards = self._get_reward(
         data,
@@ -604,11 +690,7 @@ class Joystick(go1_base.Go1Env):
 
     state.info["last_last_act"] = state.info["last_act"]
     state.info["last_act"] = action
-    state.info["torque_highpass_state"] = torque_highpass_state
-    state.info["torque_spectrum_filter_state"] = (
-        torque_spectrum_filter_state
-    )
-    state.info["torque_difference_inputs"] = torque_difference_inputs
+    state.info["torque_spectrum_filter_state"] = torque_spectrum_filter_state
     state.info["torque_for_spectrum"] = data.actuator_force
     state.info["steps_until_next_cmd"] -= 1
     state.info["rng"], key1, key2 = jax.random.split(state.info["rng"], 3)
@@ -631,6 +713,8 @@ class Joystick(go1_base.Go1Env):
     state.metrics["reward_without_regularization"] = (
         reward_without_regularization
     )
+    state.metrics["torque_highpass/disturbance"] = highpass_disturbance
+    state.metrics["torque_highpass/adaptive_weight"] = highpass_adaptive_weight
     state.metrics["torque_spectrum/total_energy_per_step"] = jp.sum(
         jp.square(data.actuator_force)
     )
@@ -641,7 +725,9 @@ class Joystick(go1_base.Go1Env):
     state.metrics["swing_peak"] = jp.mean(state.info["swing_peak"])
 
     done = done.astype(reward.dtype)
-    state = state.replace(data=data, obs=obs, reward=reward, done=done)  # pyrefly: ignore[missing-attribute]
+    state = state.replace(
+        data=data, obs=obs, reward=reward, done=done
+    )  # pyrefly: ignore[missing-attribute]
     return state
 
   def _get_termination(self, data: mjx.Data) -> jax.Array:
@@ -705,6 +791,8 @@ class Joystick(go1_base.Go1Env):
         info["last_act"],  # 12
         info["command"],  # 3
     ])
+    if self._torque_highpass_observe_state:
+      state = jp.hstack([state, _highpass_memory_observation(info)])
 
     accelerometer = self.get_accelerometer(data)
     angvel = self.get_global_angvel(data)

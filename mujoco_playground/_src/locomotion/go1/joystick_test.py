@@ -53,6 +53,21 @@ class JoystickTorqueHighpassTest(absltest.TestCase):
         "action",
     )
 
+  def test_highpass_memory_observation_contains_all_reward_memory(self):
+    observation = joystick._highpass_memory_observation({  # pylint: disable=protected-access
+        "torque_highpass_state": jp.arange(8).reshape((2, 2, 2)),
+        "torque_difference_inputs": jp.arange(8, 12).reshape((2, 2)),
+    })
+
+    np.testing.assert_array_equal(observation, np.arange(12))
+
+  def test_observe_highpass_state_requires_boolean(self):
+    self.assertTrue(
+        joystick._validate_observe_highpass_state(True)  # pylint: disable=protected-access
+    )
+    with self.assertRaisesRegex(ValueError, "must be a boolean"):
+      joystick._validate_observe_highpass_state(1)  # pylint: disable=protected-access
+
   def test_seven_difference_stages_run_under_jit(self):
     difference_filter = types.SimpleNamespace(
         _torque_difference_upper_order=7,
@@ -82,6 +97,22 @@ class JoystickTorqueHighpassTest(absltest.TestCase):
     with self.assertRaisesRegex(ValueError, "finite, positive force limits"):
       joystick._actuator_force_capacities(  # pylint: disable=protected-access
           [[0.0, 0.0]]
+      )
+
+  def test_adaptive_weight_decreases_toward_minimum(self):
+    weights = joystick._adaptive_highpass_weight(  # pylint: disable=protected-access
+        jp.asarray([0.0, 0.25, 100.0]), 0.1, 1.0, 0.25
+    )
+    np.testing.assert_allclose(weights, [1.0, 0.1 + 0.9 / np.e, 0.1], atol=1e-6)
+
+  def test_rejects_invalid_adaptive_weight_config(self):
+    with self.assertRaisesRegex(ValueError, "min_weight"):
+      joystick._validate_adaptive_highpass_config(  # pylint: disable=protected-access
+          True, 1.0, 0.1, 0.25
+      )
+    with self.assertRaisesRegex(ValueError, "sigma must be positive"):
+      joystick._validate_adaptive_highpass_config(  # pylint: disable=protected-access
+          True, 0.1, 1.0, 0.0
       )
 
   def test_rejects_orders_above_supported_maximum(self):
