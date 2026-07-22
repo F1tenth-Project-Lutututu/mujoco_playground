@@ -45,6 +45,12 @@ class RunConfigTest(absltest.TestCase):
         "spectral_playground_highpass_Go1JoystickFlatTerrain",
     )
 
+  def test_wandb_group_name_includes_date_prefix(self):
+    self.assertEqual(
+        train_jax_ppo._wandb_group_name("experiment", "260722"),
+        "260722-experiment",
+    )
+
   def test_merge_saved_config_fills_new_nested_defaults(self):
     defaults = {
         "impl": "warp",

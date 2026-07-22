@@ -234,6 +234,13 @@ def default_config() -> config_dict.ConfigDict:
   )
 
 
+def flat_terrain_25_config() -> config_dict.ConfigDict:
+  """Returns the flat-terrain config with a ±2.5 m/s vx command range."""
+  config = default_config()
+  config.command_config.a[0] = 2.5
+  return config
+
+
 class Joystick(go1_base.Go1Env):
   """Track a joystick command."""
 

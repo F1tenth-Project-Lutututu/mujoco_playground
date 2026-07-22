@@ -229,6 +229,11 @@ def _wandb_project_name(env_name: str) -> str:
   return f"spectral_playground_highpass_{env_name}"
 
 
+def _wandb_group_name(experiment_name: str, date_prefix: str) -> str:
+  """Returns the date-scoped W&B experiment group name."""
+  return f"{date_prefix}-{experiment_name}"
+
+
 def _resolve_checkpoint_path(
     checkpoint_path: Optional[str],
 ) -> Optional[epath.Path]:
@@ -895,8 +900,9 @@ def main(argv):
   # Use the same name for the W&B run and its local model directory.
   now = datetime.datetime.now()
   date_prefix = now.strftime("%y%m%d")
-  wandb_group = _WANDB_EXPERIMENT_NAME.value or env_name
-  run_name = f"{date_prefix}-{wandb_group}-seed{seed}"
+  wandb_experiment_name = _WANDB_EXPERIMENT_NAME.value or env_name
+  wandb_group = _wandb_group_name(wandb_experiment_name, date_prefix)
+  run_name = f"{wandb_group}-seed{seed}"
   if _SUFFIX.value is not None:
     run_name += f"-{_SUFFIX.value}"
   print(f"Run name: {run_name}")
@@ -931,7 +937,8 @@ def main(argv):
                 environment_action_rate_scale == 0.0
             ),
             "environment_action_rate_scale": environment_action_rate_scale,
-            "wandb_experiment_name": wandb_group,
+            "wandb_experiment_name": wandb_experiment_name,
+            "wandb_group": wandb_group,
         },
     )
     wandb.define_metric("environment_steps")

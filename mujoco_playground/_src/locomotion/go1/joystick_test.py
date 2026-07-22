@@ -27,6 +27,14 @@ from mujoco_playground._src.locomotion.go1 import joystick
 
 class JoystickTorqueHighpassTest(absltest.TestCase):
 
+  def test_flat_terrain_25_config_only_changes_vx_range(self):
+    default = joystick.default_config()
+    fast = joystick.flat_terrain_25_config()
+
+    np.testing.assert_allclose(fast.command_config.a, [2.5, 0.8, 1.2])
+    np.testing.assert_allclose(default.command_config.a, [1.5, 0.8, 1.2])
+    self.assertEqual(fast.command_config.b, default.command_config.b)
+
   def test_eighth_order_filter_has_expected_sections_and_cutoff(self):
     sos, steady_state = joystick._butterworth_highpass_sos(  # pylint: disable=protected-access
         cutoff_hz=5.0, order=8, sample_rate_hz=50.0
