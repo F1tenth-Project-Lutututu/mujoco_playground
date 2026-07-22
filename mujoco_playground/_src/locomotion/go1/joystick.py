@@ -94,6 +94,14 @@ def _validate_observe_highpass_state(value: Any) -> bool:
   return bool(value)
 
 
+def _validate_observe_torque_rate_state(value: Any) -> bool:
+  if not isinstance(value, (bool, np.bool_)):
+    raise ValueError(
+        "reward_config.torque_rate_observe_state must be a boolean."
+    )
+  return bool(value)
+
+
 def _highpass_memory_observation(info: dict[str, Any]) -> jax.Array:
   """Flattens all causal memory used by the high-pass reward."""
   return jp.concatenate((
@@ -193,6 +201,7 @@ def default_config() -> config_dict.ConfigDict:
               # Regularization.
               torques=-0.0002,
               torque_high_freq=0.0,
+              torque_rate=0.0,
               action_rate=-0.01,
               energy=-0.001,
               # Feet.
@@ -209,6 +218,7 @@ def default_config() -> config_dict.ConfigDict:
           torque_highpass_signal="torque",
           torque_highpass_normalize_by_capacity=True,
           torque_highpass_observe_state=False,
+          torque_rate_observe_state=False,
           torque_highpass_adaptive_weight=False,
           torque_highpass_adaptive_min_weight=0.1,
           torque_highpass_adaptive_max_weight=1.0,
@@ -234,11 +244,15 @@ def default_config() -> config_dict.ConfigDict:
   )
 
 
-def flat_terrain_25_config() -> config_dict.ConfigDict:
-  """Returns the flat-terrain config with a ±2.5 m/s vx command range."""
+def velocity_25_config() -> config_dict.ConfigDict:
+  """Returns the joystick config with a ±2.5 m/s vx command range."""
   config = default_config()
   config.command_config.a[0] = 2.5
   return config
+
+
+# Retain the terrain-specific name for compatibility with existing callers.
+flat_terrain_25_config = velocity_25_config
 
 
 class Joystick(go1_base.Go1Env):
@@ -329,6 +343,9 @@ class Joystick(go1_base.Go1Env):
     self._torque_highpass_observe_state = _validate_observe_highpass_state(
         self._config.reward_config.torque_highpass_observe_state
     )
+    self._torque_rate_observe_state = _validate_observe_torque_rate_state(
+        self._config.reward_config.torque_rate_observe_state
+    )
     self._torque_capacities = _actuator_force_capacities(
         self._mj_model.actuator_forcerange
     )
@@ -350,6 +367,13 @@ class Joystick(go1_base.Go1Env):
           "reward_config.scales.torque_high_freq must be non-positive."
       )
     if high_freq_scale < 0.0:
+      self._config.reward_config.scales.action_rate = 0.0
+    torque_rate_scale = self._config.reward_config.scales.torque_rate
+    if torque_rate_scale > 0.0:
+      raise ValueError(
+          "reward_config.scales.torque_rate must be non-positive."
+      )
+    if torque_rate_scale < 0.0:
       self._config.reward_config.scales.action_rate = 0.0
 
     spectrum_cutoffs_hz = tuple(
@@ -520,6 +544,7 @@ class Joystick(go1_base.Go1Env):
         "steps_until_next_cmd": steps_until_next_cmd,
         "last_act": jp.zeros(self.mjx_model.nu),
         "last_last_act": jp.zeros(self.mjx_model.nu),
+        "last_torque": data.actuator_force,
         "torque_highpass_state": self._initial_highpass_state(
             (
                 data.actuator_force / self._torque_capacities
@@ -658,6 +683,9 @@ class Joystick(go1_base.Go1Env):
           self._torque_highpass_adaptive_sigma,
       )
     torque_high_freq_cost *= highpass_adaptive_weight
+    torque_rate_cost = self._cost_torque_rate(
+        data.actuator_force, state.info["last_torque"]
+    )
 
     # Advance reward memory before constructing the returned observation so
     # an observing policy receives the memory belonging to the returned state.
@@ -674,6 +702,7 @@ class Joystick(go1_base.Go1Env):
         first_contact,
         contact,
         torque_high_freq_cost,
+        torque_rate_cost,
     )
     rewards = {
         k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
@@ -688,7 +717,7 @@ class Joystick(go1_base.Go1Env):
         sum(
             v
             for k, v in rewards.items()
-            if k not in ("action_rate", "torque_high_freq")
+            if k not in ("action_rate", "torque_high_freq", "torque_rate")
         )
         * self.dt,
         0.0,
@@ -697,6 +726,7 @@ class Joystick(go1_base.Go1Env):
 
     state.info["last_last_act"] = state.info["last_act"]
     state.info["last_act"] = action
+    state.info["last_torque"] = data.actuator_force
     state.info["torque_spectrum_filter_state"] = torque_spectrum_filter_state
     state.info["torque_for_spectrum"] = data.actuator_force
     state.info["steps_until_next_cmd"] -= 1
@@ -800,6 +830,8 @@ class Joystick(go1_base.Go1Env):
     ])
     if self._torque_highpass_observe_state:
       state = jp.hstack([state, _highpass_memory_observation(info)])
+    if self._torque_rate_observe_state:
+      state = jp.hstack([state, data.actuator_force])
 
     accelerometer = self.get_accelerometer(data)
     angvel = self.get_global_angvel(data)
@@ -837,6 +869,7 @@ class Joystick(go1_base.Go1Env):
       first_contact: jax.Array,
       contact: jax.Array,
       torque_high_freq_cost: jax.Array,
+      torque_rate_cost: jax.Array,
   ) -> dict[str, jax.Array]:
     del metrics  # Unused.
     return {
@@ -854,6 +887,7 @@ class Joystick(go1_base.Go1Env):
         "pose": self._reward_pose(data.qpos[7:]),
         "torques": self._cost_torques(data.actuator_force),
         "torque_high_freq": torque_high_freq_cost,
+        "torque_rate": torque_rate_cost,
         "action_rate": self._cost_action_rate(
             action, info["last_act"], info["last_last_act"]
         ),
@@ -920,6 +954,11 @@ class Joystick(go1_base.Go1Env):
   ) -> jax.Array:
     del last_last_act  # Unused.
     return jp.sum(jp.square(act - last_act))
+
+  def _cost_torque_rate(
+      self, torque: jax.Array, last_torque: jax.Array
+  ) -> jax.Array:
+    return jp.sum(jp.square(torque - last_torque))
 
   # Other rewards.
 

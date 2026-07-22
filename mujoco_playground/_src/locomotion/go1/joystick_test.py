@@ -29,7 +29,7 @@ class JoystickTorqueHighpassTest(absltest.TestCase):
 
   def test_flat_terrain_25_config_only_changes_vx_range(self):
     default = joystick.default_config()
-    fast = joystick.flat_terrain_25_config()
+    fast = joystick.velocity_25_config()
 
     np.testing.assert_allclose(fast.command_config.a, [2.5, 0.8, 1.2])
     np.testing.assert_allclose(default.command_config.a, [1.5, 0.8, 1.2])
@@ -75,6 +75,27 @@ class JoystickTorqueHighpassTest(absltest.TestCase):
     )
     with self.assertRaisesRegex(ValueError, "must be a boolean"):
       joystick._validate_observe_highpass_state(1)  # pylint: disable=protected-access
+
+  def test_observe_torque_rate_state_requires_boolean(self):
+    self.assertTrue(
+        joystick._validate_observe_torque_rate_state(  # pylint: disable=protected-access
+            True
+        )
+    )
+    with self.assertRaisesRegex(ValueError, "must be a boolean"):
+      joystick._validate_observe_torque_rate_state(  # pylint: disable=protected-access
+          1
+      )
+
+  def test_torque_rate_matches_action_rate_definition(self):
+    torque = jp.asarray([1.0, 3.0, -2.0])
+    last_torque = jp.asarray([0.0, 1.0, -4.0])
+
+    cost = joystick.Joystick._cost_torque_rate(  # pylint: disable=protected-access
+        None, torque, last_torque
+    )
+
+    self.assertEqual(float(cost), 9.0)
 
   def test_seven_difference_stages_run_under_jit(self):
     difference_filter = types.SimpleNamespace(

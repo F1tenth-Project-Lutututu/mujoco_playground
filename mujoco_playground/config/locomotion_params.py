@@ -54,6 +54,7 @@ def brax_ppo_config(
       "Go1JoystickFlatTerrain",
       "Go1JoystickFlatTerrain25",
       "Go1JoystickRoughTerrain",
+      "Go1JoystickRoughTerrain25",
   ):
     rl_config.num_timesteps = 200_000_000
     rl_config.num_evals = 10
