@@ -51,6 +51,19 @@ class RunConfigTest(absltest.TestCase):
         "260722-experiment",
     )
 
+  def test_flat_terrain_25_uses_go1_ppo_config(self):
+    config = train_jax_ppo.get_rl_config(
+        "Go1JoystickFlatTerrain25", vision=False, impl="warp"
+    )
+
+    self.assertEqual(config.num_timesteps, 200_000_000)
+    self.assertEqual(
+        config.network_factory.policy_hidden_layer_sizes, (512, 256, 128)
+    )
+    self.assertEqual(
+        config.network_factory.value_obs_key, "privileged_state"
+    )
+
   def test_merge_saved_config_fills_new_nested_defaults(self):
     defaults = {
         "impl": "warp",
