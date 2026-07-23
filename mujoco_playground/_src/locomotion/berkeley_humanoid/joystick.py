@@ -27,6 +27,7 @@ from mujoco_playground._src import gait
 from mujoco_playground._src import mjx_env
 from mujoco_playground._src.locomotion.berkeley_humanoid import base as berkeley_humanoid_base
 from mujoco_playground._src.locomotion.berkeley_humanoid import berkeley_humanoid_constants as consts
+from mujoco_playground._src.locomotion.go1 import joystick as go1_joystick
 
 
 def default_config() -> config_dict.ConfigDict:
@@ -63,6 +64,8 @@ def default_config() -> config_dict.ConfigDict:
               base_height=0.0,
               # Energy related rewards.
               torques=-2.5e-5,
+              torque_high_freq=0.0,
+              torque_rate=0.0,
               action_rate=-0.01,
               energy=0.0,
               # Feet related rewards.
@@ -84,6 +87,19 @@ def default_config() -> config_dict.ConfigDict:
           tracking_sigma=0.5,
           max_foot_height=0.1,
           base_height_target=0.5,
+          torque_highpass_cutoff_hz=5.0,
+          torque_highpass_order=1,
+          torque_highpass_difference_order=0.0,
+          torque_highpass_frequency_normalization="legacy",
+          torque_highpass_signal="torque",
+          torque_highpass_normalize_by_capacity=True,
+          torque_highpass_observe_state=False,
+          torque_rate_observe_state=False,
+          torque_highpass_adaptive_weight=False,
+          torque_highpass_adaptive_min_weight=0.1,
+          torque_highpass_adaptive_max_weight=1.0,
+          torque_highpass_adaptive_sigma=0.25,
+          torque_spectrum_cutoffs_hz=(1.0, 2.0, 5.0, 10.0, 15.0, 20.0),
       ),
       push_config=config_dict.create(
           enable=True,
@@ -180,11 +196,137 @@ class Joystick(berkeley_humanoid_base.BerkeleyHumanoidEnv):
     qpos_noise_scale[faa_ids] = self._config.noise_config.scales.faa_pos
     self._qpos_noise_scale = jp.array(qpos_noise_scale)
 
+    cutoff_hz = self._config.reward_config.torque_highpass_cutoff_hz
+    nyquist_hz = 0.5 / self.dt
+    if not 0.0 < cutoff_hz < nyquist_hz:
+      raise ValueError(
+          "reward_config.torque_highpass_cutoff_hz must be between 0 and "
+          f"the control-rate Nyquist frequency ({nyquist_hz} Hz), got "
+          f"{cutoff_hz} Hz."
+      )
+    self._torque_highpass_order = (
+        go1_joystick._validate_torque_highpass_order(  # pylint: disable=protected-access
+            self._config.reward_config.torque_highpass_order
+        )
+    )
+    (
+        self._torque_highpass_sos,
+        self._torque_highpass_steady_state,
+    ) = go1_joystick._butterworth_highpass_sos(  # pylint: disable=protected-access
+        cutoff_hz, self._torque_highpass_order, 1.0 / self.dt
+    )
+    self._torque_highpass_difference_order = (
+        go1_joystick._validate_torque_difference_order(  # pylint: disable=protected-access
+            self._config.reward_config.torque_highpass_difference_order
+        )
+    )
+    difference_order = self._torque_highpass_difference_order
+    self._torque_difference_lower_order = int(np.floor(difference_order))
+    self._torque_difference_upper_order = int(np.ceil(difference_order))
+    self._torque_difference_mix = float(
+        difference_order - self._torque_difference_lower_order
+    )
+    difference_gain_at_cutoff = 2.0 * np.sin(np.pi * cutoff_hz * self.dt)
+    self._torque_difference_scale_base = float(1.0 / difference_gain_at_cutoff)
+    self._torque_highpass_frequency_normalization = (
+        go1_joystick._validate_highpass_frequency_normalization(  # pylint: disable=protected-access
+            self._config.reward_config.torque_highpass_frequency_normalization
+        )
+    )
+    self._torque_highpass_frequency_normalizer = 1.0
+    if self._torque_highpass_frequency_normalization == "white_spectrum":
+      self._torque_highpass_frequency_normalizer = (
+          go1_joystick._white_spectrum_frequency_normalizer(  # pylint: disable=protected-access
+              self._torque_highpass_sos,
+              cutoff_hz,
+              1.0 / self.dt,
+              difference_order,
+          )
+      )
+    self._torque_highpass_signal = (
+        go1_joystick._validate_highpass_penalty_signal(  # pylint: disable=protected-access
+            self._config.reward_config.torque_highpass_signal
+        )
+    )
+    self._torque_highpass_observe_state = (
+        go1_joystick._validate_observe_highpass_state(  # pylint: disable=protected-access
+            self._config.reward_config.torque_highpass_observe_state
+        )
+    )
+    self._torque_rate_observe_state = (
+        go1_joystick._validate_observe_torque_rate_state(  # pylint: disable=protected-access
+            self._config.reward_config.torque_rate_observe_state
+        )
+    )
+    actuator_joint_ids = self._mj_model.actuator_trnid[:, 0]
+    self._torque_capacities = (
+        go1_joystick._actuator_force_capacities(  # pylint: disable=protected-access
+            self._mj_model.jnt_actfrcrange[actuator_joint_ids]
+        )
+    )
+    (
+        self._torque_highpass_adaptive_weight,
+        self._torque_highpass_adaptive_min_weight,
+        self._torque_highpass_adaptive_max_weight,
+        self._torque_highpass_adaptive_sigma,
+    ) = go1_joystick._validate_adaptive_highpass_config(  # pylint: disable=protected-access
+        self._config.reward_config.torque_highpass_adaptive_weight,
+        self._config.reward_config.torque_highpass_adaptive_min_weight,
+        self._config.reward_config.torque_highpass_adaptive_max_weight,
+        self._config.reward_config.torque_highpass_adaptive_sigma,
+    )
+
+    high_freq_scale = self._config.reward_config.scales.torque_high_freq
+    torque_rate_scale = self._config.reward_config.scales.torque_rate
+    if high_freq_scale > 0.0:
+      raise ValueError(
+          "reward_config.scales.torque_high_freq must be non-positive."
+      )
+    if torque_rate_scale > 0.0:
+      raise ValueError(
+          "reward_config.scales.torque_rate must be non-positive."
+      )
+    if high_freq_scale < 0.0 or torque_rate_scale < 0.0:
+      self._config.reward_config.scales.action_rate = 0.0
+
+    spectrum_cutoffs_hz = tuple(
+        self._config.reward_config.torque_spectrum_cutoffs_hz
+    )
+    if not spectrum_cutoffs_hz:
+      raise ValueError(
+          "reward_config.torque_spectrum_cutoffs_hz must not be empty."
+      )
+    if any(not 0.0 < cutoff < nyquist_hz for cutoff in spectrum_cutoffs_hz):
+      raise ValueError(
+          "All reward_config.torque_spectrum_cutoffs_hz values must be "
+          f"between 0 and {nyquist_hz} Hz, got {spectrum_cutoffs_hz}."
+      )
+    spectrum_filters = [
+        go1_joystick._butterworth_highpass_sos(  # pylint: disable=protected-access
+            cutoff, 1, 1.0 / self.dt
+        )
+        for cutoff in spectrum_cutoffs_hz
+    ]
+    self._torque_spectrum_sos = jp.stack(
+        [filter_sos for filter_sos, _ in spectrum_filters]
+    )
+    self._torque_spectrum_steady_state = jp.stack(
+        [steady_state for _, steady_state in spectrum_filters]
+    )
+    self._torque_spectrum_metric_names = tuple(
+        f"torque_spectrum/highpass_{cutoff:g}hz_per_step"
+        for cutoff in spectrum_cutoffs_hz
+    )
+
     # Contact sensor IDs.
     self._feet_floor_found_sensor = [
         self._mj_model.sensor(f"{geom}_floor_found").id
         for geom in consts.FEET_GEOMS
     ]
+
+  _initial_highpass_state = go1_joystick.Joystick._initial_highpass_state
+  _apply_highpass_filter = go1_joystick.Joystick._apply_highpass_filter
+  _apply_torque_differences = go1_joystick.Joystick._apply_torque_differences
 
   def reset(self, rng: jax.Array) -> mjx_env.State:
     qpos = self._init_q
@@ -247,6 +389,27 @@ class Joystick(berkeley_humanoid_base.BerkeleyHumanoidEnv):
         "command": cmd,
         "last_act": jp.zeros(self.mjx_model.nu),
         "last_last_act": jp.zeros(self.mjx_model.nu),
+        "last_torque": data.actuator_force,
+        "torque_highpass_state": self._initial_highpass_state(
+            (
+                data.actuator_force / self._torque_capacities
+                if self._config.reward_config.torque_highpass_normalize_by_capacity
+                else data.actuator_force
+            )
+            if self._torque_highpass_signal == "torque"
+            else jp.zeros(self.mjx_model.nu),
+            self._torque_highpass_steady_state,
+        ),
+        "torque_spectrum_filter_state": self._initial_highpass_state(
+            jp.broadcast_to(
+                data.actuator_force,
+                (len(self._torque_spectrum_metric_names), self.mjx_model.nu),
+            ),
+            self._torque_spectrum_steady_state,
+        ),
+        "torque_difference_inputs": jp.zeros(
+            (self._torque_difference_upper_order, self.mjx_model.nu)
+        ),
         "motor_targets": jp.zeros(self.mjx_model.nu),
         "feet_air_time": jp.zeros(2),
         "last_contact": jp.zeros(2, dtype=bool),
@@ -263,6 +426,20 @@ class Joystick(berkeley_humanoid_base.BerkeleyHumanoidEnv):
     metrics = {}
     for k in self._config.reward_config.scales.keys():
       metrics[f"reward/{k}"] = jp.zeros(())
+    metrics["reward_without_action_rate"] = jp.zeros(())
+    metrics["reward_without_regularization"] = jp.zeros(())
+    metrics["torque_highpass/disturbance"] = jp.zeros(())
+    metrics["torque_highpass/adaptive_weight"] = jp.asarray(
+        self._torque_highpass_adaptive_max_weight
+        if self._torque_highpass_adaptive_weight
+        else 1.0
+    )
+    metrics["torque_highpass/frequency_normalizer"] = jp.asarray(
+        self._torque_highpass_frequency_normalizer
+    )
+    metrics["torque_spectrum/total_energy_per_step"] = jp.zeros(())
+    for metric_name in self._torque_spectrum_metric_names:
+      metrics[metric_name] = jp.zeros(())
     metrics["swing_peak"] = jp.zeros(())
 
     contact = jp.array([
@@ -312,16 +489,101 @@ class Joystick(berkeley_humanoid_base.BerkeleyHumanoidEnv):
     p_fz = p_f[..., -1]
     state.info["swing_peak"] = jp.maximum(state.info["swing_peak"], p_fz)
 
-    obs = self._get_obs(data, state.info, contact)
     done = self._get_termination(data)
 
+    episode_reset = state.info.get("episode_done", False)
+    highpass_penalty_signal = (
+        (
+            data.actuator_force / self._torque_capacities
+            if self._config.reward_config.torque_highpass_normalize_by_capacity
+            else data.actuator_force
+        )
+        if self._torque_highpass_signal == "torque"
+        else action
+    )
+    torque_highpass, torque_highpass_state = self._apply_highpass_filter(
+        highpass_penalty_signal,
+        state.info["torque_highpass_state"],
+        self._torque_highpass_sos,
+        self._torque_highpass_steady_state,
+        episode_reset,
+    )
+    torque_spectrum_highpass, torque_spectrum_filter_state = (
+        self._apply_highpass_filter(
+            jp.broadcast_to(
+                data.actuator_force,
+                (len(self._torque_spectrum_metric_names), self.mjx_model.nu),
+            ),
+            state.info["torque_spectrum_filter_state"],
+            self._torque_spectrum_sos,
+            self._torque_spectrum_steady_state,
+            episode_reset,
+        )
+    )
+    torque_spectrum_energy = jp.sum(
+        jp.square(torque_spectrum_highpass), axis=-1
+    )
+    torque_high_freq_cost, torque_difference_inputs = (
+        self._apply_torque_differences(
+            torque_highpass,
+            state.info["torque_difference_inputs"],
+            episode_reset,
+        )
+    )
+    torque_high_freq_cost /= self._torque_highpass_frequency_normalizer
+    tracking_disturbance = jp.sum(
+        jp.square(state.info["command"][:2] - self.get_local_linvel(data)[:2])
+    ) + jp.square(state.info["command"][2] - self.get_gyro(data)[2])
+    orientation_disturbance = jp.sum(jp.square(self.get_gravity(data)[:2]))
+    highpass_disturbance = tracking_disturbance + orientation_disturbance
+    highpass_adaptive_weight = jp.asarray(1.0)
+    if self._torque_highpass_adaptive_weight:
+      highpass_adaptive_weight = (
+          go1_joystick._adaptive_highpass_weight(  # pylint: disable=protected-access
+              highpass_disturbance,
+              self._torque_highpass_adaptive_min_weight,
+              self._torque_highpass_adaptive_max_weight,
+              self._torque_highpass_adaptive_sigma,
+          )
+      )
+    torque_high_freq_cost *= highpass_adaptive_weight
+    torque_rate_cost = self._cost_torque_rate(
+        data.actuator_force, state.info["last_torque"]
+    )
+    state.info["torque_highpass_state"] = torque_highpass_state
+    state.info["torque_difference_inputs"] = torque_difference_inputs
+    obs = self._get_obs(data, state.info, contact)
+
     rewards = self._get_reward(
-        data, action, state.info, state.metrics, done, first_contact, contact
+        data,
+        action,
+        state.info,
+        state.metrics,
+        done,
+        first_contact,
+        contact,
+        torque_high_freq_cost,
+        torque_rate_cost,
     )
     rewards = {
         k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
     }
     reward = jp.clip(sum(rewards.values()) * self.dt, 0.0, 10000.0)
+    reward_without_action_rate = jp.clip(
+        sum(v for k, v in rewards.items() if k != "action_rate") * self.dt,
+        0.0,
+        10000.0,
+    )
+    reward_without_regularization = jp.clip(
+        sum(
+            v
+            for k, v in rewards.items()
+            if k not in ("action_rate", "torque_high_freq", "torque_rate")
+        )
+        * self.dt,
+        0.0,
+        10000.0,
+    )
 
     state.info["push"] = push
     state.info["step"] += 1
@@ -330,6 +592,8 @@ class Joystick(berkeley_humanoid_base.BerkeleyHumanoidEnv):
     state.info["phase"] = jp.fmod(phase_tp1 + jp.pi, 2 * jp.pi) - jp.pi
     state.info["last_last_act"] = state.info["last_act"]
     state.info["last_act"] = action
+    state.info["last_torque"] = data.actuator_force
+    state.info["torque_spectrum_filter_state"] = torque_spectrum_filter_state
     state.info["rng"], cmd_rng = jax.random.split(state.info["rng"])
     state.info["command"] = jp.where(
         state.info["step"] > 500,
@@ -346,6 +610,22 @@ class Joystick(berkeley_humanoid_base.BerkeleyHumanoidEnv):
     state.info["swing_peak"] *= ~contact
     for k, v in rewards.items():
       state.metrics[f"reward/{k}"] = v
+    state.metrics["reward_without_action_rate"] = reward_without_action_rate
+    state.metrics["reward_without_regularization"] = (
+        reward_without_regularization
+    )
+    state.metrics["torque_highpass/disturbance"] = highpass_disturbance
+    state.metrics["torque_highpass/adaptive_weight"] = highpass_adaptive_weight
+    state.metrics["torque_highpass/frequency_normalizer"] = jp.asarray(
+        self._torque_highpass_frequency_normalizer
+    )
+    state.metrics["torque_spectrum/total_energy_per_step"] = jp.sum(
+        jp.square(data.actuator_force)
+    )
+    for metric_name, energy in zip(
+        self._torque_spectrum_metric_names, torque_spectrum_energy
+    ):
+      state.metrics[metric_name] = energy
     state.metrics["swing_peak"] = jp.mean(state.info["swing_peak"])
 
     done = done.astype(reward.dtype)
@@ -420,6 +700,15 @@ class Joystick(berkeley_humanoid_base.BerkeleyHumanoidEnv):
         info["last_act"],  # 12
         phase,
     ])
+    if self._torque_highpass_observe_state:
+      state = jp.hstack([
+          state,
+          go1_joystick._highpass_memory_observation(  # pylint: disable=protected-access
+              info
+          ),
+      ])
+    if self._torque_rate_observe_state:
+      state = jp.hstack([state, data.actuator_force])
 
     accelerometer = self.get_accelerometer(data)
     global_angvel = self.get_global_angvel(data)
@@ -456,6 +745,8 @@ class Joystick(berkeley_humanoid_base.BerkeleyHumanoidEnv):
       done: jax.Array,
       first_contact: jax.Array,
       contact: jax.Array,
+      torque_high_freq_cost: jax.Array,
+      torque_rate_cost: jax.Array,
   ) -> dict[str, jax.Array]:
     del metrics  # Unused.
     return {
@@ -473,6 +764,8 @@ class Joystick(berkeley_humanoid_base.BerkeleyHumanoidEnv):
         "base_height": self._cost_base_height(data.qpos[2]),
         # Energy related rewards.
         "torques": self._cost_torques(data.actuator_force),
+        "torque_high_freq": torque_high_freq_cost,
+        "torque_rate": torque_rate_cost,
         "action_rate": self._cost_action_rate(
             action, info["last_act"], info["last_last_act"]
         ),
@@ -555,6 +848,11 @@ class Joystick(berkeley_humanoid_base.BerkeleyHumanoidEnv):
     del last_last_act  # Unused.
     c1 = jp.sum(jp.square(act - last_act))
     return c1
+
+  def _cost_torque_rate(
+      self, torque: jax.Array, last_torque: jax.Array
+  ) -> jax.Array:
+    return jp.sum(jp.square(torque - last_torque))
 
   # Other rewards.
 
