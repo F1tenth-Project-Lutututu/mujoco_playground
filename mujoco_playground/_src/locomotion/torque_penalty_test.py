@@ -27,6 +27,7 @@ class TorquePenaltyTest(absltest.TestCase):
     info = {}
     torque = jp.array([1.0, 2.0])
     self.penalty.reset(info, torque)
+    np.testing.assert_array_equal(info["torque_for_spectrum"], torque)
 
     high_freq, torque_rate = self.penalty.compute(
         info, torque, jp.zeros_like(torque)
@@ -34,6 +35,7 @@ class TorquePenaltyTest(absltest.TestCase):
 
     self.assertAlmostEqual(float(high_freq), 0.0, places=6)
     self.assertAlmostEqual(float(torque_rate), 0.0, places=6)
+    np.testing.assert_array_equal(info["torque_for_spectrum"], torque)
 
   def test_torque_change_has_rate_and_highpass_penalty(self):
     info = {}
@@ -55,6 +57,17 @@ class TorquePenaltyTest(absltest.TestCase):
     torque_penalty.TorquePenalty(self.config, model, 0.02)
 
     self.assertEqual(self.config.scales.action_rate, 0.0)
+
+  def test_uses_joint_force_limits_when_actuator_limits_are_unset(self):
+    model = SimpleNamespace(
+        actuator_forcerange=np.zeros((2, 2)),
+        actuator_trnid=np.array([[1, -1], [0, -1]]),
+        jnt_actfrcrange=np.array([[-20.0, 20.0], [-10.0, 10.0]]),
+    )
+
+    penalty = torque_penalty.TorquePenalty(self.config, model, 0.02)
+
+    np.testing.assert_array_equal(penalty.capacity, [10.0, 20.0])
 
 
 if __name__ == "__main__":

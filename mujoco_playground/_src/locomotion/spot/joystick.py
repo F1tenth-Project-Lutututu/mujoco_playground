@@ -222,6 +222,9 @@ class Joystick(spot_base.SpotEnv):
     metrics = {}
     for k in self._config.reward_config.scales.keys():
       metrics[f"reward/{k}"] = jp.zeros(())
+    metrics["reward_without_action_rate"] = jp.zeros(())
+    metrics["reward_without_regularization"] = jp.zeros(())
+    metrics["torque_spectrum/total_energy_per_step"] = jp.zeros(())
     metrics["swing_peak"] = jp.zeros(())
 
     obs = self._get_obs(data, info, noise_rng)
@@ -256,6 +259,17 @@ class Joystick(spot_base.SpotEnv):
     torque_high_freq, torque_rate = self._torque_penalty.compute(
         state.info, data.actuator_force, action
     )
+    tracking_disturbance = jp.sum(
+        jp.square(
+            state.info["command"][:2] - self.get_local_linvel(data)[:2]
+        )
+    ) + jp.square(state.info["command"][2] - self.get_gyro(data)[2])
+    orientation_disturbance = jp.sum(
+        jp.square(self.get_gravity(data)[:2])
+    )
+    torque_high_freq, _ = self._torque_penalty.apply_adaptive_weight(
+        torque_high_freq, tracking_disturbance + orientation_disturbance
+    )
     obs = self._get_obs(data, state.info, noise_rng)
     rewards = self._get_reward(
         data,
@@ -272,6 +286,21 @@ class Joystick(spot_base.SpotEnv):
         k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
     }
     reward = jp.clip(sum(rewards.values()) * self.dt, 0.0, 10000.0)
+    reward_without_action_rate = jp.clip(
+        sum(v for k, v in rewards.items() if k != "action_rate") * self.dt,
+        0.0,
+        10000.0,
+    )
+    reward_without_regularization = jp.clip(
+        sum(
+            v
+            for k, v in rewards.items()
+            if k not in ("action_rate", "torque_high_freq", "torque_rate")
+        )
+        * self.dt,
+        0.0,
+        10000.0,
+    )
 
     state.info["last_last_act"] = state.info["last_act"]
     state.info["last_act"] = action
@@ -296,6 +325,13 @@ class Joystick(spot_base.SpotEnv):
     state.info["swing_peak"] *= ~contact
     for k, v in rewards.items():
       state.metrics[f"reward/{k}"] = v
+    state.metrics["reward_without_action_rate"] = reward_without_action_rate
+    state.metrics["reward_without_regularization"] = (
+        reward_without_regularization
+    )
+    state.metrics["torque_spectrum/total_energy_per_step"] = jp.sum(
+        jp.square(data.actuator_force)
+    )
     state.metrics["swing_peak"] = jp.mean(state.info["swing_peak"])
 
     done = done.astype(reward.dtype)

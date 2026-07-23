@@ -25,6 +25,7 @@ import numpy as np
 from scipy import signal as scipy_signal
 
 from mujoco_playground._src import mjx_env
+from mujoco_playground._src.locomotion import torque_penalty
 from mujoco_playground._src.locomotion.go1 import base as go1_base
 from mujoco_playground._src.locomotion.go1 import go1_constants as consts
 
@@ -354,87 +355,9 @@ class Joystick(go1_base.Go1Env):
 
     cutoff_hz = self._config.reward_config.torque_highpass_cutoff_hz
     nyquist_hz = 0.5 / self.dt
-    if not 0.0 < cutoff_hz < nyquist_hz:
-      raise ValueError(
-          "reward_config.torque_highpass_cutoff_hz must be between 0 and "
-          f"the control-rate Nyquist frequency ({nyquist_hz} Hz), got "
-          f"{cutoff_hz} Hz."
-      )
-    self._torque_highpass_order = _validate_torque_highpass_order(
-        self._config.reward_config.torque_highpass_order
+    self._torque_penalty = torque_penalty.TorquePenalty(
+        self._config.reward_config, self._mj_model, self.dt
     )
-    (
-        self._torque_highpass_sos,
-        self._torque_highpass_steady_state,
-    ) = _butterworth_highpass_sos(
-        cutoff_hz, self._torque_highpass_order, 1.0 / self.dt
-    )
-
-    self._torque_highpass_difference_order = _validate_torque_difference_order(
-        self._config.reward_config.torque_highpass_difference_order
-    )
-    difference_order = self._torque_highpass_difference_order
-    self._torque_difference_lower_order = int(np.floor(difference_order))
-    self._torque_difference_upper_order = int(np.ceil(difference_order))
-    self._torque_difference_mix = float(
-        difference_order - self._torque_difference_lower_order
-    )
-    difference_gain_at_cutoff = 2.0 * np.sin(np.pi * cutoff_hz * self.dt)
-    self._torque_difference_scale_base = float(1.0 / difference_gain_at_cutoff)
-    self._torque_highpass_frequency_normalization = (
-        _validate_highpass_frequency_normalization(
-            self._config.reward_config.torque_highpass_frequency_normalization
-        )
-    )
-    self._torque_highpass_frequency_normalizer = 1.0
-    if self._torque_highpass_frequency_normalization == "white_spectrum":
-      self._torque_highpass_frequency_normalizer = (
-          _white_spectrum_frequency_normalizer(
-              self._torque_highpass_sos,
-              cutoff_hz,
-              1.0 / self.dt,
-              difference_order,
-          )
-      )
-    self._torque_highpass_signal = _validate_highpass_penalty_signal(
-        self._config.reward_config.torque_highpass_signal
-    )
-    self._torque_highpass_observe_state = _validate_observe_highpass_state(
-        self._config.reward_config.torque_highpass_observe_state
-    )
-    self._torque_rate_observe_state = _validate_observe_torque_rate_state(
-        self._config.reward_config.torque_rate_observe_state
-    )
-    self._torque_capacities = _actuator_force_capacities(
-        self._mj_model.actuator_forcerange
-    )
-    (
-        self._torque_highpass_adaptive_weight,
-        self._torque_highpass_adaptive_min_weight,
-        self._torque_highpass_adaptive_max_weight,
-        self._torque_highpass_adaptive_sigma,
-    ) = _validate_adaptive_highpass_config(
-        self._config.reward_config.torque_highpass_adaptive_weight,
-        self._config.reward_config.torque_highpass_adaptive_min_weight,
-        self._config.reward_config.torque_highpass_adaptive_max_weight,
-        self._config.reward_config.torque_highpass_adaptive_sigma,
-    )
-
-    high_freq_scale = self._config.reward_config.scales.torque_high_freq
-    if high_freq_scale > 0.0:
-      raise ValueError(
-          "reward_config.scales.torque_high_freq must be non-positive."
-      )
-    if high_freq_scale < 0.0:
-      self._config.reward_config.scales.action_rate = 0.0
-    torque_rate_scale = self._config.reward_config.scales.torque_rate
-    if torque_rate_scale > 0.0:
-      raise ValueError(
-          "reward_config.scales.torque_rate must be non-positive."
-      )
-    if torque_rate_scale < 0.0:
-      self._config.reward_config.scales.action_rate = 0.0
-
     spectrum_cutoffs_hz = tuple(
         self._config.reward_config.torque_spectrum_cutoffs_hz
     )
@@ -508,30 +431,16 @@ class Joystick(go1_base.Go1Env):
       previous_inputs: jax.Array,
       reset: jax.Array,
   ) -> tuple[jax.Array, jax.Array]:
-    """Returns interpolated adjacent-order energy and updated filter state."""
-    differenced = signal
-    normalized_signals = [signal]
-    next_inputs = []
-    for difference in range(self._torque_difference_upper_order):
-      previous_input = jp.where(reset, differenced, previous_inputs[difference])
-      next_inputs.append(differenced)
-      differenced = differenced - previous_input
-      normalized_signals.append(
-          differenced * self._torque_difference_scale_base ** (difference + 1)
-      )
-
-    lower_energy = jp.sum(
-        jp.square(normalized_signals[self._torque_difference_lower_order])
+    """Compatibility wrapper for environments using the former Go1 helper."""
+    return torque_penalty.apply_torque_differences(
+        signal,
+        previous_inputs,
+        reset,
+        self._torque_difference_lower_order,
+        self._torque_difference_upper_order,
+        self._torque_difference_mix,
+        self._torque_difference_scale_base,
     )
-    upper_energy = jp.sum(
-        jp.square(normalized_signals[self._torque_difference_upper_order])
-    )
-    cost = (
-        1.0 - self._torque_difference_mix
-    ) * lower_energy + self._torque_difference_mix * upper_energy
-    if not next_inputs:
-      return cost, previous_inputs
-    return cost, jp.stack(next_inputs)
 
   def reset(self, rng: jax.Array) -> mjx_env.State:
     qpos = self._init_q
@@ -603,26 +512,12 @@ class Joystick(go1_base.Go1Env):
         "steps_until_next_cmd": steps_until_next_cmd,
         "last_act": jp.zeros(self.mjx_model.nu),
         "last_last_act": jp.zeros(self.mjx_model.nu),
-        "last_torque": data.actuator_force,
-        "torque_highpass_state": self._initial_highpass_state(
-            (
-                data.actuator_force / self._torque_capacities
-                if self._config.reward_config.torque_highpass_normalize_by_capacity
-                else data.actuator_force
-            )
-            if self._torque_highpass_signal == "torque"
-            else jp.zeros(self.mjx_model.nu),
-            self._torque_highpass_steady_state,
-        ),
         "torque_spectrum_filter_state": self._initial_highpass_state(
             jp.broadcast_to(
                 data.actuator_force,
                 (len(self._torque_spectrum_metric_names), self.mjx_model.nu),
             ),
             self._torque_spectrum_steady_state,
-        ),
-        "torque_difference_inputs": jp.zeros(
-            (self._torque_difference_upper_order, self.mjx_model.nu)
         ),
         "torque_for_spectrum": data.actuator_force,
         "feet_air_time": jp.zeros(4),
@@ -636,6 +531,7 @@ class Joystick(go1_base.Go1Env):
         "pert_dir": jp.zeros(3),
         "pert_mag": pert_mag,
     }
+    self._torque_penalty.reset(info, data.actuator_force)
 
     metrics = {}
     for k in self._config.reward_config.scales.keys():
@@ -644,12 +540,12 @@ class Joystick(go1_base.Go1Env):
     metrics["reward_without_regularization"] = jp.zeros(())
     metrics["torque_highpass/disturbance"] = jp.zeros(())
     metrics["torque_highpass/adaptive_weight"] = jp.asarray(
-        self._torque_highpass_adaptive_max_weight
-        if self._torque_highpass_adaptive_weight
+        self._torque_penalty.adaptive_max_weight
+        if self._torque_penalty.adaptive_enabled
         else 1.0
     )
     metrics["torque_highpass/frequency_normalizer"] = jp.asarray(
-        self._torque_highpass_frequency_normalizer
+        self._torque_penalty.frequency_normalizer
     )
     metrics["torque_spectrum/total_energy_per_step"] = jp.zeros(())
     for metric_name in self._torque_spectrum_metric_names:
@@ -692,22 +588,6 @@ class Joystick(go1_base.Go1Env):
     done = self._get_termination(data)
 
     episode_reset = state.info.get("episode_done", False)
-    highpass_penalty_signal = (
-        (
-            data.actuator_force / self._torque_capacities
-            if self._config.reward_config.torque_highpass_normalize_by_capacity
-            else data.actuator_force
-        )
-        if self._torque_highpass_signal == "torque"
-        else action
-    )
-    torque_highpass, torque_highpass_state = self._apply_highpass_filter(
-        highpass_penalty_signal,
-        state.info["torque_highpass_state"],
-        self._torque_highpass_sos,
-        self._torque_highpass_steady_state,
-        episode_reset,
-    )
     torque_spectrum_highpass, torque_spectrum_filter_state = (
         self._apply_highpass_filter(
             jp.broadcast_to(
@@ -724,36 +604,22 @@ class Joystick(go1_base.Go1Env):
         jp.square(torque_spectrum_highpass), axis=-1
     )
 
-    torque_high_freq_cost, torque_difference_inputs = (
-        self._apply_torque_differences(
-            torque_highpass,
-            state.info["torque_difference_inputs"],
-            episode_reset,
-        )
+    torque_high_freq_cost, torque_rate_cost = self._torque_penalty.compute(
+        state.info,
+        data.actuator_force,
+        action,
+        episode_reset,
     )
-    torque_high_freq_cost /= self._torque_highpass_frequency_normalizer
     tracking_disturbance = jp.sum(
         jp.square(state.info["command"][:2] - self.get_local_linvel(data)[:2])
     ) + jp.square(state.info["command"][2] - self.get_gyro(data)[2])
     orientation_disturbance = jp.sum(jp.square(self.get_upvector(data)[:2]))
     highpass_disturbance = tracking_disturbance + orientation_disturbance
-    highpass_adaptive_weight = jp.asarray(1.0)
-    if self._torque_highpass_adaptive_weight:
-      highpass_adaptive_weight = _adaptive_highpass_weight(
-          highpass_disturbance,
-          self._torque_highpass_adaptive_min_weight,
-          self._torque_highpass_adaptive_max_weight,
-          self._torque_highpass_adaptive_sigma,
-      )
-    torque_high_freq_cost *= highpass_adaptive_weight
-    torque_rate_cost = self._cost_torque_rate(
-        data.actuator_force, state.info["last_torque"]
+    torque_high_freq_cost, highpass_adaptive_weight = (
+        self._torque_penalty.apply_adaptive_weight(
+            torque_high_freq_cost, highpass_disturbance
+        )
     )
-
-    # Advance reward memory before constructing the returned observation so
-    # an observing policy receives the memory belonging to the returned state.
-    state.info["torque_highpass_state"] = torque_highpass_state
-    state.info["torque_difference_inputs"] = torque_difference_inputs
     obs = self._get_obs(data, state.info)
 
     rewards = self._get_reward(
@@ -789,7 +655,6 @@ class Joystick(go1_base.Go1Env):
 
     state.info["last_last_act"] = state.info["last_act"]
     state.info["last_act"] = action
-    state.info["last_torque"] = data.actuator_force
     state.info["torque_spectrum_filter_state"] = torque_spectrum_filter_state
     state.info["torque_for_spectrum"] = data.actuator_force
     state.info["steps_until_next_cmd"] -= 1
@@ -816,7 +681,7 @@ class Joystick(go1_base.Go1Env):
     state.metrics["torque_highpass/disturbance"] = highpass_disturbance
     state.metrics["torque_highpass/adaptive_weight"] = highpass_adaptive_weight
     state.metrics["torque_highpass/frequency_normalizer"] = jp.asarray(
-        self._torque_highpass_frequency_normalizer
+        self._torque_penalty.frequency_normalizer
     )
     state.metrics["torque_spectrum/total_energy_per_step"] = jp.sum(
         jp.square(data.actuator_force)
@@ -894,10 +759,10 @@ class Joystick(go1_base.Go1Env):
         info["last_act"],  # 12
         info["command"],  # 3
     ])
-    if self._torque_highpass_observe_state:
-      state = jp.hstack([state, _highpass_memory_observation(info)])
-    if self._torque_rate_observe_state:
-      state = jp.hstack([state, data.actuator_force])
+    state = jp.hstack([
+        state,
+        self._torque_penalty.observation(info, data.actuator_force),
+    ])
 
     accelerometer = self.get_accelerometer(data)
     angvel = self.get_global_angvel(data)

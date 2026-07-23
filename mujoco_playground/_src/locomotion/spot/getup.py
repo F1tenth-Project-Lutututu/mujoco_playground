@@ -170,6 +170,12 @@ class Getup(spot_base.SpotEnv):
     torque_high_freq, torque_rate = self._torque_penalty.compute(
         state.info, data.actuator_force, action
     )
+    orientation_disturbance = jp.sum(
+        jp.square(self.get_gravity(data)[:2])
+    )
+    torque_high_freq, _ = self._torque_penalty.apply_adaptive_weight(
+        torque_high_freq, orientation_disturbance
+    )
     obs = self._get_obs(data, state.info, noise_rng)
     rewards = self._get_reward(
         data,

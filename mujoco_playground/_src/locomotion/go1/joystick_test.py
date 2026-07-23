@@ -22,6 +22,7 @@ import jax.numpy as jp
 import numpy as np
 from scipy import signal as scipy_signal
 
+from mujoco_playground._src.locomotion import torque_penalty
 from mujoco_playground._src.locomotion.go1 import joystick
 
 
@@ -145,21 +146,24 @@ class JoystickTorqueHighpassTest(absltest.TestCase):
     self.assertEqual(float(cost), 9.0)
 
   def test_seven_difference_stages_run_under_jit(self):
-    difference_filter = types.SimpleNamespace(
-        _torque_difference_upper_order=7,
-        _torque_difference_lower_order=6,
-        _torque_difference_mix=0.5,
-        _torque_difference_scale_base=1.25,
+    config = joystick.default_config().reward_config
+    config.torque_highpass_difference_order = 6.5
+    penalty = torque_penalty.TorquePenalty(
+        config,
+        types.SimpleNamespace(
+            actuator_forcerange=np.tile([[-10.0, 10.0]], (12, 1))
+        ),
+        0.02,
     )
-    apply_differences = jax.jit(
-        lambda signal, previous: joystick.Joystick._apply_torque_differences(  # pylint: disable=protected-access
-            difference_filter, signal, previous, jp.asarray(False)
-        )
-    )
+    info = {}
+    penalty.reset(info, jp.zeros(12))
 
-    cost, next_inputs = apply_differences(
-        jp.arange(12, dtype=jp.float32), jp.zeros((7, 12))
-    )
+    @jax.jit
+    def apply_penalty(state, torque):
+      cost, _ = penalty.compute(state, torque, jp.zeros(12))
+      return cost, state["torque_difference_inputs"]
+
+    cost, next_inputs = apply_penalty(info, jp.arange(12, dtype=jp.float32))
     self.assertEqual(next_inputs.shape, (7, 12))
     self.assertTrue(jp.isfinite(cost))
 
