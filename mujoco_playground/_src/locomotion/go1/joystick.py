@@ -33,6 +33,8 @@ _TORQUE_SPECTRUM_DIAGNOSTIC_ORDER = 1
 _MAX_TORQUE_HIGHPASS_ORDER = 8
 _MAX_TORQUE_DIFFERENCE_ORDER = 8.0
 _HIGHPASS_PENALTY_SIGNALS = ("torque", "action")
+_HIGHPASS_FREQUENCY_NORMALIZATIONS = ("legacy", "white_spectrum")
+_FREQUENCY_NORMALIZER_GRID_SIZE = 16_384
 
 
 def _butterworth_highpass_sos(
@@ -84,6 +86,47 @@ def _validate_highpass_penalty_signal(value: Any) -> str:
         f"{_HIGHPASS_PENALTY_SIGNALS}, got {value!r}."
     )
   return value
+
+
+def _validate_highpass_frequency_normalization(value: Any) -> str:
+  if value not in _HIGHPASS_FREQUENCY_NORMALIZATIONS:
+    raise ValueError(
+        "reward_config.torque_highpass_frequency_normalization must be one "
+        f"of {_HIGHPASS_FREQUENCY_NORMALIZATIONS}, got {value!r}."
+    )
+  return value
+
+
+def _white_spectrum_frequency_normalizer(
+    sos: Any,
+    cutoff_hz: float,
+    sample_rate_hz: float,
+    difference_order: float,
+) -> float:
+  """Returns the mean penalty weight for unit-variance white input."""
+  frequencies, response = scipy_signal.sosfreqz(
+      np.asarray(sos),
+      worN=_FREQUENCY_NORMALIZER_GRID_SIZE,
+      fs=sample_rate_hz,
+  )
+  lower_order = int(np.floor(difference_order))
+  upper_order = int(np.ceil(difference_order))
+  interpolation = difference_order - lower_order
+  difference_gain = 2.0 * np.sin(np.pi * frequencies / sample_rate_hz)
+  gain_at_cutoff = 2.0 * np.sin(np.pi * cutoff_hz / sample_rate_hz)
+  normalized_gain = difference_gain / gain_at_cutoff
+  difference_weight = (
+      (1.0 - interpolation) * normalized_gain ** (2 * lower_order)
+      + interpolation * normalized_gain ** (2 * upper_order)
+  )
+  frequency_weight = np.abs(response) ** 2 * difference_weight
+  normalizer = float(np.mean(frequency_weight))
+  if not np.isfinite(normalizer) or normalizer <= 0.0:
+    raise ValueError(
+        "White-spectrum high-pass normalization must be finite and positive, "
+        f"got {normalizer}."
+    )
+  return normalizer
 
 
 def _validate_observe_highpass_state(value: Any) -> bool:
@@ -215,6 +258,7 @@ def default_config() -> config_dict.ConfigDict:
           torque_highpass_cutoff_hz=5.0,
           torque_highpass_order=1,
           torque_highpass_difference_order=0.0,
+          torque_highpass_frequency_normalization="legacy",
           torque_highpass_signal="torque",
           torque_highpass_normalize_by_capacity=True,
           torque_highpass_observe_state=False,
@@ -337,6 +381,21 @@ class Joystick(go1_base.Go1Env):
     )
     difference_gain_at_cutoff = 2.0 * np.sin(np.pi * cutoff_hz * self.dt)
     self._torque_difference_scale_base = float(1.0 / difference_gain_at_cutoff)
+    self._torque_highpass_frequency_normalization = (
+        _validate_highpass_frequency_normalization(
+            self._config.reward_config.torque_highpass_frequency_normalization
+        )
+    )
+    self._torque_highpass_frequency_normalizer = 1.0
+    if self._torque_highpass_frequency_normalization == "white_spectrum":
+      self._torque_highpass_frequency_normalizer = (
+          _white_spectrum_frequency_normalizer(
+              self._torque_highpass_sos,
+              cutoff_hz,
+              1.0 / self.dt,
+              difference_order,
+          )
+      )
     self._torque_highpass_signal = _validate_highpass_penalty_signal(
         self._config.reward_config.torque_highpass_signal
     )
@@ -589,6 +648,9 @@ class Joystick(go1_base.Go1Env):
         if self._torque_highpass_adaptive_weight
         else 1.0
     )
+    metrics["torque_highpass/frequency_normalizer"] = jp.asarray(
+        self._torque_highpass_frequency_normalizer
+    )
     metrics["torque_spectrum/total_energy_per_step"] = jp.zeros(())
     for metric_name in self._torque_spectrum_metric_names:
       metrics[metric_name] = jp.zeros(())
@@ -669,6 +731,7 @@ class Joystick(go1_base.Go1Env):
             episode_reset,
         )
     )
+    torque_high_freq_cost /= self._torque_highpass_frequency_normalizer
     tracking_disturbance = jp.sum(
         jp.square(state.info["command"][:2] - self.get_local_linvel(data)[:2])
     ) + jp.square(state.info["command"][2] - self.get_gyro(data)[2])
@@ -752,6 +815,9 @@ class Joystick(go1_base.Go1Env):
     )
     state.metrics["torque_highpass/disturbance"] = highpass_disturbance
     state.metrics["torque_highpass/adaptive_weight"] = highpass_adaptive_weight
+    state.metrics["torque_highpass/frequency_normalizer"] = jp.asarray(
+        self._torque_highpass_frequency_normalizer
+    )
     state.metrics["torque_spectrum/total_energy_per_step"] = jp.sum(
         jp.square(data.actuator_force)
     )

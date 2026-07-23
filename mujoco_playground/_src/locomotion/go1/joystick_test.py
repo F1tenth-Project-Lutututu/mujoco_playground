@@ -47,6 +47,53 @@ class JoystickTorqueHighpassTest(absltest.TestCase):
     )
     self.assertAlmostEqual(float(np.abs(response[0]) ** 2), 0.5, places=5)
 
+  def test_white_spectrum_normalizer_keeps_white_noise_cost_unit_scale(self):
+    sample_rate_hz = 50.0
+    cutoff_hz = 5.0
+    difference_order = 1.5
+    sos, _ = joystick._butterworth_highpass_sos(  # pylint: disable=protected-access
+        cutoff_hz=cutoff_hz, order=2, sample_rate_hz=sample_rate_hz
+    )
+    normalizer = joystick._white_spectrum_frequency_normalizer(  # pylint: disable=protected-access
+        sos, cutoff_hz, sample_rate_hz, difference_order
+    )
+    white = np.random.default_rng(0).standard_normal(250_000)
+    highpass = scipy_signal.sosfilt(np.asarray(sos), white)
+    scale = 1.0 / (
+        2.0 * np.sin(np.pi * cutoff_hz / sample_rate_hz)
+    )
+    first_difference = np.diff(highpass, prepend=highpass[0]) * scale
+    second_difference = (
+        np.diff(first_difference, prepend=first_difference[0]) * scale
+    )
+    fractional_energy = 0.5 * np.square(first_difference) + 0.5 * np.square(
+        second_difference
+    )
+
+    self.assertAlmostEqual(
+        float(np.mean(fractional_energy[1000:]) / normalizer),
+        1.0,
+        delta=0.02,
+    )
+
+  def test_legacy_frequency_normalization_remains_default(self):
+    config = joystick.default_config()
+
+    self.assertEqual(
+        config.reward_config.torque_highpass_frequency_normalization,
+        "legacy",
+    )
+    self.assertEqual(
+        joystick._validate_highpass_frequency_normalization(  # pylint: disable=protected-access
+            "white_spectrum"
+        ),
+        "white_spectrum",
+    )
+    with self.assertRaisesRegex(ValueError, "must be one of"):
+      joystick._validate_highpass_frequency_normalization(  # pylint: disable=protected-access
+          "unknown"
+      )
+
   def test_accepts_higher_filter_and_fractional_difference_orders(self):
     self.assertEqual(
         joystick._validate_torque_highpass_order(8),  # pylint: disable=protected-access
