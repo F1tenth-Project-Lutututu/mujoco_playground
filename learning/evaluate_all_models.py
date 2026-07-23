@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Evaluate the models under ``./eagle`` with one reproducible task set.
+"""Evaluate models using one ``./eagle`` run's environment configuration.
 
 This script intentionally has no command-line arguments. Configure the
-constants below, then run:
+constants below, then run. Each policy is evaluated with both high-pass torque
+normalization modes, which are saved separately for plotting:
 
   python learning/evaluate_all_models.py
 """
@@ -35,13 +36,22 @@ from tqdm.auto import tqdm
 
 MODELS_DIRECTORY = Path("eagle")
 OUTPUT_DIRECTORY = Path("evaluations")
+#ENV_NAME = "Go1JoystickFlatTerrain"
+ENV_NAME = "Go1JoystickRoughTerrain"
+
+# Evaluate and log both definitions of the high-pass torque penalty. Results
+# are written below <ENV_NAME>/capacity_normalized/ and
+# <ENV_NAME>/raw_torque/, respectively.
+TORQUE_NORMALIZATION_MODES = {
+    "capacity_normalized": True,
+    "raw_torque": False,
+}
 
 # None selects the numerically latest checkpoint in every model directory.
 # Set a numeric directory name, for example "000183500800", to compare every
 # model at the same training step.
 CHECKPOINT_NAME: str | None = None
 
-ENV_NAME = "Go1JoystickFlatTerrain"
 NUM_RANDOM_TASKS = 512
 TASK_SEED = 0
 EPISODE_LENGTH = 1000
@@ -54,8 +64,9 @@ DISABLE_PERTURBATIONS = True
 RENDER_VIDEO = False
 SAVE_SIGNALS = False
 REQUIRE_CUDA = True
-# A common environment makes task sampling fair across policies and allows one
-# compiled MJX rollout to be reused even when training reward configs differed.
+# Use the registry configuration for ENV_NAME for every policy instead of each
+# checkpoint's training reward config. This keeps the comparison environment
+# identical across runs.
 USE_SAVED_ENVIRONMENT_CONFIG = False
 USE_WANDB = False
 WANDB_PROJECT = "spectral_playground_policy_evaluation"
@@ -156,7 +167,7 @@ def _hash_paths(paths: list[Path]) -> str:
   return digest.hexdigest()
 
 
-def _evaluation_settings() -> dict[str, Any]:
+def _evaluation_settings(torque_normalization: bool) -> dict[str, Any]:
   return {
       "env_name": ENV_NAME,
       "num_random_tasks": NUM_RANDOM_TASKS,
@@ -172,12 +183,16 @@ def _evaluation_settings() -> dict[str, Any]:
       "save_signals": SAVE_SIGNALS,
       "require_cuda": REQUIRE_CUDA,
       "use_saved_environment_config": USE_SAVED_ENVIRONMENT_CONFIG,
+      "torque_highpass_normalize_by_capacity": torque_normalization,
       "use_wandb": USE_WANDB,
       "wandb_project": WANDB_PROJECT if USE_WANDB else None,
   }
 
 
-def _cache_signature(checkpoint: Path) -> dict[str, Any]:
+def _cache_signature(
+    checkpoint: Path,
+    torque_normalization: bool,
+) -> dict[str, Any]:
   checkpoint_inputs = [checkpoint]
   legacy_config = checkpoint.parent / "config.json"
   if legacy_config.is_file():
@@ -187,7 +202,7 @@ def _cache_signature(checkpoint: Path) -> dict[str, Any]:
       "cache_format_version": CACHE_FORMAT_VERSION,
       "checkpoint": checkpoint.name,
       "checkpoint_sha256": _hash_paths(checkpoint_inputs),
-      "evaluation_settings": _evaluation_settings(),
+      "evaluation_settings": _evaluation_settings(torque_normalization),
       "evaluation_code_sha256": _hash_paths(dependencies),
   }
 
@@ -212,7 +227,11 @@ def _write_cache_manifest(path: Path, signature: dict[str, Any]) -> None:
   temporary_path.replace(path)
 
 
-def _evaluation_arguments(checkpoint: Path, output_directory: Path) -> list[str]:
+def _evaluation_arguments(
+    checkpoint: Path,
+    output_directory: Path,
+    torque_normalization: bool,
+) -> list[str]:
   arguments = [
       "--checkpoint",
       str(checkpoint),
@@ -242,6 +261,9 @@ def _evaluation_arguments(checkpoint: Path, output_directory: Path) -> list[str]
       _boolean_argument(
           "use_saved_environment_config", USE_SAVED_ENVIRONMENT_CONFIG
       ),
+      _boolean_argument(
+          "torque_highpass_normalize_by_capacity", torque_normalization
+      ),
   ]
   if USE_WANDB:
     arguments.extend(("--use_wandb", "--wandb_project", WANDB_PROJECT))
@@ -249,8 +271,8 @@ def _evaluation_arguments(checkpoint: Path, output_directory: Path) -> list[str]
 
 
 def main() -> None:
-  models_directory = _resolve(MODELS_DIRECTORY)
-  output_root = _resolve(OUTPUT_DIRECTORY)
+  models_directory = _resolve(MODELS_DIRECTORY / ENV_NAME)
+  output_root = _resolve(OUTPUT_DIRECTORY / ENV_NAME)
   models = _model_directories(models_directory)
   failures: list[tuple[str, str]] = []
   pending = []
@@ -258,7 +280,11 @@ def main() -> None:
   unavailable = 0
   rollout_cache: dict[str, Any] = {}
 
-  print(f"Found {len(models)} models in {models_directory}", flush=True)
+  print(
+      f"Found {len(models)} models in {models_directory}; shared environment "
+      f"is {ENV_NAME}",
+      flush=True,
+  )
   for index, model_directory in enumerate(models, start=1):
     prefix = f"[{index}/{len(models)}] {model_directory.name}"
     try:
@@ -267,30 +293,44 @@ def main() -> None:
       print(f"{prefix}: skipped ({error})", flush=True)
       unavailable += 1
       continue
-    output_directory = output_root / model_directory.name / checkpoint.name
-    summary_path = output_directory / "summary.json"
-    manifest_path = output_directory / CACHE_MANIFEST_NAME
-    signature = _cache_signature(checkpoint)
-
-    if (
-        REUSE_UNCHANGED_RESULTS
-        and summary_path.is_file()
-        and _read_cache_manifest(manifest_path) == signature
+    for normalization_name, torque_normalization in (
+        TORQUE_NORMALIZATION_MODES.items()
     ):
-      print(f"{prefix}: skipped (result is unchanged)", flush=True)
-      skipped += 1
-      continue
+      variant_prefix = f"{prefix} [{normalization_name}]"
+      output_directory = (
+          output_root
+          / normalization_name
+          / model_directory.name
+          / checkpoint.name
+      )
+      summary_path = output_directory / "summary.json"
+      manifest_path = output_directory / CACHE_MANIFEST_NAME
+      signature = _cache_signature(
+          checkpoint, torque_normalization
+      )
 
-    reason = "no result" if not summary_path.is_file() else "result is stale"
-    pending.append((
-        prefix,
-        model_directory,
-        checkpoint,
-        output_directory,
-        manifest_path,
-        signature,
-        reason,
-    ))
+      if (
+          REUSE_UNCHANGED_RESULTS
+          and summary_path.is_file()
+          and _read_cache_manifest(manifest_path) == signature
+      ):
+        print(
+            f"{variant_prefix}: skipped (result is unchanged)", flush=True
+        )
+        skipped += 1
+        continue
+
+      reason = "no result" if not summary_path.is_file() else "result is stale"
+      pending.append((
+          variant_prefix,
+          model_directory,
+          checkpoint,
+          output_directory,
+          manifest_path,
+          signature,
+          reason,
+          torque_normalization,
+      ))
 
   with tqdm(
       pending,
@@ -307,12 +347,17 @@ def main() -> None:
         manifest_path,
         signature,
         reason,
+        torque_normalization,
     ) in progress:
       progress.set_postfix_str(model_directory.name, refresh=True)
       tqdm.write(
           f"{prefix}: evaluating checkpoint {checkpoint.name} ({reason})"
       )
-      arguments = _evaluation_arguments(checkpoint, output_directory)
+      arguments = _evaluation_arguments(
+          checkpoint,
+          output_directory,
+          torque_normalization,
+      )
       try:
         evaluate_policy.main(arguments, rollout_cache=rollout_cache)
       except Exception as error:  # pylint: disable=broad-exception-caught

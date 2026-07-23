@@ -18,8 +18,9 @@ The script creates a multi-panel plot with one panel per metric and grouped
 bars for the evaluations. Bar heights are per-scenario rollout means and error
 bars show one standard deviation. Configure the uppercase constants below,
 then run the script. A second figure shows paired per-task differences from a
-reference method, removing between-task variability. Both figures have CSV
-companions.
+reference method, removing between-task variability. A third figure expresses
+the paired changes as percentages, oriented so positive values always mean an
+improvement. All figures have CSV companions.
 """
 
 import csv
@@ -36,18 +37,33 @@ import numpy as np
 # directory containing exactly one evaluated checkpoint is also accepted. A
 # directory whose name ends in ``-seedN`` selects all sibling seed directories
 # for that policy type; the configured seed only serves as the pattern template.
+#METHODS = {
+#    "baseline": "evaluations/260716-go1-baseline-ar1em2-seed0",
+#    "baseline-ar3em2": "evaluations/260716-go1-baseline-ar3em2-seed0",
+#    "baseline-ar5em2": "evaluations/260717-go1-baseline-ar5em2-seed0",
+#    "baseline-ar1em1": "evaluations/260717-go1-baseline-ar1em1-seed0",
+#    "newhf1em6-f5o2m30": "evaluations/260716-go1-newhf1em6-f5o2m30-seed0",
+#    "newhf1em5-f5o2m20": "evaluations/260716-go1-newhf1em5-f5o2m20-seed0",
+#    "newhf1em5-f5o3m20": "evaluations/260716-go1-newhf1em5-f5o3m20-seed0",
+#    "newhf1em5-f5o4m20": "evaluations/260717-go1-newhf1em5-f5o4m20-seed0",
+#    "newhf1em5-f5o2m15": "evaluations/260716-go1-newhf1em5-f5o2m15-seed0",
+#    "newhf1em4-f5o2m05": "evaluations/260716-go1-newhf1em4-f5o2m05-seed0",
+#}
+#PAIRED_REFERENCE = "baseline"
+
+#NORMALIZATION_TYPE = "capacity_normalized"
+NORMALIZATION_TYPE = "raw_torque"
+EVALUATION_DIR = Path("evaluations/Go1JoystickRoughTerrain") / NORMALIZATION_TYPE
+
 METHODS = {
-    "baseline": "evaluations/260716-go1-baseline-ar1em2-seed0",
-    "baseline-ar3em2": "evaluations/260716-go1-baseline-ar3em2-seed0",
-    "baseline-ar5em2": "evaluations/260717-go1-baseline-ar5em2-seed0",
-    "baseline-ar1em1": "evaluations/260717-go1-baseline-ar1em1-seed0",
-    "newhf1em6-f5o2m30": "evaluations/260716-go1-newhf1em6-f5o2m30-seed0",
-    "newhf1em5-f5o2m20": "evaluations/260716-go1-newhf1em5-f5o2m20-seed0",
-    "newhf1em5-f5o3m20": "evaluations/260716-go1-newhf1em5-f5o3m20-seed0",
-    "newhf1em5-f5o4m20": "evaluations/260717-go1-newhf1em5-f5o4m20-seed0",
-    "newhf1em5-f5o2m15": "evaluations/260716-go1-newhf1em5-f5o2m15-seed0",
-    "newhf1em4-f5o2m05": "evaluations/260716-go1-newhf1em4-f5o2m05-seed0",
+    "baseline-ar2em1": EVALUATION_DIR / "260721-baseline-400M-ar2em1-seed0",
+    "newhfstate-f5o1m10": EVALUATION_DIR / "260722-newhfstate1em3-400M-f5o1m10-seed0",
+    "newhf-f5o5m25": EVALUATION_DIR / "260718-newhf1em5-400M-f5o5m25-seed0",
+    "newhf-f5o4m25": EVALUATION_DIR / "260718-newhf1em5-400M-f5o4m25-seed0",
+    "newhf-f5o3m25": EVALUATION_DIR / "260718-newhf1em5-400M-f5o3m25-seed0",
+    "newhf-f5o2m25": EVALUATION_DIR / "260721-newhf1em5-400M-f5o2m25-seed0",
 }
+PAIRED_REFERENCE = "baseline-ar2em1"
 
 METRICS = (
     "eval_reward_means/total_without_regularization",
@@ -69,11 +85,14 @@ OUTPUT = Path("evaluation_comparison.png")
 # Set to None to use OUTPUT with a .csv suffix.
 CSV_OUTPUT: Path | None = None
 TITLE = "Policy evaluation comparison"
-PAIRED_REFERENCE = "baseline"
 PAIRED_OUTPUT = Path("evaluation_comparison_paired.png")
 # Set to None to use PAIRED_OUTPUT with a .csv suffix.
 PAIRED_CSV_OUTPUT: Path | None = None
 PAIRED_TITLE = "Paired per-task differences"
+PAIRED_PERCENT_OUTPUT = Path("evaluation_comparison_paired_percent.png")
+# Set to None to use PAIRED_PERCENT_OUTPUT with a .csv suffix.
+PAIRED_PERCENT_CSV_OUTPUT: Path | None = None
+PAIRED_PERCENT_TITLE = "Paired per-task improvement/deterioration"
 PAIRED_SHOW_TASK_POINTS = True
 PAIRED_POINT_ALPHA = 0.15
 # Hide task dots outside the standard Tukey boxplot fences so a few extreme
@@ -85,6 +104,25 @@ FIGURE_WIDTH_INCHES = 19.2
 FIGURE_ASPECT_RATIO = 16.0 / 9.0
 DPI = 160
 SHOW = False
+
+# Direction used to turn relative changes into improvement percentages.
+# 1 means larger values are better; -1 means smaller values are better.
+METRIC_IMPROVEMENT_DIRECTIONS = {
+    "eval_reward_means/total_without_regularization": 1,
+    "tracking/linear_velocity_vector_rmse": -1,
+    "tracking/yaw_rate_rmse": -1,
+    "smoothness/torque/mean_squared_delta_l2_per_step": -1,
+    "smoothness/torque/mssd_mean_squared_second_difference_per_dof": -1,
+    "smoothness/torque/msgfd_mean_absolute_savgol_filter_deviation_per_dof": -1,
+    "torque_spectrum/eval/fft_above_5hz_energy_per_step": -1,
+    "torque_spectrum/eval/fft_above_15hz_energy_per_step": -1,
+    "tracking/absolute_mechanical_energy": -1,
+    "tracking/total_absolute_torque_impulse": -1,
+    "tracking/orientation_error_rms_degrees": -1,
+    "tracking/roll_pitch_rate_rms": -1,
+    "tracking/feet_height_error_mean_mm": -1,
+    "episode/fell": -1,
+}
 
 PAIRED_METADATA_FIELDS = (
     "evaluation_mode",
@@ -410,6 +448,24 @@ def _display_name(metric: str) -> str:
   return name.replace("_", " ").replace("hz", " Hz")
 
 
+def _direction_label(metric: str, normalized: bool = False) -> str:
+  """Returns the direction in which values in a metric panel improve."""
+  if normalized:
+    return "↑ better"
+  direction = METRIC_IMPROVEMENT_DIRECTIONS.get(metric)
+  if direction == 1:
+    return "↑ better"
+  if direction == -1:
+    return "↓ better"
+  return ""
+
+
+def _panel_title(metric: str, normalized: bool = False) -> str:
+  direction = _direction_label(metric, normalized)
+  display_name = _display_name(metric)
+  return f"{display_name}\n{direction}" if direction else display_name
+
+
 def _write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
   with path.open("w", newline="", encoding="utf-8") as fp:
     writer = csv.DictWriter(
@@ -432,6 +488,53 @@ def _write_paired_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
             "value",
             "reference_value",
             "delta",
+        ),
+    )
+    writer.writeheader()
+    writer.writerows(rows)
+
+
+def _paired_percent_rows(
+    rows: Sequence[Mapping[str, Any]],
+    improvement_directions: Mapping[str, int],
+) -> list[dict[str, Any]]:
+  """Adds reference-relative percentages with positive meaning improvement."""
+  percentage_rows = []
+  for row in rows:
+    reference_value = float(row["reference_value"])
+    if reference_value == 0.0:
+      continue
+    direction = improvement_directions.get(str(row["metric"]))
+    if direction not in (-1, 1):
+      raise ValueError(
+          f"Metric {row['metric']!r} needs an improvement direction of 1 "
+          "(higher is better) or -1 (lower is better)."
+      )
+    percentage_rows.append({
+        **row,
+        "percent_improvement": (
+            direction * float(row["delta"]) / abs(reference_value) * 100.0
+        ),
+    })
+  return percentage_rows
+
+
+def _write_paired_percent_csv(
+    path: Path, rows: Sequence[Mapping[str, Any]]
+) -> None:
+  with path.open("w", newline="", encoding="utf-8") as fp:
+    writer = csv.DictWriter(
+        fp,
+        fieldnames=(
+            "evaluation",
+            "reference",
+            "scenario",
+            "task",
+            "metric",
+            "value",
+            "reference_value",
+            "delta",
+            "percent_improvement",
         ),
     )
     writer.writeheader()
@@ -500,7 +603,7 @@ def _plot(
       )
     if not first_handles:
       first_handles, first_legend_labels = ax.get_legend_handles_labels()
-    ax.set_title(_display_name(metric))
+    ax.set_title(_panel_title(metric))
     ax.set_xticks(x, scenarios, rotation=30, ha="right")
     ax.grid(axis="y", alpha=0.3)
     if metric == "episode/fell":
@@ -552,12 +655,16 @@ def _figure_size() -> tuple[float, float]:
   return (FIGURE_WIDTH_INCHES, FIGURE_WIDTH_INCHES / FIGURE_ASPECT_RATIO)
 
 
-def _plot_paired_deltas(
+def _plot_paired_distributions(
     rows: Sequence[Mapping[str, Any]],
     labels: Sequence[str],
     metrics: Sequence[str],
     reference_label: str,
     output: Path,
+    value_field: str,
+    ylabel: str,
+    title: str,
+    normalized_direction: bool = False,
 ) -> None:
   try:
     from matplotlib.patches import Patch  # pylint: disable=g-import-not-at-top
@@ -582,7 +689,7 @@ def _plot_paired_deltas(
     ax = axes.flat[metric_index]
     distributions = [
         np.asarray([
-            row["delta"]
+            row[value_field]
             for row in rows
             if row["metric"] == metric and row["evaluation"] == label
         ])
@@ -644,8 +751,8 @@ def _plot_paired_deltas(
           zorder=4,
       )
     ax.axhline(0.0, color="black", linewidth=1.0, linestyle="--")
-    ax.set_title(_display_name(metric))
-    ax.set_ylabel(f"method − {reference_label}")
+    ax.set_title(_panel_title(metric, normalized=normalized_direction))
+    ax.set_ylabel(ylabel.format(reference=reference_label))
     ax.set_xticks([])
     ax.grid(axis="y", alpha=0.3)
   for ax in axes.flat[len(metrics):]:
@@ -666,7 +773,7 @@ def _plot_paired_deltas(
       ncols=min(PAIRED_LEGEND_COLUMNS, len(method_labels)),
   )
   fig.suptitle(
-      f"{PAIRED_TITLE}\n"
+      f"{title}\n"
       "boxes: task distribution; diamonds: inlier mean ± 95% CI",
       y=0.985,
   )
@@ -677,12 +784,61 @@ def _plot_paired_deltas(
   plt.close(fig)
 
 
+def _plot_paired_deltas(
+    rows: Sequence[Mapping[str, Any]],
+    labels: Sequence[str],
+    metrics: Sequence[str],
+    reference_label: str,
+    output: Path,
+) -> None:
+  _plot_paired_distributions(
+      rows,
+      labels,
+      metrics,
+      reference_label,
+      output,
+      "delta",
+      "method − {reference}",
+      PAIRED_TITLE,
+  )
+
+
+def _plot_paired_percentages(
+    rows: Sequence[Mapping[str, Any]],
+    labels: Sequence[str],
+    metrics: Sequence[str],
+    reference_label: str,
+    output: Path,
+) -> None:
+  _plot_paired_distributions(
+      rows,
+      labels,
+      metrics,
+      reference_label,
+      output,
+      "percent_improvement",
+      "improvement vs {reference} (%)",
+      PAIRED_PERCENT_TITLE,
+      normalized_direction=True,
+  )
+
+
 def compare() -> tuple[Path, Path, Path, Path]:
   """Compares the evaluations configured by the module-level constants."""
   if len(METHODS) < 2:
     raise ValueError("Configure at least two entries in METHODS.")
   if not METRICS:
     raise ValueError("Configure at least one entry in METRICS.")
+  invalid_directions = [
+      metric
+      for metric in METRICS
+      if METRIC_IMPROVEMENT_DIRECTIONS.get(metric) not in (-1, 1)
+  ]
+  if invalid_directions:
+    raise ValueError(
+        "Configure METRIC_IMPROVEMENT_DIRECTIONS for: "
+        + ", ".join(invalid_directions)
+    )
   if COLUMNS <= 0:
     raise ValueError("COLUMNS must be positive.")
   if PAIRED_LEGEND_COLUMNS <= 0:
@@ -757,10 +913,34 @@ def compare() -> tuple[Path, Path, Path, Path]:
   _plot_paired_deltas(
       paired_rows, labels, METRICS, paired_reference, PAIRED_OUTPUT
   )
+  paired_percent_rows = _paired_percent_rows(
+      paired_rows, METRIC_IMPROVEMENT_DIRECTIONS
+  )
+  PAIRED_PERCENT_OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+  paired_percent_csv_output = (
+      PAIRED_PERCENT_CSV_OUTPUT or PAIRED_PERCENT_OUTPUT.with_suffix(".csv")
+  )
+  paired_percent_csv_output.parent.mkdir(parents=True, exist_ok=True)
+  _write_paired_percent_csv(paired_percent_csv_output, paired_percent_rows)
+  _plot_paired_percentages(
+      paired_percent_rows,
+      labels,
+      METRICS,
+      paired_reference,
+      PAIRED_PERCENT_OUTPUT,
+  )
   print(f"Comparison plot written to: {OUTPUT.resolve()}")
   print(f"Comparison data written to: {csv_output.resolve()}")
   print(f"Paired comparison plot written to: {PAIRED_OUTPUT.resolve()}")
   print(f"Paired comparison data written to: {paired_csv_output.resolve()}")
+  print(
+      "Paired percentage plot written to: "
+      f"{PAIRED_PERCENT_OUTPUT.resolve()}"
+  )
+  print(
+      "Paired percentage data written to: "
+      f"{paired_percent_csv_output.resolve()}"
+  )
   return OUTPUT, csv_output, PAIRED_OUTPUT, paired_csv_output
 
 

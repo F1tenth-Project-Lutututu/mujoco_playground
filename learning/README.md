@@ -131,12 +131,23 @@ measurements. Add `--use_wandb` to upload the summary and output directory as a
 W&B evaluation artifact.
 
 To evaluate the latest checkpoint of every model directory under `./eagle` on
-the same random tasks, configure the constants at the top of the batch script
-and run:
+the same random tasks and in one shared environment, set `ENV_NAME` at the top
+of the batch script. Models are discovered below the matching
+`./eagle/<ENV_NAME>/` directory and evaluated with that environment's common
+registry configuration, then run:
 
 ```bash
 python learning/evaluate_all_models.py
 ```
+
+Every policy is evaluated twice. Capacity-normalized results are written under
+`evaluations/<ENV_NAME>/capacity_normalized/`, and raw-torque results under
+`evaluations/<ENV_NAME>/raw_torque/`. Both `summary.json` files record
+`metadata.torque_highpass_normalize_by_capacity`. Choose the desired root in
+`compare_policy_evaluations.py`'s
+`METHODS` paths when plotting. This setting controls the high-pass reward
+calculation; each policy still uses the observation normalization stored with
+its own checkpoint.
 
 Successful results are cached. On later runs, the script skips models whose
 checkpoint, evaluation settings, evaluator/environment code, and locked
@@ -199,6 +210,20 @@ legacy penalty in squared N·m. This option does not affect action filtering or
 the physical-unit `torque_spectrum/*` diagnostics. Capacity normalization
 changes the penalty magnitude, so its reward scale must be retuned.
 
+The penalty can also relax smoothly while the robot is disturbed:
+
+```sh
+  --playground_config_overrides='{"reward_config.torque_highpass_adaptive_weight": true, "reward_config.torque_highpass_adaptive_min_weight": 0.1, "reward_config.torque_highpass_adaptive_max_weight": 1.0, "reward_config.torque_highpass_adaptive_sigma": 0.25}'
+```
+
+The disturbance indicator is the sum of squared planar linear-velocity
+tracking error, squared yaw-rate tracking error, and squared roll/pitch tilt.
+The multiplier is `min_weight + (max_weight - min_weight) * exp(-d / sigma)`.
+It is therefore strongest in nominal locomotion, approaches `min_weight` after
+a push, and recovers continuously with tracking and posture. Adaptation is off
+by default. The current indicator and multiplier are logged as
+`torque_highpass/disturbance` and `torque_highpass/adaptive_weight`.
+
 The filter samples the selected signal at the 50 Hz control rate, so the
 cutoff must be greater than 0 and less than the 25 Hz Nyquist frequency. Order
 1 is the default. Orders 1 through 8 use a proper digital Butterworth high-pass
@@ -207,6 +232,21 @@ configured cutoff remains the -3 dB point for every order. The resulting
 component is logged as `reward/torque_high_freq`. Enabling this penalty with a
 negative scale automatically sets the sampled-action `action_rate` scale to
 zero, so the two smoothing penalties are not applied together.
+
+The high-pass reward has causal memory that is hidden from the policy by
+default to preserve compatibility with existing checkpoints. Expose both the
+Butterworth filter state and the difference-filter history to the actor and
+critic observations with:
+
+```sh
+  --playground_config_overrides='{"reward_config.torque_highpass_observe_state": true}'
+```
+
+This increases the observation dimension, so it must be selected before
+training and cannot be enabled only when evaluating an existing policy. The
+evaluator restores this structural option from new checkpoints automatically,
+including when `evaluate_all_models.py` otherwise uses a shared registry
+configuration.
 
 The `torque_highpass_difference_order` parameter, denoted by `m`, controls how
 strongly the penalty grows with frequency after the Butterworth high-pass
@@ -239,10 +279,49 @@ python train_jax_ppo.py \
 Different values of `m` have different numerical scales, so tune
 `reward_config.scales.torque_high_freq` independently for each value.
 
+Alternatively, make the scale comparable across cutoff, Butterworth order, and
+`m` by enabling white-spectrum normalization:
+
+```sh
+  --playground_config_overrides='{"reward_config.scales.torque_high_freq": -0.01, "reward_config.torque_highpass_frequency_normalization": "white_spectrum"}'
+```
+
+This computes the mean of the exact discrete frequency-weighting curve from 0
+Hz through Nyquist and divides the high-pass cost by that fixed value. A
+unit-variance white input therefore has expected normalized cost 1 per signal
+channel, independent of the selected filter shape. The negative
+`torque_high_freq` scale becomes the primary strength parameter. Real robot
+torque is not white, so equal scales do not guarantee identical realized costs,
+but the large purely numerical scale changes caused by cutoff and `m` are
+removed. The computed divisor is logged as
+`torque_highpass/frequency_normalizer`.
+
+The default is `"legacy"`, which sets the divisor to 1 and preserves the exact
+existing reward calculation and checkpoint behavior.
+
 Training and evaluation also log `total_without_regularization`, which excludes
-both the `action_rate` and `torque_high_freq` reward terms. This provides a
-common task-reward metric for comparing either smoothing method. The existing
-`total_without_action_rate` metric remains available separately.
+the `action_rate`, `torque_rate`, and `torque_high_freq` reward terms. This
+provides a common task-reward metric for comparing the smoothing methods. The
+existing `total_without_action_rate` metric remains available separately.
+
+As an alternative to sampled-action rate, penalize the squared change in
+actuator torque between consecutive control steps with:
+
+```sh
+  --playground_config_overrides='{"reward_config.scales.torque_rate": -1e-5}'
+```
+
+A negative `torque_rate` scale automatically disables `action_rate`. The actor
+does not observe actuator torque by default, although the privileged critic
+does. Make this reward observable to the actor by appending the current
+12-actuator torque vector to both observations:
+
+```sh
+  --playground_config_overrides='{"reward_config.scales.torque_rate": -1e-5, "reward_config.torque_rate_observe_state": true}'
+```
+
+This is a training-time structural option and cannot be enabled only during
+evaluation of an existing checkpoint.
 
 Unscaled high-pass torque energies are always logged at 1, 2, 5, 10, 15, and
 20 Hz, together with total torque energy, under the `torque_spectrum` W&B

@@ -47,7 +47,7 @@ class EvaluateAllModelsTest(unittest.TestCase):
 
   def test_arguments_use_paired_random_task_and_fast_defaults(self):
     arguments = evaluate_all_models._evaluation_arguments(
-        Path("checkpoint"), Path("output")
+        Path("checkpoint"), Path("output"), True
     )
 
     self.assertIn("--num_random_tasks", arguments)
@@ -61,6 +61,16 @@ class EvaluateAllModelsTest(unittest.TestCase):
     self.assertIn("--no-save_signals", arguments)
     self.assertIn("--require_cuda", arguments)
     self.assertIn("--no-use_saved_environment_config", arguments)
+    self.assertIn("--torque_highpass_normalize_by_capacity", arguments)
+
+  def test_arguments_can_select_raw_torque_mode(self):
+    arguments = evaluate_all_models._evaluation_arguments(
+        Path("checkpoint"),
+        Path("output"),
+        False,
+    )
+
+    self.assertIn("--no-torque_highpass_normalize_by_capacity", arguments)
 
   def test_hash_changes_when_checkpoint_contents_change(self):
     with tempfile.TemporaryDirectory() as temporary_directory:
@@ -85,6 +95,7 @@ class EvaluateAllModelsTest(unittest.TestCase):
       self.assertEqual(
           evaluate_all_models._read_cache_manifest(manifest), signature
       )
+
 
 
 if __name__ == "__main__":

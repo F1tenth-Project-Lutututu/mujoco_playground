@@ -178,6 +178,28 @@ class ComparePolicyEvaluationsTest(absltest.TestCase):
         "torque MSGFD (N·m)",
     )
 
+  def test_panel_titles_show_metric_improvement_direction(self):
+    self.assertEqual(
+        compare_policy_evaluations._panel_title(
+            "eval_reward_means/total_without_regularization"
+        ),
+        "total without regularization\n↑ better",
+    )
+    self.assertEqual(
+        compare_policy_evaluations._panel_title(
+            "tracking/linear_velocity_vector_rmse"
+        ),
+        "linear velocity vector rmse\n↓ better",
+    )
+
+  def test_normalized_panel_titles_always_point_up(self):
+    self.assertEqual(
+        compare_policy_evaluations._panel_title(
+            "tracking/linear_velocity_vector_rmse", normalized=True
+        ),
+        "linear velocity vector rmse\n↑ better",
+    )
+
   def test_paired_delta_rows_subtract_matched_reference_tasks(self):
     reference = [
         {"scenario": "random_tasks", "task": "0", "score": "10"},
@@ -239,6 +261,46 @@ class ComparePolicyEvaluationsTest(absltest.TestCase):
     )
     self.assertLen(rows, 1)
     self.assertEqual(rows[0]["metric"], "score")
+
+  def test_paired_percent_rows_orient_improvement_by_metric_direction(self):
+    rows = [
+        {"metric": "reward", "reference_value": 10.0, "delta": 2.0},
+        {"metric": "error", "reference_value": 10.0, "delta": -2.0},
+        {"metric": "error", "reference_value": 10.0, "delta": 2.0},
+    ]
+
+    result = compare_policy_evaluations._paired_percent_rows(
+        rows, {"reward": 1, "error": -1}
+    )
+
+    self.assertSequenceAlmostEqual(
+        [row["percent_improvement"] for row in result],
+        [20.0, 20.0, -20.0],
+    )
+
+  def test_paired_percent_rows_use_absolute_reference_denominator(self):
+    rows = [{"metric": "reward", "reference_value": -10.0, "delta": 2.0}]
+
+    result = compare_policy_evaluations._paired_percent_rows(
+        rows, {"reward": 1}
+    )
+
+    self.assertAlmostEqual(result[0]["percent_improvement"], 20.0)
+
+  def test_paired_percent_rows_skip_zero_reference_values(self):
+    rows = [{"metric": "error", "reference_value": 0.0, "delta": 1.0}]
+
+    result = compare_policy_evaluations._paired_percent_rows(
+        rows, {"error": -1}
+    )
+
+    self.assertEmpty(result)
+
+  def test_paired_percent_rows_require_metric_direction(self):
+    rows = [{"metric": "score", "reference_value": 1.0, "delta": 1.0}]
+
+    with self.assertRaisesRegex(ValueError, "needs an improvement direction"):
+      compare_policy_evaluations._paired_percent_rows(rows, {})
 
   def test_values_within_iqr_removes_extreme_plot_outliers(self):
     values = compare_policy_evaluations.np.asarray([0, 0, 0, 0, 100])
