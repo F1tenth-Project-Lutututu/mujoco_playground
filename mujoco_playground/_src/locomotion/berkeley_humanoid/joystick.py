@@ -410,6 +410,7 @@ class Joystick(berkeley_humanoid_base.BerkeleyHumanoidEnv):
         "torque_difference_inputs": jp.zeros(
             (self._torque_difference_upper_order, self.mjx_model.nu)
         ),
+        "torque_for_spectrum": data.actuator_force,
         "motor_targets": jp.zeros(self.mjx_model.nu),
         "feet_air_time": jp.zeros(2),
         "last_contact": jp.zeros(2, dtype=bool),
@@ -594,6 +595,7 @@ class Joystick(berkeley_humanoid_base.BerkeleyHumanoidEnv):
     state.info["last_act"] = action
     state.info["last_torque"] = data.actuator_force
     state.info["torque_spectrum_filter_state"] = torque_spectrum_filter_state
+    state.info["torque_for_spectrum"] = data.actuator_force
     state.info["rng"], cmd_rng = jax.random.split(state.info["rng"])
     state.info["command"] = jp.where(
         state.info["step"] > 500,
