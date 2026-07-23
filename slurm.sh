@@ -40,6 +40,7 @@ CUTOFF_HZ=${4:-${CUTOFF_HZ:-5.0}}
 DIFFERENCE_ORDER=${5:-${DIFFERENCE_ORDER:-1.0}}
 NUM_TIMESTEPS=${NUM_TIMESTEPS:-400000000}
 SEED=${SLURM_ARRAY_TASK_ID:-0}
+HIGHPASS_ORDER=1
 
 NUMBER_PATTERN='^[+]?[0-9]*\.?[0-9]+([eE][+-]?[0-9]+)?$'
 for value_name in PENALTY_STRENGTH CUTOFF_HZ DIFFERENCE_ORDER; do
@@ -63,6 +64,7 @@ STRENGTH_TAG=$(sed -E \
 eval "$(/mnt/storage_6/project_data/pl0467-01/soft/miniconda3/bin/conda shell.bash hook)"
 conda activate spectral_fixed
 
+EXP_NAME_SUFFIX=
 case "$METHOD" in
   ar)
     METHOD_NAME=baseline
@@ -78,9 +80,18 @@ case "$METHOD" in
     ;;
   hp)
     METHOD_NAME=highpass
+    CUTOFF_TAG=$(sed -E \
+      -e 's/\.0+$//' \
+      -e 's/\.//g' \
+      <<< "${CUTOFF_HZ,,}")
+    DIFFERENCE_ORDER_TAG=$(sed -E \
+      -e 's/\.//g' \
+      <<< "${DIFFERENCE_ORDER,,}")
+    EXP_NAME_SUFFIX="-f${CUTOFF_TAG}o${HIGHPASS_ORDER}m${DIFFERENCE_ORDER_TAG}"
     PLAYGROUND_OVERRIDES=$(printf \
-      '{"reward_config.scales.torque_high_freq": -%s, "reward_config.torque_highpass_cutoff_hz": %s, "reward_config.torque_highpass_order": 1, "reward_config.torque_highpass_difference_order": %s, "reward_config.torque_highpass_normalize_by_capacity": false, "reward_config.torque_highpass_frequency_normalization": "white_spectrum", "reward_config.torque_highpass_observe_state": true}' \
-      "$PENALTY_STRENGTH" "$CUTOFF_HZ" "$DIFFERENCE_ORDER")
+      '{"reward_config.scales.torque_high_freq": -%s, "reward_config.torque_highpass_cutoff_hz": %s, "reward_config.torque_highpass_order": %s, "reward_config.torque_highpass_difference_order": %s, "reward_config.torque_highpass_normalize_by_capacity": false, "reward_config.torque_highpass_frequency_normalization": "white_spectrum", "reward_config.torque_highpass_observe_state": true}' \
+      "$PENALTY_STRENGTH" "$CUTOFF_HZ" "$HIGHPASS_ORDER" \
+      "$DIFFERENCE_ORDER")
     ;;
   *)
     echo "Unknown method '$METHOD'. Choose one of: ar, tr, hp." >&2
@@ -89,7 +100,7 @@ case "$METHOD" in
 esac
 
 TIMESTEP_TAG=$((NUM_TIMESTEPS / 1000000))M
-EXP_NAME=${EXP_NAME:-${METHOD_NAME}-${TIMESTEP_TAG}-${METHOD}${STRENGTH_TAG}}
+EXP_NAME=${EXP_NAME:-${METHOD_NAME}-${TIMESTEP_TAG}-${METHOD}${STRENGTH_TAG}${EXP_NAME_SUFFIX}}
 
 export EXP_NAME
 export PLAYGROUND_OVERRIDES
