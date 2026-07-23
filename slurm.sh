@@ -18,7 +18,7 @@
 ##SBATCH --array=0-3
 #SBATCH --gres=gpu:1
 
-set -euo pipefail
+#set -euo pipefail
 
 # Usage:
 #   sbatch slurm.sh <ar|tr|hp> <penalty-strength> [environment] \
