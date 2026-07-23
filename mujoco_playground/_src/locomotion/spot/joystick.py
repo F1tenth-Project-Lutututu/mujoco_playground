@@ -24,12 +24,13 @@ import numpy as np
 
 from mujoco_playground._src import gait
 from mujoco_playground._src import mjx_env
+from mujoco_playground._src.locomotion import torque_penalty
 from mujoco_playground._src.locomotion.spot import base as spot_base
 from mujoco_playground._src.locomotion.spot import spot_constants as consts
 
 
 def default_config() -> config_dict.ConfigDict:
-  return config_dict.create(
+  config = config_dict.create(
       ctrl_dt=0.02,
       sim_dt=0.004,
       episode_length=1000,
@@ -82,6 +83,8 @@ def default_config() -> config_dict.ConfigDict:
       naconmax=4 * 8192,
       njmax=12 + 4 * 4,
   )
+  torque_penalty.add_config(config.reward_config)
+  return config
 
 
 class Joystick(spot_base.SpotEnv):
@@ -134,6 +137,9 @@ class Joystick(spot_base.SpotEnv):
 
     # Weights for the posture cost.
     self._weights = jp.array([1.0, 1.0, 1.0] * 4)
+    self._torque_penalty = torque_penalty.TorquePenalty(
+        self._config.reward_config, self._mj_model, self.dt
+    )
 
   def reset(self, rng: jax.Array) -> mjx_env.State:
     data = mjx_env.make_data(
@@ -211,6 +217,7 @@ class Joystick(spot_base.SpotEnv):
         # "phase_dt": phase_dt,
         # "foot_height": foot_height,
     }
+    self._torque_penalty.reset(info, data.actuator_force)
 
     metrics = {}
     for k in self._config.reward_config.scales.keys():
@@ -244,11 +251,22 @@ class Joystick(spot_base.SpotEnv):
     p_fz = p_f[..., -1]
     state.info["swing_peak"] = jp.maximum(state.info["swing_peak"], p_fz)
 
-    obs = self._get_obs(data, state.info, noise_rng)
     done = self._get_termination(data)
 
+    torque_high_freq, torque_rate = self._torque_penalty.compute(
+        state.info, data.actuator_force, action
+    )
+    obs = self._get_obs(data, state.info, noise_rng)
     rewards = self._get_reward(
-        data, action, state.info, state.metrics, done, first_contact, contact
+        data,
+        action,
+        state.info,
+        state.metrics,
+        done,
+        first_contact,
+        contact,
+        torque_high_freq,
+        torque_rate,
     )
     rewards = {
         k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
@@ -359,6 +377,9 @@ class Joystick(spot_base.SpotEnv):
         info["last_act"],
         info["command"],
     ])
+    state = jp.concatenate(
+        [state, self._torque_penalty.observation(info, data.actuator_force)]
+    )
     privileged_state = jp.hstack([
         state,
         gyro,
@@ -390,6 +411,8 @@ class Joystick(spot_base.SpotEnv):
       done: jax.Array,
       first_contact: jax.Array,
       contact: jax.Array,
+      torque_high_freq: jax.Array,
+      torque_rate: jax.Array,
   ) -> dict[str, jax.Array]:
     del metrics  # Unused.
     return {
@@ -407,6 +430,8 @@ class Joystick(spot_base.SpotEnv):
         "posture": self._reward_posture(data.qpos[7:], info["command"]),
         "termination": self._cost_termination(done),
         "torques": self._cost_torques(data.actuator_force),
+        "torque_high_freq": torque_high_freq,
+        "torque_rate": torque_rate,
         "action_rate": self._cost_action_rate(action, info),
         "energy": self._cost_energy(data.qvel[6:], data.actuator_force),
         "feet_slip": self._cost_feet_slip(data, contact),

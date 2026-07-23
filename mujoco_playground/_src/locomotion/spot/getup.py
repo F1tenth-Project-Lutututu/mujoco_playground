@@ -23,12 +23,13 @@ from mujoco import mjx
 import numpy as np
 
 from mujoco_playground._src import mjx_env
+from mujoco_playground._src.locomotion import torque_penalty
 from mujoco_playground._src.locomotion.spot import base as spot_base
 from mujoco_playground._src.locomotion.spot import spot_constants as consts
 
 
 def default_config() -> config_dict.ConfigDict:
-  return config_dict.create(
+  config = config_dict.create(
       ctrl_dt=0.02,
       sim_dt=0.004,
       Kp=400.0,
@@ -60,6 +61,8 @@ def default_config() -> config_dict.ConfigDict:
       naconmax=30 * 8192,
       njmax=12 + 30 * 4,
   )
+  torque_penalty.add_config(config.reward_config)
+  return config
 
 
 class Getup(spot_base.SpotEnv):
@@ -87,6 +90,9 @@ class Getup(spot_base.SpotEnv):
     ).astype(np.int32)
     self._z_des = self._init_q[2]
     self._up_vec = jp.array([0.0, 0.0, 1.0])
+    self._torque_penalty = torque_penalty.TorquePenalty(
+        self._config.reward_config, self._mj_model, self.dt
+    )
 
   def _get_random_qpos(self, rng: jax.Array) -> jax.Array:
     rng, orientation_rng, qpos_rng = jax.random.split(rng, 3)
@@ -138,6 +144,7 @@ class Getup(spot_base.SpotEnv):
         "last_act": jp.zeros(self.mjx_model.nu),
         "last_last_act": jp.zeros(self.mjx_model.nu),
     }
+    self._torque_penalty.reset(info, data.actuator_force)
 
     metrics = {}
     for k in self._config.reward_config.scales.keys():
@@ -156,13 +163,23 @@ class Getup(spot_base.SpotEnv):
         self.mjx_model, state.data, motor_targets, self.n_substeps
     )
 
-    obs = self._get_obs(data, state.info, noise_rng)
-
     joint_angles = data.qpos[7:]
     done = jp.any(joint_angles < self._lowers)
     done |= jp.any(joint_angles > self._uppers)
 
-    rewards = self._get_reward(data, action, state.info, state.metrics, done)
+    torque_high_freq, torque_rate = self._torque_penalty.compute(
+        state.info, data.actuator_force, action
+    )
+    obs = self._get_obs(data, state.info, noise_rng)
+    rewards = self._get_reward(
+        data,
+        action,
+        state.info,
+        state.metrics,
+        done,
+        torque_high_freq,
+        torque_rate,
+    )
     rewards = {
         k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
     }
@@ -212,11 +229,15 @@ class Getup(spot_base.SpotEnv):
         * self._config.obs_noise.scales.joint_pos
     )
 
-    return jp.concatenate([
+    observation = jp.concatenate([
         noisy_gyro,  # 3
         noisy_gravity,  # 3
         noisy_joint_angles - self._default_pose,  # 12
         info["last_act"],  # 12
+    ])
+    return jp.concatenate([
+        observation,
+        self._torque_penalty.observation(info, data.actuator_force),
     ])
 
   def _get_reward(
@@ -226,6 +247,8 @@ class Getup(spot_base.SpotEnv):
       info: dict[str, Any],
       metrics: dict[str, Any],
       done: jax.Array,
+      torque_high_freq: jax.Array,
+      torque_rate: jax.Array,
   ) -> dict[str, jax.Array]:
     del done, metrics  # Unused.
 
@@ -245,6 +268,8 @@ class Getup(spot_base.SpotEnv):
         "stand_still": self._reward_stand_still(action, gate),
         "action_rate": self._cost_action_rate(action, info),
         "torques": self._cost_torques(joint_torques),
+        "torque_high_freq": torque_high_freq,
+        "torque_rate": torque_rate,
     }
 
   def _is_upright(self, gravity: jax.Array, ori_tol: float = 0.01) -> jax.Array:

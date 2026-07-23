@@ -24,6 +24,7 @@ import numpy as np
 
 from mujoco_playground._src import gait
 from mujoco_playground._src import mjx_env
+from mujoco_playground._src.locomotion import torque_penalty
 from mujoco_playground._src.locomotion.spot import base as spot_base
 from mujoco_playground._src.locomotion.spot import spot_constants as consts
 
@@ -37,7 +38,7 @@ _PHASES = np.array([
 
 
 def default_config() -> config_dict.ConfigDict:
-  return config_dict.create(
+  config = config_dict.create(
       ctrl_dt=0.02,
       sim_dt=0.004,
       episode_length=1000,
@@ -80,6 +81,10 @@ def default_config() -> config_dict.ConfigDict:
       naconmax=4 * 8192,
       njmax=12 + 4 * 4,
   )
+  torque_penalty.add_config(config.reward_config)
+  # This task previously had no action-rate term.
+  config.reward_config.scales.action_rate = 0.0
+  return config
 
 
 class JoystickGaitTracking(spot_base.SpotEnv):
@@ -121,6 +126,9 @@ class JoystickGaitTracking(spot_base.SpotEnv):
           list(range(sensor_adr, sensor_adr + sensor_dim))
       )
     self._foot_linvel_sensor_adr = jp.array(foot_linvel_sensor_adr)
+    self._torque_penalty = torque_penalty.TorquePenalty(
+        self._config.reward_config, self._mj_model, self.dt
+    )
 
   def reset(self, rng: jax.Array) -> mjx_env.State:
     rng, noise_rng, gait_freq_rng, gait_rng, foot_height_rng, cmd_rng = (
@@ -170,6 +178,7 @@ class JoystickGaitTracking(spot_base.SpotEnv):
         "phase_dt": phase_dt,
         "foot_height": foot_height,
     }
+    self._torque_penalty.reset(info, data.actuator_force)
 
     metrics = {}
     for k in self._config.reward_config.scales.keys():
@@ -203,10 +212,21 @@ class JoystickGaitTracking(spot_base.SpotEnv):
     p_fz = p_f[..., -1]
     state.info["swing_peak"] = jp.maximum(state.info["swing_peak"], p_fz)
 
-    obs = self._get_obs(data, state.info, noise_rng, contact)
     done = self._get_termination(data)
 
-    pos, neg = self._get_reward(data, action, state.info, state.metrics, done)
+    torque_high_freq, torque_rate = self._torque_penalty.compute(
+        state.info, data.actuator_force, action
+    )
+    obs = self._get_obs(data, state.info, noise_rng, contact)
+    pos, neg = self._get_reward(
+        data,
+        action,
+        state.info,
+        state.metrics,
+        done,
+        torque_high_freq,
+        torque_rate,
+    )
     pos = {k: v * self._config.reward_config.scales[k] for k, v in pos.items()}
     neg = {k: v * self._config.reward_config.scales[k] for k, v in neg.items()}
     rewards = pos | neg
@@ -292,7 +312,7 @@ class JoystickGaitTracking(spot_base.SpotEnv):
     phase = jp.concatenate([cos, sin])
 
     # Concatenate final observation.
-    return jp.hstack(
+    observation = jp.hstack(
         [
             noisy_gyro,
             noisy_gravity,
@@ -305,6 +325,10 @@ class JoystickGaitTracking(spot_base.SpotEnv):
             info["foot_height"],
         ],
     )
+    return jp.concatenate([
+        observation,
+        self._torque_penalty.observation(info, data.actuator_force),
+    ])
 
   def _get_reward(
       self,
@@ -313,6 +337,8 @@ class JoystickGaitTracking(spot_base.SpotEnv):
       info: dict[str, Any],
       metrics: dict[str, Any],
       done: jax.Array,
+      torque_high_freq: jax.Array,
+      torque_rate: jax.Array,
   ) -> Tuple[Dict[str, jax.Array], Dict[str, jax.Array]]:
     del action, done, metrics  # Unused.
     pos = {
@@ -332,6 +358,8 @@ class JoystickGaitTracking(spot_base.SpotEnv):
             self.get_global_linvel(data), info["gait"]
         ),
         "hip_splay": self._cost_hip_splay(data.qpos[7:]),
+        "torque_high_freq": torque_high_freq,
+        "torque_rate": torque_rate,
     }
     return pos, neg
 

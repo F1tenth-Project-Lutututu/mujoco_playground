@@ -25,6 +25,7 @@ from mujoco import mjx
 import numpy as np
 
 from mujoco_playground._src import mjx_env
+from mujoco_playground._src.locomotion import torque_penalty
 
 _FEET_SITES = [
     "foot_front_left",
@@ -49,7 +50,7 @@ def get_assets() -> Dict[str, bytes]:
 
 
 def default_config() -> config_dict.ConfigDict:
-  return config_dict.create(
+  config = config_dict.create(
       ctrl_dt=0.02,
       sim_dt=0.004,
       episode_length=1000,
@@ -105,6 +106,8 @@ def default_config() -> config_dict.ConfigDict:
       naconmax=4 * 8192,
       njmax=12 + 4 * 4,
   )
+  torque_penalty.add_config(config.reward_config)
+  return config
 
 
 class Joystick(mjx_env.MjxEnv):
@@ -168,6 +171,9 @@ class Joystick(mjx_env.MjxEnv):
     )
     self._floor_geom_id = self._mj_model.geom("floor").id
     self._foot_radius = 0.0175
+    self._torque_penalty = torque_penalty.TorquePenalty(
+        self._config.reward_config, self._mj_model, self.dt
+    )
 
   def sample_command(self, rng: jax.Array) -> jax.Array:
     rng1, rng2, rng3 = jax.random.split(rng, 3)
@@ -232,6 +238,7 @@ class Joystick(mjx_env.MjxEnv):
         "last_kick_step": jp.array([-jp.inf], dtype=float),
         "step": 0,
     }
+    self._torque_penalty.reset(info, data.actuator_force)
 
     metrics = {}
     for k in self._config.reward_config.scales.keys():
@@ -253,7 +260,6 @@ class Joystick(mjx_env.MjxEnv):
         self.mjx_model, state.data, motor_targets, self.n_substeps
     )
 
-    obs = self._get_obs(data, state.info, state.obs, noise_rng)  # pyrefly: ignore[bad-argument-type]
     joint_angles = data.qpos[7:]
     joint_vel = data.qvel[6:]
     torso_z = data.xpos[self._torso_body_id, -1]
@@ -274,8 +280,19 @@ class Joystick(mjx_env.MjxEnv):
     done |= jp.any(joint_angles > self._uppers)
     done |= torso_z < 0.18
 
+    torque_high_freq, torque_rate = self._torque_penalty.compute(
+        state.info, data.actuator_force, action
+    )
+    obs = self._get_obs(data, state.info, state.obs, noise_rng)  # pyrefly: ignore[bad-argument-type]
     rewards = self._get_reward(
-        data, action, state.info, state.metrics, done, first_contact
+        data,
+        action,
+        state.info,
+        state.metrics,
+        done,
+        first_contact,
+        torque_high_freq,
+        torque_rate,
     )
     rewards = {
         k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
@@ -327,7 +344,11 @@ class Joystick(mjx_env.MjxEnv):
           rng, obs.shape, minval=-1.0, maxval=1.0
       )
       obs += noise
+    obs_history = obs_history[: 15 * obs.size]
     obs = jp.roll(obs_history, obs.size).at[: obs.size].set(obs)
+    obs = jp.concatenate(
+        [obs, self._torque_penalty.observation(info, data.actuator_force)]
+    )
     return obs
 
   def _get_gravity(self, data: mjx.Data) -> jax.Array:
@@ -361,6 +382,8 @@ class Joystick(mjx_env.MjxEnv):
       metrics: dict[str, Any],
       done: jax.Array,
       first_contact: jax.Array,
+      torque_high_freq: jax.Array,
+      torque_rate: jax.Array,
   ) -> dict[str, jax.Array]:
     del metrics  # Unused.
     return {
@@ -376,6 +399,8 @@ class Joystick(mjx_env.MjxEnv):
         "ang_vel_xy": self._cost_ang_vel_xy(self._get_global_angvel(data)),
         "orientation": self._cost_orientation(self._get_gravity(data)),
         "torques": self._cost_torques(data.qfrc_actuator),
+        "torque_high_freq": torque_high_freq,
+        "torque_rate": torque_rate,
         "action_rate": self._cost_action_rate(action, info["last_act"]),
         "stand_still": self._cost_stand_still(info["command"], data.qpos[7:]),
         "termination": self._cost_termination(done, info["step"]),
