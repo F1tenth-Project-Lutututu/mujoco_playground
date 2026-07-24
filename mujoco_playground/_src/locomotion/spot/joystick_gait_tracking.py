@@ -25,6 +25,7 @@ import numpy as np
 from mujoco_playground._src import gait
 from mujoco_playground._src import mjx_env
 from mujoco_playground._src.locomotion import torque_penalty
+from mujoco_playground._src.locomotion.go1 import joystick as go1_joystick
 from mujoco_playground._src.locomotion.spot import base as spot_base
 from mujoco_playground._src.locomotion.spot import spot_constants as consts
 
@@ -82,8 +83,7 @@ def default_config() -> config_dict.ConfigDict:
       njmax=12 + 4 * 4,
   )
   torque_penalty.add_config(config.reward_config)
-  # This task previously had no action-rate term.
-  config.reward_config.scales.action_rate = 0.0
+  config.reward_config.scales.action_rate = -0.01
   return config
 
 
@@ -129,6 +129,38 @@ class JoystickGaitTracking(spot_base.SpotEnv):
     self._torque_penalty = torque_penalty.TorquePenalty(
         self._config.reward_config, self._mj_model, self.dt
     )
+    spectrum_cutoffs_hz = tuple(
+        self._config.reward_config.torque_spectrum_cutoffs_hz
+    )
+    nyquist_hz = 0.5 / self.dt
+    if not spectrum_cutoffs_hz:
+      raise ValueError(
+          "reward_config.torque_spectrum_cutoffs_hz must not be empty."
+      )
+    if any(not 0.0 < cutoff < nyquist_hz for cutoff in spectrum_cutoffs_hz):
+      raise ValueError(
+          "All reward_config.torque_spectrum_cutoffs_hz values must be "
+          f"between 0 and {nyquist_hz} Hz, got {spectrum_cutoffs_hz}."
+      )
+    spectrum_filters = [
+        go1_joystick._butterworth_highpass_sos(  # pylint: disable=protected-access
+            cutoff, 1, 1.0 / self.dt
+        )
+        for cutoff in spectrum_cutoffs_hz
+    ]
+    self._torque_spectrum_sos = jp.stack(
+        [filter_sos for filter_sos, _ in spectrum_filters]
+    )
+    self._torque_spectrum_steady_state = jp.stack(
+        [steady_state for _, steady_state in spectrum_filters]
+    )
+    self._torque_spectrum_metric_names = tuple(
+        f"torque_spectrum/highpass_{cutoff:g}hz_per_step"
+        for cutoff in spectrum_cutoffs_hz
+    )
+
+  _initial_highpass_state = go1_joystick.Joystick._initial_highpass_state
+  _apply_highpass_filter = go1_joystick.Joystick._apply_highpass_filter
 
   def reset(self, rng: jax.Array) -> mjx_env.State:
     rng, noise_rng, gait_freq_rng, gait_rng, foot_height_rng, cmd_rng = (
@@ -170,6 +202,13 @@ class JoystickGaitTracking(spot_base.SpotEnv):
         "step": 0,
         "motor_targets": jp.zeros(self.mjx_model.nu),
         "qpos_error_history": jp.zeros(self._config.history_len * 12),
+        "torque_spectrum_filter_state": self._initial_highpass_state(
+            jp.broadcast_to(
+                data.actuator_force,
+                (len(self._torque_spectrum_metric_names), self.mjx_model.nu),
+            ),
+            self._torque_spectrum_steady_state,
+        ),
         "last_contact": jp.zeros(4, dtype=bool),
         "swing_peak": jp.zeros(4),
         "gait_freq": gait_freq,
@@ -183,6 +222,20 @@ class JoystickGaitTracking(spot_base.SpotEnv):
     metrics = {}
     for k in self._config.reward_config.scales.keys():
       metrics[f"reward/{k}"] = jp.zeros(())
+    metrics["reward_without_action_rate"] = jp.zeros(())
+    metrics["reward_without_regularization"] = jp.zeros(())
+    metrics["torque_highpass/disturbance"] = jp.zeros(())
+    metrics["torque_highpass/adaptive_weight"] = jp.asarray(
+        self._torque_penalty.adaptive_max_weight
+        if self._torque_penalty.adaptive_enabled
+        else 1.0
+    )
+    metrics["torque_highpass/frequency_normalizer"] = jp.asarray(
+        self._torque_penalty.frequency_normalizer
+    )
+    metrics["torque_spectrum/total_energy_per_step"] = jp.zeros(())
+    for metric_name in self._torque_spectrum_metric_names:
+      metrics[metric_name] = jp.zeros(())
     metrics["swing_peak"] = jp.zeros(())
 
     contact = jp.array([
@@ -214,8 +267,25 @@ class JoystickGaitTracking(spot_base.SpotEnv):
 
     done = self._get_termination(data)
 
+    episode_reset = state.info.get("episode_done", False)
+    torque_spectrum_highpass, torque_spectrum_filter_state = (
+        self._apply_highpass_filter(
+            jp.broadcast_to(
+                data.actuator_force,
+                (len(self._torque_spectrum_metric_names), self.mjx_model.nu),
+            ),
+            state.info["torque_spectrum_filter_state"],
+            self._torque_spectrum_sos,
+            self._torque_spectrum_steady_state,
+            episode_reset,
+        )
+    )
+    torque_spectrum_energy = jp.sum(
+        jp.square(torque_spectrum_highpass), axis=-1
+    )
+
     torque_high_freq, torque_rate = self._torque_penalty.compute(
-        state.info, data.actuator_force, action
+        state.info, data.actuator_force, action, episode_reset
     )
     tracking_disturbance = jp.sum(
         jp.square(
@@ -225,8 +295,11 @@ class JoystickGaitTracking(spot_base.SpotEnv):
     orientation_disturbance = jp.sum(
         jp.square(self.get_gravity(data)[:2])
     )
-    torque_high_freq, _ = self._torque_penalty.apply_adaptive_weight(
-        torque_high_freq, tracking_disturbance + orientation_disturbance
+    highpass_disturbance = tracking_disturbance + orientation_disturbance
+    torque_high_freq, highpass_adaptive_weight = (
+        self._torque_penalty.apply_adaptive_weight(
+            torque_high_freq, highpass_disturbance
+        )
     )
     obs = self._get_obs(data, state.info, noise_rng, contact)
     pos, neg = self._get_reward(
@@ -244,9 +317,33 @@ class JoystickGaitTracking(spot_base.SpotEnv):
     r_pos = sum(pos.values())
     r_neg = jp.exp(0.2 * sum(neg.values()))
     reward = r_pos * r_neg * self.dt
+    reward_without_action_rate = (
+        r_pos
+        * jp.exp(
+            0.2 * sum(v for k, v in neg.items() if k != "action_rate")
+        )
+        * self.dt
+    )
+    reward_without_regularization = (
+        r_pos
+        * jp.exp(
+            0.2
+            * sum(
+                v
+                for k, v in neg.items()
+                if k not in (
+                    "action_rate",
+                    "torque_high_freq",
+                    "torque_rate",
+                )
+            )
+        )
+        * self.dt
+    )
 
     state.info["last_last_act"] = state.info["last_act"]
     state.info["last_act"] = action
+    state.info["torque_spectrum_filter_state"] = torque_spectrum_filter_state
     state.info["step"] += 1
     phase_tp1 = state.info["phase"] + state.info["phase_dt"]
     state.info["phase"] = jp.fmod(phase_tp1 + jp.pi, 2 * jp.pi) - jp.pi
@@ -266,6 +363,22 @@ class JoystickGaitTracking(spot_base.SpotEnv):
     state.info["swing_peak"] *= ~contact
     for k, v in rewards.items():
       state.metrics[f"reward/{k}"] = v
+    state.metrics["reward_without_action_rate"] = reward_without_action_rate
+    state.metrics["reward_without_regularization"] = (
+        reward_without_regularization
+    )
+    state.metrics["torque_highpass/disturbance"] = highpass_disturbance
+    state.metrics["torque_highpass/adaptive_weight"] = highpass_adaptive_weight
+    state.metrics["torque_highpass/frequency_normalizer"] = jp.asarray(
+        self._torque_penalty.frequency_normalizer
+    )
+    state.metrics["torque_spectrum/total_energy_per_step"] = jp.sum(
+        jp.square(data.actuator_force)
+    )
+    for metric_name, energy in zip(
+        self._torque_spectrum_metric_names, torque_spectrum_energy
+    ):
+      state.metrics[metric_name] = energy
     state.metrics["swing_peak"] = jp.mean(state.info["swing_peak"])
 
     done = done.astype(reward.dtype)
@@ -369,6 +482,7 @@ class JoystickGaitTracking(spot_base.SpotEnv):
             self.get_global_linvel(data), info["gait"]
         ),
         "hip_splay": self._cost_hip_splay(data.qpos[7:]),
+        "action_rate": self._cost_action_rate(action, info["last_act"]),
         "torque_high_freq": torque_high_freq,
         "torque_rate": torque_rate,
     }
@@ -406,6 +520,11 @@ class JoystickGaitTracking(spot_base.SpotEnv):
   def _cost_hip_splay(self, joint_angles: jax.Array) -> jax.Array:
     current = joint_angles[self._hx_idxs]
     return jp.sum(jp.square(current - self._hx_default_pose))
+
+  def _cost_action_rate(
+      self, action: jax.Array, last_action: jax.Array
+  ) -> jax.Array:
+    return jp.sum(jp.square(action - last_action))
 
   def _cost_lin_vel_z(self, global_linvel, gait: jax.Array) -> jax.Array:  # pylint: disable=redefined-outer-name
     # Penalize z axis base linear velocity unless pronk or bound.
