@@ -296,8 +296,16 @@ def velocity_25_config() -> config_dict.ConfigDict:
   return config
 
 
+def velocity_35_config() -> config_dict.ConfigDict:
+  """Returns the joystick config with a ±3.5 m/s vx command range."""
+  config = default_config()
+  config.command_config.a[0] = 3.5
+  return config
+
+
 # Retain the terrain-specific name for compatibility with existing callers.
 flat_terrain_25_config = velocity_25_config
+flat_terrain_35_config = velocity_35_config
 
 
 class Joystick(go1_base.Go1Env):

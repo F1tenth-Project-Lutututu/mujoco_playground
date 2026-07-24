@@ -53,6 +53,7 @@ def brax_ppo_config(
   if env_name in (
       "Go1JoystickFlatTerrain",
       "Go1JoystickFlatTerrain25",
+      "Go1JoystickFlatTerrain35",
       "Go1JoystickRoughTerrain",
       "Go1JoystickRoughTerrain25",
   ):
