@@ -65,6 +65,9 @@ _envs = {
     "Go1JoystickFlatTerrain25": functools.partial(
         go1_joystick.Joystick, task="flat_terrain"
     ),
+    "Go1JoystickFlatTerrain35": functools.partial(
+        go1_joystick.Joystick, task="flat_terrain"
+    ),
     "Go1JoystickRoughTerrain": functools.partial(
         go1_joystick.Joystick, task="rough_terrain"
     ),
@@ -105,6 +108,7 @@ _cfgs = {
     "G1JoystickRoughTerrain": g1_joystick.default_config,
     "Go1JoystickFlatTerrain": go1_joystick.default_config,
     "Go1JoystickFlatTerrain25": go1_joystick.flat_terrain_25_config,
+    "Go1JoystickFlatTerrain35": go1_joystick.flat_terrain_35_config,
     "Go1JoystickRoughTerrain": go1_joystick.default_config,
     "Go1JoystickRoughTerrain25": go1_joystick.velocity_25_config,
     "Go1Getup": go1_getup.default_config,
@@ -131,6 +135,7 @@ _randomizer = {
     "G1JoystickRoughTerrain": g1_randomize.domain_randomize,
     "Go1JoystickFlatTerrain": go1_randomize.domain_randomize,
     "Go1JoystickFlatTerrain25": go1_randomize.domain_randomize,
+    "Go1JoystickFlatTerrain35": go1_randomize.domain_randomize,
     "Go1JoystickRoughTerrain": go1_randomize.domain_randomize,
     "Go1JoystickRoughTerrain25": go1_randomize.domain_randomize,
     "Go1Getup": go1_randomize.domain_randomize,

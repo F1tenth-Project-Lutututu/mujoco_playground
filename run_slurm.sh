@@ -5,6 +5,7 @@
 
 
 #--env_name Go1JoystickFlatTerrain25 \
+#--env_name Go1JoystickFlatTerrain35 \
 #--env_name Go1JoystickRoughTerrain \
 #--env_name Go1JoystickFlatTerrain \
 #--env_name BerkeleyHumanoidJoystickFlatTerrain \
