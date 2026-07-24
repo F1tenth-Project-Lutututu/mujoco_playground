@@ -47,6 +47,7 @@ from mujoco_playground.config import dm_control_suite_params
 from mujoco_playground.config import locomotion_params
 from mujoco_playground.config import manipulation_params
 import numpy as np
+from scipy import signal as scipy_signal
 try:
   import tensorboardX
 except ImportError:
@@ -544,8 +545,69 @@ def _torque_fft_energy_metrics(
   return metrics
 
 
+def _torque_smoothness_metrics(
+    torques: np.ndarray,
+    active_steps: np.ndarray,
+    savgol_window_length: int = 11,
+    savgol_polyorder: int = 3,
+) -> dict[str, float]:
+  """Returns rollout-mean whole-episode torque smoothness diagnostics."""
+  episode_metrics = {
+      "mean_squared_delta_l2_per_step": [],
+      "mssd_mean_squared_second_difference_per_dof": [],
+      "msgfd_mean_absolute_savgol_filter_deviation_per_dof": [],
+  }
+  for env_index in range(torques.shape[1]):
+    episode_steps = int(np.sum(active_steps[:, env_index]))
+    if episode_steps == 0:
+      continue
+    episode_torques = np.asarray(
+        torques[:episode_steps, env_index], dtype=np.float64
+    )
+
+    delta = np.diff(episode_torques, axis=0)
+    episode_metrics["mean_squared_delta_l2_per_step"].append(
+        float(np.mean(np.sum(np.square(delta), axis=-1)))
+        if len(delta)
+        else 0.0
+    )
+
+    second_delta = np.diff(episode_torques, n=2, axis=0)
+    episode_metrics[
+        "mssd_mean_squared_second_difference_per_dof"
+    ].append(
+        float(np.mean(np.square(second_delta)))
+        if len(second_delta)
+        else 0.0
+    )
+
+    effective_window = min(savgol_window_length, episode_steps)
+    if effective_window % 2 == 0:
+      effective_window -= 1
+    if effective_window >= 1:
+      effective_polyorder = min(savgol_polyorder, effective_window - 1)
+      filtered = scipy_signal.savgol_filter(
+          episode_torques,
+          window_length=effective_window,
+          polyorder=effective_polyorder,
+          axis=0,
+          mode="interp",
+      )
+      msgfd = float(np.mean(np.abs(episode_torques - filtered)))
+    else:
+      msgfd = 0.0
+    episode_metrics[
+        "msgfd_mean_absolute_savgol_filter_deviation_per_dof"
+    ].append(msgfd)
+
+  return {
+      name: float(np.mean(values)) if values else 0.0
+      for name, values in episode_metrics.items()
+  }
+
+
 class _EvaluatorWithTorqueFft:
-  """Brax evaluator that adds order-independent rollout torque FFT metrics."""
+  """Brax evaluator that adds whole-episode torque diagnostics."""
 
   def __init__(
       self,
@@ -601,7 +663,7 @@ class _EvaluatorWithTorqueFft:
   def run_evaluation(
       self, policy_params, training_metrics, aggregate_episodes=True
   ):
-    """Runs evaluation and adds mean-only FFT torque metrics."""
+    """Runs evaluation and adds mean-only whole-episode torque metrics."""
     self._key, unroll_key = jax.random.split(self._key)
     start = time.time()
     eval_state, torques, active_steps = self._generate_eval_unroll(
@@ -630,6 +692,13 @@ class _EvaluatorWithTorqueFft:
     metrics.update({
         f"eval/episode_torque_spectrum/{name}": value
         for name, value in fft_metrics.items()
+    })
+    smoothness_metrics = _torque_smoothness_metrics(
+        np.asarray(torques), np.asarray(active_steps)
+    )
+    metrics.update({
+        f"eval/episode_torque_smoothness/{name}": value
+        for name, value in smoothness_metrics.items()
     })
     metrics["eval/avg_episode_length"] = np.mean(eval_metrics.episode_steps)
     metrics["eval/std_episode_length"] = np.std(eval_metrics.episode_steps)
@@ -692,6 +761,10 @@ def _wandb_metric_name(name: str) -> str:
   if name.startswith("eval/episode_torque_spectrum/"):
     metric = name.removeprefix("eval/episode_torque_spectrum/")
     return f"torque_spectrum/eval/{metric}"
+
+  if name.startswith("eval/episode_torque_smoothness/"):
+    metric = name.removeprefix("eval/episode_torque_smoothness/")
+    return f"smoothness/torque/{metric}"
 
   if name.startswith("eval/episode_reward"):
     metric = name.removeprefix("eval/episode_reward")

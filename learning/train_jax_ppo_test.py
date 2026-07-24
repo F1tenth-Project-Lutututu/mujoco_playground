@@ -19,11 +19,57 @@ import types
 
 from absl.testing import absltest
 from etils import epath
+import numpy as np
 
 from learning import train_jax_ppo
 
 
 class RunConfigTest(absltest.TestCase):
+
+  def test_torque_smoothness_uses_complete_active_episodes(self):
+    torques = np.array([
+        [[0.0], [0.0]],
+        [[1.0], [2.0]],
+        [[4.0], [0.0]],
+        [[9.0], [100.0]],
+        [[16.0], [100.0]],
+    ])
+    active = np.array([
+        [True, True],
+        [True, True],
+        [True, True],
+        [True, False],
+        [True, False],
+    ])
+
+    metrics = train_jax_ppo._torque_smoothness_metrics(
+        torques,
+        active,
+        savgol_window_length=5,
+        savgol_polyorder=2,
+    )
+
+    self.assertAlmostEqual(
+        metrics["mean_squared_delta_l2_per_step"], 12.5
+    )
+    self.assertAlmostEqual(
+        metrics["mssd_mean_squared_second_difference_per_dof"], 10.0
+    )
+    self.assertAlmostEqual(
+        metrics["msgfd_mean_absolute_savgol_filter_deviation_per_dof"], 0.0
+    )
+
+  def test_torque_smoothness_metrics_use_separate_wandb_section(self):
+    metric = (
+        "eval/episode_torque_smoothness/"
+        "mssd_mean_squared_second_difference_per_dof"
+    )
+
+    self.assertEqual(
+        train_jax_ppo._wandb_metric_name(metric),
+        "smoothness/torque/"
+        "mssd_mean_squared_second_difference_per_dof",
+    )
 
   def test_run_logdir_has_environment_parent(self):
     root = self.create_tempdir().full_path
@@ -54,6 +100,19 @@ class RunConfigTest(absltest.TestCase):
   def test_flat_terrain_25_uses_go1_ppo_config(self):
     config = train_jax_ppo.get_rl_config(
         "Go1JoystickFlatTerrain25", vision=False, impl="warp"
+    )
+
+    self.assertEqual(config.num_timesteps, 200_000_000)
+    self.assertEqual(
+        config.network_factory.policy_hidden_layer_sizes, (512, 256, 128)
+    )
+    self.assertEqual(
+        config.network_factory.value_obs_key, "privileged_state"
+    )
+
+  def test_flat_terrain_35_uses_go1_ppo_config(self):
+    config = train_jax_ppo.get_rl_config(
+        "Go1JoystickFlatTerrain35", vision=False, impl="warp"
     )
 
     self.assertEqual(config.num_timesteps, 200_000_000)
