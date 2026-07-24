@@ -62,6 +62,9 @@ else
   exit 2
 fi
 
+LOG_INTERVAL_TIMESTEPS=25000000
+NUM_EVALS=$(((NUM_TIMESTEPS + LOG_INTERVAL_TIMESTEPS - 1) / LOG_INTERVAL_TIMESTEPS))
+
 # Produce compact filesystem-safe tags: 1e-1 -> 1em1, 8e-4 -> 8em4.
 STRENGTH_TAG=${PENALTY_STRENGTH,,}
 STRENGTH_TAG=${STRENGTH_TAG#+}
@@ -120,6 +123,7 @@ echo "Environment: $ENV_NAME"
 echo "Method: $METHOD"
 echo "Penalty strength: $PENALTY_STRENGTH"
 echo "Number of timesteps: $NUM_TIMESTEPS"
+echo "Number of evaluations/logs: $NUM_EVALS (every 25M timesteps)"
 if [[ $METHOD == hp ]]; then
   echo "High-pass cutoff: $CUTOFF_HZ Hz"
   echo "High-pass difference order: $DIFFERENCE_ORDER"
@@ -129,6 +133,7 @@ echo "Overrides: $PLAYGROUND_OVERRIDES"
 
 train-jax-ppo \
   --num_timesteps "$NUM_TIMESTEPS" \
+  --num_evals "$NUM_EVALS" \
   --env_name "$ENV_NAME" \
   --playground_config_overrides="$PLAYGROUND_OVERRIDES" \
   --use_wandb \
