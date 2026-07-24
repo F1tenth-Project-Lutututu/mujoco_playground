@@ -22,23 +22,25 @@
 
 # Usage:
 #   sbatch slurm.sh <ar|tr|hp> <penalty-strength> [environment] \
-#     [cutoff-hz] [difference-order]
+#     [cutoff-hz] [difference-order] [num-timesteps]
 #
 # Examples:
 #   sbatch slurm.sh ar 1e-1 BarkourJoystick
 #   sbatch slurm.sh tr 8e-4 BerkeleyHumanoidJoystickFlatTerrain
 #   sbatch slurm.sh hp 8e-3 SpotFlatTerrainJoystick
 #   sbatch slurm.sh hp 8e-3 SpotFlatTerrainJoystick 10.0 2.0
+#   sbatch slurm.sh hp 8e-3 SpotFlatTerrainJoystick 10.0 2.0 800M
 #
 # The corresponding environment variables can also be used:
 #   METHOD=hp PENALTY_STRENGTH=1e-3 CUTOFF_HZ=10 \
-#     DIFFERENCE_ORDER=2 ENV_NAME=Go1JoystickFlatTerrain sbatch slurm.sh
+#     DIFFERENCE_ORDER=2 NUM_TIMESTEPS=800M \
+#     ENV_NAME=Go1JoystickFlatTerrain sbatch slurm.sh
 METHOD=${1:-${METHOD:-ar}}
 PENALTY_STRENGTH=${2:-${PENALTY_STRENGTH:-1e-1}}
 ENV_NAME=${3:-${ENV_NAME:-BarkourJoystick}}
 CUTOFF_HZ=${4:-${CUTOFF_HZ:-5.0}}
 DIFFERENCE_ORDER=${5:-${DIFFERENCE_ORDER:-1.0}}
-NUM_TIMESTEPS=${NUM_TIMESTEPS:-400000000}
+NUM_TIMESTEPS_INPUT=${6:-${NUM_TIMESTEPS:-400M}}
 SEED=${SLURM_ARRAY_TASK_ID:-0}
 HIGHPASS_ORDER=1
 
@@ -50,6 +52,15 @@ for value_name in PENALTY_STRENGTH CUTOFF_HZ DIFFERENCE_ORDER; do
     exit 2
   fi
 done
+
+if [[ $NUM_TIMESTEPS_INPUT =~ ^([1-9][0-9]*)[Mm]$ ]]; then
+  NUM_TIMESTEPS=$((${BASH_REMATCH[1]} * 1000000))
+elif [[ $NUM_TIMESTEPS_INPUT =~ ^[1-9][0-9]*$ ]]; then
+  NUM_TIMESTEPS=$NUM_TIMESTEPS_INPUT
+else
+  echo "NUM_TIMESTEPS must be a positive integer or use an M suffix (for example, 400M), got: $NUM_TIMESTEPS_INPUT" >&2
+  exit 2
+fi
 
 # Produce compact filesystem-safe tags: 1e-1 -> 1em1, 8e-4 -> 8em4.
 STRENGTH_TAG=${PENALTY_STRENGTH,,}
@@ -108,6 +119,7 @@ export PLAYGROUND_OVERRIDES
 echo "Environment: $ENV_NAME"
 echo "Method: $METHOD"
 echo "Penalty strength: $PENALTY_STRENGTH"
+echo "Number of timesteps: $NUM_TIMESTEPS"
 if [[ $METHOD == hp ]]; then
   echo "High-pass cutoff: $CUTOFF_HZ Hz"
   echo "High-pass difference order: $DIFFERENCE_ORDER"
