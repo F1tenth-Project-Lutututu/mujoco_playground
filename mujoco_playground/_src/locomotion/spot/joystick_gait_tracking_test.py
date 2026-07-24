@@ -14,6 +14,8 @@
 # ==============================================================================
 """Tests for Spot joystick gait-tracking regularization."""
 
+import types
+
 from absl.testing import absltest
 import jax.numpy as jp
 
@@ -35,6 +37,42 @@ class JoystickGaitTrackingTest(absltest.TestCase):
     )
 
     self.assertAlmostEqual(float(cost), 1.25)
+
+  def test_reward_path_uses_action_for_action_rate(self):
+    env = object.__new__(joystick_gait_tracking.JoystickGaitTracking)
+    env._config = (  # pylint: disable=protected-access
+        joystick_gait_tracking.default_config()
+    )
+    env._feet_site_id = jp.arange(4)  # pylint: disable=protected-access
+    env._hx_idxs = jp.array([0, 3, 6, 9])  # pylint: disable=protected-access
+    env._hx_default_pose = jp.zeros(4)  # pylint: disable=protected-access
+    env.get_local_linvel = lambda _: jp.zeros(3)
+    env.get_global_linvel = lambda _: jp.zeros(3)
+    env.get_gyro = lambda _: jp.zeros(3)
+    env.get_global_angvel = lambda _: jp.zeros(3)
+    data = types.SimpleNamespace(
+        qpos=jp.zeros(19),
+        site_xpos=jp.zeros((4, 3)),
+    )
+    info = {
+        "command": jp.zeros(3),
+        "phase": jp.zeros(4),
+        "foot_height": jp.asarray(0.1),
+        "gait": jp.asarray(0),
+        "last_act": jp.zeros(2),
+    }
+
+    _, penalties = env._get_reward(  # pylint: disable=protected-access
+        data,
+        jp.array([1.0, -1.0]),
+        info,
+        {},
+        jp.asarray(False),
+        jp.asarray(0.0),
+        jp.asarray(0.0),
+    )
+
+    self.assertEqual(float(penalties["action_rate"]), 2.0)
 
 
 if __name__ == "__main__":

@@ -464,7 +464,7 @@ class JoystickGaitTracking(spot_base.SpotEnv):
       torque_high_freq: jax.Array,
       torque_rate: jax.Array,
   ) -> Tuple[Dict[str, jax.Array], Dict[str, jax.Array]]:
-    del action, done, metrics  # Unused.
+    del done, metrics  # Unused.
     pos = {
         "tracking_lin_vel": self._reward_tracking_lin_vel(
             info["command"], self.get_local_linvel(data)
