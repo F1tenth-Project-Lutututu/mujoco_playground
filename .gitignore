@@ -15,3 +15,4 @@ logs
 *.wandb
 *.log
 wandb/
+*.tar.gz
