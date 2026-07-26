@@ -197,6 +197,8 @@ class Joystick(base.ApolloEnv):
     }
     for k in self._config.reward_config.scales.keys():
       metrics[f"reward/{k}"] = jp.zeros(())
+    metrics["reward_without_action_rate"] = jp.zeros(())
+    metrics["reward_without_regularization"] = jp.zeros(())
 
     obs = self._get_obs(data, info)
     reward, done = jp.zeros(2)
@@ -233,6 +235,17 @@ class Joystick(base.ApolloEnv):
         k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
     }
     reward = sum(rewards.values()) * self.dt
+    reward_without_action_rate = (
+        sum(v for k, v in rewards.items() if k != "action_rate") * self.dt
+    )
+    reward_without_regularization = (
+        sum(
+            v
+            for k, v in rewards.items()
+            if k not in ("action_rate", "torque_high_freq", "torque_rate")
+        )
+        * self.dt
+    )
 
     state.info["step"] += 1
     phase_tp1 = state.info["phase"] + state.info["phase_dt"]
@@ -257,6 +270,10 @@ class Joystick(base.ApolloEnv):
     )
     for k, v in rewards.items():
       state.metrics[f"reward/{k}"] = v
+    state.metrics["reward_without_action_rate"] = reward_without_action_rate
+    state.metrics["reward_without_regularization"] = (
+        reward_without_regularization
+    )
     done = done.astype(reward.dtype)  # pyrefly: ignore[missing-attribute]
     state = state.replace(data=data, obs=obs, reward=reward, done=done)  # pyrefly: ignore[missing-attribute]
     return state

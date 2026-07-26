@@ -336,6 +336,8 @@ class Joystick(g1_base.G1Env):
     metrics = {}
     for k in self._config.reward_config.scales.keys():
       metrics[f"reward/{k}"] = jp.zeros(())
+    metrics["reward_without_action_rate"] = jp.zeros(())
+    metrics["reward_without_regularization"] = jp.zeros(())
     metrics["swing_peak"] = jp.zeros(())
 
     contact = jp.array([
@@ -408,6 +410,17 @@ class Joystick(g1_base.G1Env):
         k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
     }
     reward = sum(rewards.values()) * self.dt
+    reward_without_action_rate = (
+        sum(v for k, v in rewards.items() if k != "action_rate") * self.dt
+    )
+    reward_without_regularization = (
+        sum(
+            v
+            for k, v in rewards.items()
+            if k not in ("action_rate", "torque_high_freq", "torque_rate")
+        )
+        * self.dt
+    )
 
     state.info["push"] = push
     state.info["step"] += 1
@@ -438,6 +451,10 @@ class Joystick(g1_base.G1Env):
     state.info["swing_peak"] *= ~contact
     for k, v in rewards.items():
       state.metrics[f"reward/{k}"] = v
+    state.metrics["reward_without_action_rate"] = reward_without_action_rate
+    state.metrics["reward_without_regularization"] = (
+        reward_without_regularization
+    )
     state.metrics["swing_peak"] = jp.mean(state.info["swing_peak"])
 
     done = done.astype(reward.dtype)  # pyrefly: ignore[missing-attribute]

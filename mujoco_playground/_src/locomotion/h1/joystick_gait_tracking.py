@@ -208,6 +208,8 @@ class JoystickGaitTracking(h1_base.H1Env):
     metrics = {}
     for k in self._config.reward_config.scales.keys():
       metrics[f"reward/{k}"] = jp.zeros(())
+    metrics["reward_without_action_rate"] = jp.zeros(())
+    metrics["reward_without_regularization"] = jp.zeros(())
 
     left_feet_contact = jp.array([
         data.sensordata[self._mj_model.sensor_adr[sensorid]] > 0
@@ -272,6 +274,19 @@ class JoystickGaitTracking(h1_base.H1Env):
     # r_neg = jp.exp(0.2 * sum(neg.values()))
     # reward = r_pos * r_neg * self.dt
     reward = jp.clip(sum(rewards.values()) * self.dt, 0.0)
+    reward_without_action_rate = jp.clip(
+        sum(v for k, v in rewards.items() if k != "action_rate") * self.dt,
+        0.0,
+    )
+    reward_without_regularization = jp.clip(
+        sum(
+            v
+            for k, v in rewards.items()
+            if k not in ("action_rate", "torque_high_freq", "torque_rate")
+        )
+        * self.dt,
+        0.0,
+    )
 
     state.info["last_last_act"] = state.info["last_act"]
     state.info["last_act"] = action
@@ -295,6 +310,10 @@ class JoystickGaitTracking(h1_base.H1Env):
     )
     for k, v in rewards.items():
       state.metrics[f"reward/{k}"] = v
+    state.metrics["reward_without_action_rate"] = reward_without_action_rate
+    state.metrics["reward_without_regularization"] = (
+        reward_without_regularization
+    )
 
     done = done.astype(reward.dtype)
     state = state.replace(data=data, obs=obs, reward=reward, done=done)  # pyrefly: ignore[missing-attribute]
