@@ -23,12 +23,13 @@ from mujoco import mjx
 import numpy as np
 
 from mujoco_playground._src import mjx_env
+from mujoco_playground._src.locomotion import torque_penalty
 from mujoco_playground._src.locomotion.op3 import base as op3_base
 from mujoco_playground._src.locomotion.op3 import op3_constants as consts
 
 
 def default_config() -> config_dict.ConfigDict:
-  return config_dict.create(
+  config = config_dict.create(
       ctrl_dt=0.02,
       sim_dt=0.004,
       episode_length=1000,
@@ -67,6 +68,8 @@ def default_config() -> config_dict.ConfigDict:
       naconmax=16 * 8192,
       njmax=16 * 4 + 20 * 4,
   )
+  torque_penalty.add_config(config.reward_config)
+  return config
 
 
 class Joystick(op3_base.Op3Env):
@@ -92,6 +95,9 @@ class Joystick(op3_base.Op3Env):
 
     self._torso_body_id = self._mj_model.body(consts.ROOT_BODY).id
     self._torso_mass = self._mj_model.body_subtreemass[self._torso_body_id]
+    self._torque_penalty = torque_penalty.TorquePenalty(
+        self._config.reward_config, self._mj_model, self.dt
+    )
 
     self._feet_site_id = np.array(
         [self._mj_model.site(name).id for name in consts.FEET_SITES]
@@ -177,6 +183,7 @@ class Joystick(op3_base.Op3Env):
         "vel_kick": vel_kick,
         "motor_targets": jp.zeros(self.mjx_model.nu),
     }
+    self._torque_penalty.reset(info, data.actuator_force)
 
     metrics = {}
     for k in self._config.reward_config.scales.keys():
@@ -198,10 +205,27 @@ class Joystick(op3_base.Op3Env):
         self.mjx_model, state.data, motor_targets, self.n_substeps
     )
 
-    obs = self._get_obs(data, state.info, state.obs, noise_rng)  # pyrefly: ignore[bad-argument-type]
+    obs_history_size = self._config.obs_history_size * 49
+    obs = self._get_obs(
+        data, state.info, state.obs[:obs_history_size], noise_rng
+    )
     done = self._get_termination(data)
 
     rewards = self._get_reward(data, action, state.info, state.metrics, done)
+    torque_high_freq, torque_rate = self._torque_penalty.compute(
+        state.info, data.actuator_force, action, done
+    )
+    tracking_disturbance = (
+        1.0
+        - rewards["tracking_lin_vel"]
+        + 1.0
+        - rewards["tracking_ang_vel"]
+    )
+    torque_high_freq, _ = self._torque_penalty.apply_adaptive_weight(
+        torque_high_freq, tracking_disturbance
+    )
+    rewards["torque_high_freq"] = torque_high_freq
+    rewards["torque_rate"] = torque_rate
     rewards = {
         k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
     }
@@ -270,7 +294,10 @@ class Joystick(op3_base.Op3Env):
       )
       obs = jp.clip(obs, -100.0, 100.0) + noise
     obs = jp.roll(obs_history, obs.size).at[: obs.size].set(obs)
-    return obs
+    return jp.concatenate([
+        obs,
+        self._torque_penalty.observation(info, data.actuator_force),
+    ])
 
   def _get_reward(
       self,
