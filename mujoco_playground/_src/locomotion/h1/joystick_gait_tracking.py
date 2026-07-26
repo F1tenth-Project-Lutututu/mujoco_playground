@@ -24,6 +24,7 @@ import numpy as np
 
 from mujoco_playground._src import gait
 from mujoco_playground._src import mjx_env
+from mujoco_playground._src.locomotion import torque_penalty
 from mujoco_playground._src.locomotion.h1 import base as h1_base
 from mujoco_playground._src.locomotion.h1 import h1_constants as consts
 
@@ -34,7 +35,7 @@ _PHASES = np.array([
 
 
 def default_config() -> config_dict.ConfigDict:
-  return config_dict.create(
+  config = config_dict.create(
       ctrl_dt=0.02,
       sim_dt=0.004,
       episode_length=1000,
@@ -81,6 +82,8 @@ def default_config() -> config_dict.ConfigDict:
       naconmax=8 * 8192,
       njmax=19 + 8 * 4,
   )
+  torque_penalty.add_config(config.reward_config)
+  return config
 
 
 class JoystickGaitTracking(h1_base.H1Env):
@@ -120,6 +123,9 @@ class JoystickGaitTracking(h1_base.H1Env):
     ])  # fmt: skip
 
     self._hx_default_pose = self._default_pose[self._hx_idxs]
+    self._torque_penalty = torque_penalty.TorquePenalty(
+        self._config.reward_config, self._mj_model, self.dt
+    )
 
     self._feet_site_id = np.array(
         [self._mj_model.site(name).id for name in consts.FEET_SITES]
@@ -197,6 +203,7 @@ class JoystickGaitTracking(h1_base.H1Env):
         "phase_dt": phase_dt,
         "foot_height": foot_height,
     }
+    self._torque_penalty.reset(info, data.actuator_force)
 
     metrics = {}
     for k in self._config.reward_config.scales.keys():
@@ -247,6 +254,17 @@ class JoystickGaitTracking(h1_base.H1Env):
     pos, neg = self._get_reward(
         data, action, state.info, state.metrics, done, first_contact, contact
     )
+    torque_high_freq, torque_rate = self._torque_penalty.compute(
+        state.info, data.actuator_force, action, done
+    )
+    tracking_disturbance = (
+        1.0 - pos["tracking_lin_vel"] + 1.0 - pos["tracking_ang_vel"]
+    )
+    torque_high_freq, _ = self._torque_penalty.apply_adaptive_weight(
+        torque_high_freq, tracking_disturbance
+    )
+    neg["torque_high_freq"] = torque_high_freq
+    neg["torque_rate"] = torque_rate
     pos = {k: v * self._config.reward_config.scales[k] for k, v in pos.items()}
     neg = {k: v * self._config.reward_config.scales[k] for k, v in neg.items()}
     rewards = pos | neg
@@ -353,7 +371,10 @@ class JoystickGaitTracking(h1_base.H1Env):
             info["foot_height"],
         ],
     )
-    return obs
+    return jp.concatenate([
+        obs,
+        self._torque_penalty.observation(info, data.actuator_force),
+    ])
 
   def _get_reward(
       self,
