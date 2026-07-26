@@ -22,12 +22,13 @@ from ml_collections import config_dict
 from mujoco import mjx
 from mujoco.mjx._src import math
 from mujoco_playground._src import gait, mjx_env
+from mujoco_playground._src.locomotion import torque_penalty
 from mujoco_playground._src.locomotion.apollo import base
 from mujoco_playground._src.locomotion.apollo import constants as consts
 
 
 def default_config() -> config_dict.ConfigDict:
-  return config_dict.create(
+  config = config_dict.create(
       ctrl_dt=0.02,
       sim_dt=0.005,
       episode_length=1000,
@@ -75,6 +76,8 @@ def default_config() -> config_dict.ConfigDict:
       naconmax=8 * 8192,
       njmax=32 + 8 * 4,
   )
+  torque_penalty.add_config(config.reward_config)
+  return config
 
 
 class Joystick(base.ApolloEnv):
@@ -95,6 +98,9 @@ class Joystick(base.ApolloEnv):
     self._cmd_min = jp.array(self._config.command_config.min)
     self._cmd_max = jp.array(self._config.command_config.max)
     self._cmd_zero_prob = jp.array(self._config.command_config.zero_prob)
+    self._torque_penalty = torque_penalty.TorquePenalty(
+        self._config.reward_config, self._mj_model, self.dt
+    )
 
     # fmt: off
     self._weights = jp.array([
@@ -185,6 +191,7 @@ class Joystick(base.ApolloEnv):
         "filtered_linvel": jp.zeros(3),
         "filtered_angvel": jp.zeros(3),
     }
+    self._torque_penalty.reset(info, data.actuator_force)
     metrics = {
         "termination/fall_termination": jp.zeros(()),
     }
@@ -214,6 +221,14 @@ class Joystick(base.ApolloEnv):
     obs = self._get_obs(data, state.info)
     done = self._get_termination(data, state.metrics)
     rewards = self._get_reward(data, action, state.info, state.metrics, done)
+    torque_high_freq, torque_rate = self._torque_penalty.compute(
+        state.info, data.actuator_force, action, done
+    )
+    torque_high_freq, _ = self._torque_penalty.apply_adaptive_weight(
+        torque_high_freq, 1.0 - rewards["tracking"]
+    )
+    rewards["torque_high_freq"] = torque_high_freq
+    rewards["torque_rate"] = torque_rate
     rewards = {
         k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
     }
@@ -310,9 +325,14 @@ class Joystick(base.ApolloEnv):
         root_pos,
         root_quat,
     ])
+    penalty_observation = self._torque_penalty.observation(
+        info, data.actuator_force
+    )
     return {
-        "state": state,
-        "privileged_state": privileged_state,
+        "state": jp.concatenate([state, penalty_observation]),
+        "privileged_state": jp.concatenate(
+            [privileged_state, penalty_observation]
+        ),
     }
 
   def _get_reward(

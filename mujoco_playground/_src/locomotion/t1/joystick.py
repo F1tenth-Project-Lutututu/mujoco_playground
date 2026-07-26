@@ -25,12 +25,13 @@ import numpy as np
 
 from mujoco_playground._src import gait
 from mujoco_playground._src import mjx_env
+from mujoco_playground._src.locomotion import torque_penalty
 from mujoco_playground._src.locomotion.t1 import base as t1_base
 from mujoco_playground._src.locomotion.t1 import t1_constants as consts
 
 
 def default_config() -> config_dict.ConfigDict:
-  return config_dict.create(
+  config = config_dict.create(
       ctrl_dt=0.02,
       sim_dt=0.002,
       episode_length=1000,
@@ -98,6 +99,8 @@ def default_config() -> config_dict.ConfigDict:
       naconmax=8 * 8192,
       njmax=80,
   )
+  torque_penalty.add_config(config.reward_config)
+  return config
 
 
 class Joystick(t1_base.T1Env):
@@ -156,6 +159,9 @@ class Joystick(t1_base.T1Env):
 
     self._torso_body_id = self._mj_model.body(consts.ROOT_BODY).id
     self._torso_mass = self._mj_model.body_subtreemass[self._torso_body_id]
+    self._torque_penalty = torque_penalty.TorquePenalty(
+        self._config.reward_config, self._mj_model, self.dt
+    )
     self._site_id = self._mj_model.site("imu").id
 
     self._feet_site_id = np.array(
@@ -278,6 +284,7 @@ class Joystick(t1_base.T1Env):
         "filtered_linvel": jp.zeros(3),
         "filtered_angvel": jp.zeros(3),
     }
+    self._torque_penalty.reset(info, data.actuator_force)
 
     metrics = {}
     for k in self._config.reward_config.scales.keys():
@@ -358,6 +365,20 @@ class Joystick(t1_base.T1Env):
     rewards = self._get_reward(
         data, action, state.info, state.metrics, done, first_contact, contact
     )
+    torque_high_freq, torque_rate = self._torque_penalty.compute(
+        state.info, data.actuator_force, action, done
+    )
+    tracking_disturbance = (
+        1.0
+        - rewards["tracking_lin_vel"]
+        + 1.0
+        - rewards["tracking_ang_vel"]
+    )
+    torque_high_freq, _ = self._torque_penalty.apply_adaptive_weight(
+        torque_high_freq, tracking_disturbance
+    )
+    rewards["torque_high_freq"] = torque_high_freq
+    rewards["torque_rate"] = torque_rate
     rewards = {
         k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
     }
@@ -486,10 +507,15 @@ class Joystick(t1_base.T1Env):
         feet_vel,  # 4*3
         info["feet_air_time"],  # 2
     ])
+    penalty_observation = self._torque_penalty.observation(
+        info, data.actuator_force
+    )
 
     return {
-        "state": state,
-        "privileged_state": privileged_state,
+        "state": jp.concatenate([state, penalty_observation]),
+        "privileged_state": jp.concatenate(
+            [privileged_state, penalty_observation]
+        ),
     }
 
   def _get_reward(
