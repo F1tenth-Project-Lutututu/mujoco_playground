@@ -131,14 +131,27 @@ measurements. Add `--use_wandb` to upload the summary and output directory as a
 W&B evaluation artifact.
 
 To evaluate the latest checkpoint of every model directory under `./eagle` on
-the same random tasks and in one shared environment, set `ENV_NAME` at the top
-of the batch script. Models are discovered below the matching
+the same random tasks and in one shared environment, pass the environment name
+to the batch script. Models are discovered below the matching
 `./eagle/<ENV_NAME>/` directory and evaluated with that environment's common
 registry configuration, then run:
 
 ```bash
-python learning/evaluate_all_models.py
+python learning/evaluate_all_models.py SpotJoystickGaitTracking
 ```
+
+To populate that model directory from the Eagle cluster, list policy-family
+names without their `-seedN` suffix in
+`eagle/<ENV_NAME>/to_evaluate.txt`, one per line. Then run:
+
+```bash
+python learning/download_models_to_evaluate.py SpotJoystickGaitTracking
+```
+
+The downloader discovers all matching seeds below the cluster's
+`logs/<ENV_NAME>/` directory and uses `scp` to copy only each seed's latest
+numeric checkpoint and configuration files. Existing unrelated local models
+are left untouched.
 
 Every policy is evaluated twice. Capacity-normalized results are written under
 `evaluations/<ENV_NAME>/capacity_normalized/`, and raw-torque results under
@@ -153,6 +166,21 @@ Successful results are cached. On later runs, the script skips models whose
 checkpoint, evaluation settings, evaluator/environment code, and locked
 dependencies are unchanged. Set `REUSE_UNCHANGED_RESULTS = False` to force a
 complete reevaluation.
+
+After evaluation, compare every completed policy family without manually
+building `METHODS`:
+
+```bash
+python learning/plot_all_policy_evaluations.py \
+  SpotJoystickGaitTracking \
+  --normalization raw_torque \
+  --reference 260724-baseline-400M-ar1em1
+```
+
+All seed directories belonging to the same policy family are pooled. Plots and
+CSV files are written below the selected evaluation directory's `comparison/`
+subdirectory. If `--reference` is omitted, the first policy family listed in
+`eagle/<ENV_NAME>/to_evaluate.txt` is used.
 
 To plot a mean torque spectrogram over random tasks, first evaluate with
 `--save_signals`, then pass one or more evaluation directories to the plotter:
