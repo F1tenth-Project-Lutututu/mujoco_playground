@@ -1,0 +1,15 @@
+SilverBadger model attribution
+==============================
+
+The SilverBadger robot model, configuration, XML, and mesh assets are adapted
+from:
+
+  one_policy_to_run_them_all
+  https://github.com/nico-bohlinger/one_policy_to_run_them_all
+
+Copyright (c) 2024 Nico Bohlinger
+Licensed under the MIT License; see LICENSE_MODEL in this directory.
+
+The MuJoCo Playground environment integration is adapted from the Apache-2.0
+MuJoCo Playground Go1 environment. Its source files retain their applicable
+Apache-2.0 notices.
