@@ -10,6 +10,15 @@ from learning import evaluate_all_models
 
 class EvaluateAllModelsTest(unittest.TestCase):
 
+  def test_environment_can_be_passed_positionally_or_as_an_option(self):
+    positional = evaluate_all_models._parse_args(["SpotJoystickGaitTracking"])
+    option = evaluate_all_models._parse_args(
+        ["--env_name", "SpotJoystickGaitTracking"]
+    )
+
+    self.assertEqual(positional.environment, "SpotJoystickGaitTracking")
+    self.assertEqual(option.environment_option, "SpotJoystickGaitTracking")
+
   def test_model_directories_only_include_runs_with_checkpoints(self):
     with tempfile.TemporaryDirectory() as temporary_directory:
       root = Path(temporary_directory)

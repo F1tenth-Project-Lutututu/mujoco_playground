@@ -14,17 +14,18 @@
 # ==============================================================================
 """Evaluate models using one ``./eagle`` run's environment configuration.
 
-This script intentionally has no command-line arguments. Configure the
-constants below, then run. Each policy is evaluated with both high-pass torque
-normalization modes, which are saved separately for plotting:
+Pass the environment name on the command line, or omit it to use ``ENV_NAME``
+from the configuration constants below. Each policy is evaluated with both
+high-pass torque normalization modes, which are saved separately for plotting:
 
-  python learning/evaluate_all_models.py
+  python learning/evaluate_all_models.py SpotJoystickGaitTracking
 """
 
+import argparse
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from learning import evaluate_policy
 from tqdm.auto import tqdm
@@ -52,7 +53,8 @@ TORQUE_NORMALIZATION_MODES = {
 # model at the same training step.
 CHECKPOINT_NAME: str | None = None
 
-NUM_RANDOM_TASKS = 512
+#NUM_RANDOM_TASKS = 512
+NUM_RANDOM_TASKS = 1024
 TASK_SEED = 0
 EPISODE_LENGTH = 1000
 POLICY_SEED = 0
@@ -270,7 +272,10 @@ def _evaluation_arguments(
   return arguments
 
 
-def main() -> None:
+def main(environment: str | None = None) -> None:
+  global ENV_NAME  # pylint: disable=global-statement
+  if environment is not None:
+    ENV_NAME = environment
   models_directory = _resolve(MODELS_DIRECTORY / ENV_NAME)
   output_root = _resolve(OUTPUT_DIRECTORY / ENV_NAME)
   models = _model_directories(models_directory)
@@ -380,5 +385,24 @@ def main() -> None:
   )
 
 
+def _parse_args(arguments: Sequence[str] | None = None) -> argparse.Namespace:
+  parser = argparse.ArgumentParser(description=__doc__)
+  parser.add_argument(
+      "environment",
+      nargs="?",
+      help=f"Environment name (default: {ENV_NAME}).",
+  )
+  parser.add_argument(
+      "--env_name",
+      dest="environment_option",
+      help="Environment name; equivalent to the positional argument.",
+  )
+  args = parser.parse_args(arguments)
+  if args.environment is not None and args.environment_option is not None:
+    parser.error("specify the environment either positionally or with --env_name")
+  return args
+
+
 if __name__ == "__main__":
-  main()
+  _args = _parse_args()
+  main(_args.environment_option or _args.environment)
