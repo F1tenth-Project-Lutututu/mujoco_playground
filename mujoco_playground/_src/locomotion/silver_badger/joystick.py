@@ -418,11 +418,9 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
     self._floor_pos = jp.asarray(
         self._mj_model.geom_pos[self._floor_geom_id]
     )
-    floor_mat = np.empty(9)
-    mujoco.mju_quat2Mat(
-        floor_mat, self._mj_model.geom_quat[self._floor_geom_id]
+    self._floor_mat = math.quat_to_mat(
+        jp.asarray(self._mj_model.geom_quat[self._floor_geom_id])
     )
-    self._floor_mat = jp.asarray(floor_mat.reshape(3, 3))
     hfield_id = self._mj_model.geom_dataid[self._floor_geom_id]
     self._terrain_hfield = None
     if hfield_id >= 0:
