@@ -13,7 +13,7 @@
 #SBATCH --array=0-4
 #SBATCH --gres=gpu:1
 
-set -euo pipefail
+#set -euo pipefail
 
 # Trains five seeds for one linear/angular velocity reward-weight pair.
 #
@@ -31,9 +31,10 @@ fi
 
 LINEAR_WEIGHT=$1
 ANGULAR_WEIGHT=$2
-ENV_NAME=${3:-SilverBadgerJoystickFlatTerrain}
+#ENV_NAME=${3:-SilverBadgerJoystickFlatTerrain}
+ENV_NAME=${3:-SilverBadgerJoystickRoughTerrain}
 NUM_TIMESTEPS=${4:-400000000}
-WANDB_PROJECT=${5:-spectral_playground_silver_badger_factor_search}
+WANDB_PROJECT=${5:-spectral_playground_silver_badger_rough_factor_search}
 SEED=${SLURM_ARRAY_TASK_ID:-0}
 NUM_EVALS=16
 

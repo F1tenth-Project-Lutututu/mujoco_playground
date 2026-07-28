@@ -36,10 +36,10 @@ ANGULAR_WEIGHT_ID=$((COMBINATION_ID % 4))
 NUM_EVALS=16
 
 case "$LINEAR_WEIGHT_ID" in
-  0) LINEAR_WEIGHT=1.0 ;;
-  1) LINEAR_WEIGHT=2.0 ;;
-  2) LINEAR_WEIGHT=4.0 ;;
-  3) LINEAR_WEIGHT=8.0 ;;
+  0) LINEAR_WEIGHT=8.0 ;;
+  1) LINEAR_WEIGHT=16.0 ;;
+  2) LINEAR_WEIGHT=32.0 ;;
+  3) LINEAR_WEIGHT=64.0 ;;
   *)
     echo "Invalid linear-weight index: $LINEAR_WEIGHT_ID" >&2
     exit 2
@@ -47,10 +47,10 @@ case "$LINEAR_WEIGHT_ID" in
 esac
 
 case "$ANGULAR_WEIGHT_ID" in
-  0) ANGULAR_WEIGHT=0.5 ;;
-  1) ANGULAR_WEIGHT=1.0 ;;
-  2) ANGULAR_WEIGHT=2.0 ;;
-  3) ANGULAR_WEIGHT=4.0 ;;
+  0) ANGULAR_WEIGHT=8.0 ;;
+  1) ANGULAR_WEIGHT=16.0 ;;
+  2) ANGULAR_WEIGHT=32.0 ;;
+  3) ANGULAR_WEIGHT=64.0 ;;
   *)
     echo "Invalid angular-weight index: $ANGULAR_WEIGHT_ID" >&2
     exit 2
