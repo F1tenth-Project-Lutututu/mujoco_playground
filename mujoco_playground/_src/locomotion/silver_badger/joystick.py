@@ -219,6 +219,7 @@ def default_config() -> config_dict.ConfigDict:
       Kd=0.5,
       action_repeat=1,
       action_scale=0.25,
+      lock_spine=True,
       policy_observes_linear_velocity=True,
       domain_randomization=False,
       history_len=1,
@@ -605,6 +606,8 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
     # state = self._reset_if_outside_bounds(state)
 
     motor_targets = self._default_pose + action * self._config.action_scale
+    if self._config.lock_spine:
+      motor_targets = motor_targets.at[0].set(self._default_pose[0])
     data = mjx_env.step(
         self.mjx_model, state.data, motor_targets, self.n_substeps
     )

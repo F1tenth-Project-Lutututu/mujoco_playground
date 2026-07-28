@@ -17,7 +17,7 @@ class JoystickTest(absltest.TestCase):
     env = joystick.Joystick(config=config)
 
     state = env.reset(jax.random.PRNGKey(0))
-    next_state = env.step(state, jp.zeros(env.action_size))
+    next_state = env.step(state, jp.ones(env.action_size))
 
     self.assertEqual(env.action_size, 13)
     self.assertEqual(state.obs["state"].shape, (51,))
@@ -25,6 +25,7 @@ class JoystickTest(absltest.TestCase):
     self.assertEqual(next_state.obs["state"].shape, (51,))
     self.assertEqual(next_state.reward.shape, ())
     self.assertEqual(next_state.done.shape, ())
+    self.assertEqual(next_state.data.ctrl[0], env._default_pose[0])
 
   def test_no_linear_velocity_actor_observation(self):
     config = joystick.no_linear_velocity_config()
