@@ -11,6 +11,12 @@ from mujoco_playground._src.locomotion.silver_badger import joystick
 
 class JoystickTest(absltest.TestCase):
 
+  def test_default_tracking_reward_weights(self):
+    config = joystick.default_config()
+
+    self.assertEqual(config.reward_config.scales.tracking_lin_vel, 9.0)
+    self.assertEqual(config.reward_config.scales.tracking_ang_vel, 3.0)
+
   def test_reset_and_step_shapes(self):
     config = joystick.default_config()
     config.impl = "jax"
