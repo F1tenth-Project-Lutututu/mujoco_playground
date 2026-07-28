@@ -92,6 +92,12 @@ _envs = {
     "SilverBadgerJoystickFlatTerrainNoLinearVelocity": functools.partial(
         silver_badger_joystick.Joystick, task="flat_terrain"
     ),
+    "SilverBadgerJoystickRoughTerrain": functools.partial(
+        silver_badger_joystick.Joystick, task="rough_terrain"
+    ),
+    "SilverBadgerJoystickRoughTerrainNoLinearVelocity": functools.partial(
+        silver_badger_joystick.Joystick, task="rough_terrain"
+    ),
     "SpotFlatTerrainJoystick": functools.partial(
         spot_joystick.Joystick, task="flat_terrain"
     ),
@@ -133,6 +139,10 @@ _cfgs = {
     "SilverBadgerJoystickFlatTerrainNoLinearVelocity": (
         silver_badger_joystick.no_linear_velocity_config
     ),
+    "SilverBadgerJoystickRoughTerrain": silver_badger_joystick.default_config,
+    "SilverBadgerJoystickRoughTerrainNoLinearVelocity": (
+        silver_badger_joystick.no_linear_velocity_config
+    ),
     "SpotFlatTerrainJoystick": spot_joystick.default_config,
     "SpotGetup": spot_getup.default_config,
     "SpotJoystickGaitTracking": spot_joystick_gait_tracking.default_config,
@@ -161,6 +171,12 @@ _randomizer = {
         silver_badger_randomize.domain_randomize
     ),
     "SilverBadgerJoystickFlatTerrainNoLinearVelocity": (
+        silver_badger_randomize.domain_randomize
+    ),
+    "SilverBadgerJoystickRoughTerrain": (
+        silver_badger_randomize.domain_randomize
+    ),
+    "SilverBadgerJoystickRoughTerrainNoLinearVelocity": (
         silver_badger_randomize.domain_randomize
     ),
     "T1JoystickFlatTerrain": t1_randomize.domain_randomize,

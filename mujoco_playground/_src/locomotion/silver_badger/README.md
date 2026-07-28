@@ -20,6 +20,11 @@ IMU angular velocity and projected gravity together with joint state, previous
 action, and the velocity command. The privileged critic retains true linear
 velocity for asymmetric training.
 
+The corresponding height-field tasks are
+`SilverBadgerJoystickRoughTerrain` and
+`SilverBadgerJoystickRoughTerrainNoLinearVelocity`. They use the same rough
+terrain height map and increased MJX contact capacities as the Go1 rough task.
+
 The actor observation follows the Go1 joystick convention and contains local
 linear velocity, angular velocity, projected gravity, joint offsets, joint
 velocities, the previous action, and the three-dimensional command. The critic
@@ -39,3 +44,6 @@ For the IMU-only velocity variant:
 python learning/train_jax_ppo.py \
   --env_name=SilverBadgerJoystickFlatTerrainNoLinearVelocity
 ```
+
+Replace `FlatTerrain` with `RoughTerrain` in either name to train on the
+height-field terrain.

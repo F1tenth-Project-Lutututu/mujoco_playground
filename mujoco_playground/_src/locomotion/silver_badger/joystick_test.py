@@ -3,6 +3,7 @@
 from absl.testing import absltest
 import jax
 import jax.numpy as jp
+import mujoco
 
 from mujoco_playground._src.locomotion.silver_badger import joystick
 
@@ -35,6 +36,17 @@ class JoystickTest(absltest.TestCase):
     self.assertEqual(state.obs["state"].shape, (48,))
     # The critic still receives the ground-truth local linear velocity.
     self.assertEqual(state.obs["privileged_state"].shape, (126,))
+
+  def test_rough_terrain_uses_height_field(self):
+    config = joystick.default_config()
+    config.impl = "jax"
+    env = joystick.Joystick(task="rough_terrain", config=config)
+
+    floor_id = env.mj_model.geom("floor").id
+
+    self.assertEqual(
+        env.mj_model.geom_type[floor_id], mujoco.mjtGeom.mjGEOM_HFIELD
+    )
 
 
 if __name__ == "__main__":
