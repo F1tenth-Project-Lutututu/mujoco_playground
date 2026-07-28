@@ -50,13 +50,7 @@ def brax_ppo_config(
       num_resets_per_eval=10,
   )
 
-  if env_name in (
-      "Go1JoystickFlatTerrain",
-      "Go1JoystickFlatTerrain25",
-      "Go1JoystickFlatTerrain35",
-      "Go1JoystickRoughTerrain",
-      "Go1JoystickRoughTerrain25",
-  ):
+  if env_name.startswith("Go1Joystick"):
     rl_config.num_timesteps = 200_000_000
     rl_config.num_evals = 10
     rl_config.network_factory = config_dict.create(
@@ -66,7 +60,7 @@ def brax_ppo_config(
         value_obs_key="privileged_state",
     )
 
-  elif env_name in ("Go1Handstand", "Go1Footstand"):
+  elif env_name.startswith(("Go1Handstand", "Go1Footstand")):
     rl_config.num_timesteps = 100_000_000
     rl_config.num_evals = 5
     rl_config.network_factory = config_dict.create(
@@ -87,7 +81,7 @@ def brax_ppo_config(
         value_obs_key="privileged_state",
     )
 
-  elif env_name == "Go1Getup":
+  elif env_name.startswith("Go1Getup"):
     rl_config.num_timesteps = 50_000_000
     rl_config.num_evals = 5
     rl_config.network_factory = config_dict.create(
@@ -169,10 +163,13 @@ def brax_ppo_config(
       "H1InplaceGaitTracking",
       "H1JoystickGaitTracking",
       "Op3Joystick",
+  ):
+    pass  # use default config
+  elif env_name.startswith((
       "SpotFlatTerrainJoystick",
       "SpotGetup",
       "SpotJoystickGaitTracking",
-  ):
+  )):
     pass  # use default config
   else:
     raise ValueError(f"Unsupported env: {env_name}")

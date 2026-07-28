@@ -44,6 +44,9 @@ from mujoco_playground._src.locomotion.silver_badger import (
 from mujoco_playground._src.locomotion.spot import getup as spot_getup
 from mujoco_playground._src.locomotion.spot import joystick as spot_joystick
 from mujoco_playground._src.locomotion.spot import joystick_gait_tracking as spot_joystick_gait_tracking
+from mujoco_playground._src.locomotion.spot import (
+    randomize as spot_randomize,
+)
 from mujoco_playground._src.locomotion.t1 import joystick as t1_joystick
 from mujoco_playground._src.locomotion.t1 import randomize as t1_randomize
 
@@ -179,6 +182,7 @@ _randomizer = {
     "SilverBadgerJoystickRoughTerrainNoLinearVelocity": (
         silver_badger_randomize.domain_randomize
     ),
+    "SpotFlatTerrainJoystick": spot_randomize.domain_randomize,
     "T1JoystickFlatTerrain": t1_randomize.domain_randomize,
     "T1JoystickRoughTerrain": t1_randomize.domain_randomize,
 }
@@ -218,6 +222,90 @@ for _base_name, (_task, _no_linear_velocity) in _silver_badger_bases.items():
         domain_randomization=_domain_randomization,
     )
     _randomizer[_variant_name] = silver_badger_randomize.domain_randomize
+
+# Go1 joystick robustness variants.
+_go1_joystick_bases = {
+    "Go1JoystickFlatTerrain": ("flat_terrain", go1_joystick.default_config),
+    "Go1JoystickFlatTerrain25": (
+        "flat_terrain",
+        go1_joystick.velocity_25_config,
+    ),
+    "Go1JoystickFlatTerrain35": (
+        "flat_terrain",
+        go1_joystick.velocity_35_config,
+    ),
+    "Go1JoystickRoughTerrain": ("rough_terrain", go1_joystick.default_config),
+    "Go1JoystickRoughTerrain25": (
+        "rough_terrain",
+        go1_joystick.velocity_25_config,
+    ),
+}
+for _base_name, (_task, _config_factory) in _go1_joystick_bases.items():
+  for _suffix, (_pushes, _domain_randomization) in (
+      _silver_badger_robustness_variants.items()
+  ):
+    _variant_name = f"{_base_name}{_suffix}"
+    _envs[_variant_name] = functools.partial(
+        go1_joystick.Joystick, task=_task
+    )
+    _cfgs[_variant_name] = functools.partial(
+        go1_joystick.robustness_config,
+        _config_factory,
+        pushes=_pushes,
+        domain_randomization=_domain_randomization,
+    )
+    _randomizer[_variant_name] = go1_randomize.domain_randomize
+
+# Spot flat-terrain joystick robustness variants.
+for _suffix, (_pushes, _domain_randomization) in (
+    _silver_badger_robustness_variants.items()
+):
+  _variant_name = f"SpotFlatTerrainJoystick{_suffix}"
+  _envs[_variant_name] = functools.partial(
+      spot_joystick.Joystick, task="flat_terrain"
+  )
+  _cfgs[_variant_name] = functools.partial(
+      spot_joystick.robustness_config,
+      pushes=_pushes,
+      domain_randomization=_domain_randomization,
+  )
+  _randomizer[_variant_name] = spot_randomize.domain_randomize
+
+
+def _domain_randomized_config(config_factory):
+  config = config_factory()
+  config.domain_randomization = True
+  return config
+
+
+# These Go1 tasks have domain randomization but no periodic-push mechanism.
+for _base_name, _env, _config_factory in (
+    ("Go1Getup", go1_getup.Getup, go1_getup.default_config),
+    ("Go1Handstand", go1_handstand.Handstand, go1_handstand.default_config),
+    ("Go1Footstand", go1_handstand.Footstand, go1_handstand.default_config),
+):
+  _variant_name = f"{_base_name}DomainRandomization"
+  _envs[_variant_name] = _env
+  _cfgs[_variant_name] = functools.partial(
+      _domain_randomized_config, _config_factory
+  )
+  _randomizer[_variant_name] = go1_randomize.domain_randomize
+
+# Spot tasks without periodic pushes still receive explicit randomized aliases.
+for _base_name, _env, _config_factory in (
+    ("SpotGetup", spot_getup.Getup, spot_getup.default_config),
+    (
+        "SpotJoystickGaitTracking",
+        spot_joystick_gait_tracking.JoystickGaitTracking,
+        spot_joystick_gait_tracking.default_config,
+    ),
+):
+  _variant_name = f"{_base_name}DomainRandomization"
+  _envs[_variant_name] = _env
+  _cfgs[_variant_name] = functools.partial(
+      _domain_randomized_config, _config_factory
+  )
+  _randomizer[_variant_name] = spot_randomize.domain_randomize
 
 
 def __getattr__(name):
