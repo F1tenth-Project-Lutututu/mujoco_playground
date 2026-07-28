@@ -851,9 +851,6 @@ def main(argv):
   impl = _saved_or_flag(run_config, "impl", _IMPL)
   vision = _saved_or_flag(run_config, "vision", _VISION)
   seed = _saved_or_flag(run_config, "seed", _SEED)
-  domain_randomization = _saved_or_flag(
-      run_config, "domain_randomization", _DOMAIN_RANDOMIZATION
-  )
   mean_action_rate_cost = _saved_or_flag(
       run_config, "mean_action_rate_cost", _MEAN_ACTION_RATE_COST
   )
@@ -865,6 +862,16 @@ def main(argv):
     ))
   else:
     env_cfg = default_env_cfg
+  if (
+      _DOMAIN_RANDOMIZATION.present
+      or run_config is not None
+      and run_config.get("domain_randomization") is not None
+  ):
+    domain_randomization = _saved_or_flag(
+        run_config, "domain_randomization", _DOMAIN_RANDOMIZATION
+    )
+  else:
+    domain_randomization = bool(env_cfg.get("domain_randomization", False))
 
   default_ppo_params = get_rl_config(env_name, vision, impl)
   if run_config and "ppo_config" in run_config:

@@ -5,6 +5,7 @@ import jax
 import jax.numpy as jp
 import mujoco
 
+from mujoco_playground import registry
 from mujoco_playground._src.locomotion.silver_badger import joystick
 
 
@@ -47,6 +48,27 @@ class JoystickTest(absltest.TestCase):
     self.assertEqual(
         env.mj_model.geom_type[floor_id], mujoco.mjtGeom.mjGEOM_HFIELD
     )
+
+  def test_robustness_task_variants_have_expected_defaults(self):
+    bases = (
+        "SilverBadgerJoystickFlatTerrain",
+        "SilverBadgerJoystickFlatTerrainNoLinearVelocity",
+        "SilverBadgerJoystickRoughTerrain",
+        "SilverBadgerJoystickRoughTerrainNoLinearVelocity",
+    )
+    variants = {
+        "Pushes": (True, False),
+        "DomainRandomization": (False, True),
+        "PushesAndDomainRandomization": (True, True),
+    }
+
+    for base in bases:
+      for suffix, (pushes, randomization) in variants.items():
+        name = f"{base}{suffix}"
+        self.assertIn(name, registry.ALL_ENVS)
+        config = registry.get_default_config(name)
+        self.assertEqual(config.pert_config.enable, pushes)
+        self.assertEqual(config.domain_randomization, randomization)
 
 
 if __name__ == "__main__":
