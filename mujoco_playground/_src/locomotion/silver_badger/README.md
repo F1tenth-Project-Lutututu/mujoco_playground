@@ -47,3 +47,29 @@ python learning/train_jax_ppo.py \
 
 Replace `FlatTerrain` with `RoughTerrain` in either name to train on the
 height-field terrain.
+
+## Robustness task variants
+
+Each of the four base task names also has three self-configuring robustness
+variants:
+
+- `<base>Pushes` enables random planar torso pushes.
+- `<base>DomainRandomization` enables the registered dynamics randomizer.
+- `<base>PushesAndDomainRandomization` enables both.
+
+For example:
+
+```bash
+python learning/train_jax_ppo.py \
+  --env_name=SilverBadgerJoystickRoughTerrainNoLinearVelocityPushes
+
+python learning/train_jax_ppo.py \
+  --env_name=SilverBadgerJoystickRoughTerrainNoLinearVelocityDomainRandomization
+
+python learning/train_jax_ppo.py \
+  --env_name=SilverBadgerJoystickRoughTerrainNoLinearVelocityPushesAndDomainRandomization
+```
+
+The task-level domain-randomization default is used when the command line does
+not specify a domain-randomization flag. An explicit
+`--nodomain_randomization` disables it.

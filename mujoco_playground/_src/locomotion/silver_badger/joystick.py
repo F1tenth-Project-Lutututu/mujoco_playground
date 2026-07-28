@@ -220,6 +220,7 @@ def default_config() -> config_dict.ConfigDict:
       action_repeat=1,
       action_scale=0.25,
       policy_observes_linear_velocity=True,
+      domain_randomization=False,
       history_len=1,
       soft_joint_pos_limit_factor=0.95,
       noise_config=config_dict.create(
@@ -317,6 +318,20 @@ def no_linear_velocity_config() -> config_dict.ConfigDict:
   """Returns a config whose actor receives no planar/base linear velocity."""
   config = default_config()
   config.policy_observes_linear_velocity = False
+  return config
+
+
+def variant_config(
+    *,
+    no_linear_velocity: bool = False,
+    pushes: bool = False,
+    domain_randomization: bool = False,
+) -> config_dict.ConfigDict:
+  """Returns a SilverBadger robustness-task configuration."""
+  config = default_config()
+  config.policy_observes_linear_velocity = not no_linear_velocity
+  config.pert_config.enable = pushes
+  config.domain_randomization = domain_randomization
   return config
 
 

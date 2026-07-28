@@ -183,6 +183,42 @@ _randomizer = {
     "T1JoystickRoughTerrain": t1_randomize.domain_randomize,
 }
 
+# Explicit robustness-task aliases for every SilverBadger base environment.
+# These remain separate registered tasks so experiment names and saved configs
+# state whether pushes and/or domain randomization are enabled.
+_silver_badger_bases = {
+    "SilverBadgerJoystickFlatTerrain": ("flat_terrain", False),
+    "SilverBadgerJoystickFlatTerrainNoLinearVelocity": (
+        "flat_terrain",
+        True,
+    ),
+    "SilverBadgerJoystickRoughTerrain": ("rough_terrain", False),
+    "SilverBadgerJoystickRoughTerrainNoLinearVelocity": (
+        "rough_terrain",
+        True,
+    ),
+}
+_silver_badger_robustness_variants = {
+    "Pushes": (True, False),
+    "DomainRandomization": (False, True),
+    "PushesAndDomainRandomization": (True, True),
+}
+for _base_name, (_task, _no_linear_velocity) in _silver_badger_bases.items():
+  for _suffix, (_pushes, _domain_randomization) in (
+      _silver_badger_robustness_variants.items()
+  ):
+    _variant_name = f"{_base_name}{_suffix}"
+    _envs[_variant_name] = functools.partial(
+        silver_badger_joystick.Joystick, task=_task
+    )
+    _cfgs[_variant_name] = functools.partial(
+        silver_badger_joystick.variant_config,
+        no_linear_velocity=_no_linear_velocity,
+        pushes=_pushes,
+        domain_randomization=_domain_randomization,
+    )
+    _randomizer[_variant_name] = silver_badger_randomize.domain_randomize
+
 
 def __getattr__(name):
   if name == "ALL_ENVS":
