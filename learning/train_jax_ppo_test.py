@@ -71,6 +71,42 @@ class RunConfigTest(absltest.TestCase):
         "mssd_mean_squared_second_difference_per_dof",
     )
 
+  def test_tracking_mae_uses_only_active_episode_steps(self):
+    linear_absolute_errors = np.array([
+        [1.0, 2.0],
+        [3.0, 4.0],
+        [5.0, 100.0],
+    ])
+    yaw_absolute_errors = np.array([
+        [2.0, 1.0],
+        [4.0, 3.0],
+        [6.0, 100.0],
+    ])
+    active = np.array([
+        [True, True],
+        [True, True],
+        [True, False],
+    ])
+
+    metrics = train_jax_ppo._tracking_mae_metrics(
+        linear_absolute_errors, yaw_absolute_errors, active
+    )
+
+    self.assertAlmostEqual(metrics["linear_velocity_mae"], 3.0)
+    self.assertAlmostEqual(metrics["yaw_rate_mae"], 3.0)
+
+  def test_tracking_mae_metrics_use_tracking_wandb_section(self):
+    self.assertEqual(
+        train_jax_ppo._wandb_metric_name(
+            "eval/tracking/linear_velocity_mae"
+        ),
+        "tracking/eval_linear_velocity_mae",
+    )
+    self.assertEqual(
+        train_jax_ppo._wandb_metric_name("eval/tracking/yaw_rate_mae"),
+        "tracking/eval_yaw_rate_mae",
+    )
+
   def test_run_logdir_has_environment_parent(self):
     root = self.create_tempdir().full_path
 

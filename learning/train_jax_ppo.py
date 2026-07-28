@@ -108,6 +108,11 @@ _WANDB_EXPERIMENT_NAME = flags.DEFINE_string(
     "W&B group name. The run name is '<group>-seed<seed>'. Defaults to the "
     "environment name.",
 )
+_WANDB_PROJECT = flags.DEFINE_string(
+    "wandb_project",
+    None,
+    "W&B project name. Defaults to an environment-scoped project.",
+)
 _USE_TB = flags.DEFINE_boolean(
     "use_tb", False, "Use TensorBoard for logging (ignored in play-only mode)"
 )
@@ -606,6 +611,34 @@ def _torque_smoothness_metrics(
   }
 
 
+def _tracking_mae_metrics(
+    linear_absolute_errors: np.ndarray,
+    yaw_absolute_errors: np.ndarray,
+    active_steps: np.ndarray,
+) -> dict[str, float]:
+  """Returns rollout-mean velocity-tracking MAE diagnostics."""
+  linear_episode_mae = []
+  yaw_episode_mae = []
+  for env_index in range(active_steps.shape[1]):
+    episode_steps = int(np.sum(active_steps[:, env_index]))
+    if episode_steps == 0:
+      continue
+    linear_episode_mae.append(
+        float(np.mean(linear_absolute_errors[:episode_steps, env_index]))
+    )
+    yaw_episode_mae.append(
+        float(np.mean(yaw_absolute_errors[:episode_steps, env_index]))
+    )
+  return {
+      "linear_velocity_mae": (
+          float(np.mean(linear_episode_mae)) if linear_episode_mae else 0.0
+      ),
+      "yaw_rate_mae": (
+          float(np.mean(yaw_episode_mae)) if yaw_episode_mae else 0.0
+      ),
+  }
+
+
 class _EvaluatorWithTorqueFft:
   """Brax evaluator that adds whole-episode torque diagnostics."""
 
@@ -620,11 +653,13 @@ class _EvaluatorWithTorqueFft:
       *,
       torque_sample_period: float,
       torque_fft_cutoffs_hz: tuple[float, ...],
+      track_velocity_mae: bool,
   ):
     self._key = key
     self._eval_walltime = 0.0
     self._torque_sample_period = torque_sample_period
     self._torque_fft_cutoffs_hz = torque_fft_cutoffs_hz
+    self._track_velocity_mae = track_velocity_mae
     fft_nyquist_hz = 0.5 / torque_sample_period
     if any(cutoff > fft_nyquist_hz for cutoff in torque_fft_cutoffs_hz):
       raise ValueError(
@@ -633,6 +668,7 @@ class _EvaluatorWithTorqueFft:
           "or use --action_repeat=1."
       )
 
+    tracking_env = eval_env
     eval_env = brax_envs.training.EvalWrapper(eval_env)
 
     def generate_eval_unroll(policy_params, key):
@@ -647,15 +683,49 @@ class _EvaluatorWithTorqueFft:
         active = current_state.info["eval_metrics"].active_episodes
         next_state = eval_env.step(current_state, actions)
         torque = next_state.info["torque_for_spectrum"]
-        return (next_state, current_key), (torque, active)
+        if track_velocity_mae:
+          linear_velocity = jax.vmap(tracking_env.get_local_linvel)(
+              next_state.data
+          )
+          angular_velocity = jax.vmap(tracking_env.get_gyro)(next_state.data)
+          command = current_state.info["command"]
+          linear_absolute_error = jp.mean(
+              jp.abs(linear_velocity[:, :2] - command[:, :2]), axis=-1
+          )
+          yaw_absolute_error = jp.abs(
+              angular_velocity[:, 2] - command[:, 2]
+          )
+        else:
+          linear_absolute_error = jp.zeros_like(active, dtype=jp.float32)
+          yaw_absolute_error = jp.zeros_like(active, dtype=jp.float32)
+        return (next_state, current_key), (
+            torque,
+            active,
+            linear_absolute_error,
+            yaw_absolute_error,
+        )
 
-      (state, _), (torques, active_steps) = jax.lax.scan(
+      (
+          state,
+          _,
+      ), (
+          torques,
+          active_steps,
+          linear_absolute_errors,
+          yaw_absolute_errors,
+      ) = jax.lax.scan(
           step,
           (state, key),
           (),
           length=episode_length // action_repeat,
       )
-      return state, torques, active_steps
+      return (
+          state,
+          torques,
+          active_steps,
+          linear_absolute_errors,
+          yaw_absolute_errors,
+      )
 
     self._generate_eval_unroll = jax.jit(generate_eval_unroll)
     self._steps_per_unroll = episode_length * num_eval_envs
@@ -666,9 +736,13 @@ class _EvaluatorWithTorqueFft:
     """Runs evaluation and adds mean-only whole-episode torque metrics."""
     self._key, unroll_key = jax.random.split(self._key)
     start = time.time()
-    eval_state, torques, active_steps = self._generate_eval_unroll(
-        policy_params, unroll_key
-    )
+    (
+        eval_state,
+        torques,
+        active_steps,
+        linear_absolute_errors,
+        yaw_absolute_errors,
+    ) = self._generate_eval_unroll(policy_params, unroll_key)
     eval_metrics = eval_state.info["eval_metrics"]
     eval_metrics.active_episodes.block_until_ready()
     epoch_eval_time = time.time() - start
@@ -700,6 +774,16 @@ class _EvaluatorWithTorqueFft:
         f"eval/episode_torque_smoothness/{name}": value
         for name, value in smoothness_metrics.items()
     })
+    if self._track_velocity_mae:
+      tracking_metrics = _tracking_mae_metrics(
+          np.asarray(linear_absolute_errors),
+          np.asarray(yaw_absolute_errors),
+          np.asarray(active_steps),
+      )
+      metrics.update({
+          f"eval/tracking/{name}": value
+          for name, value in tracking_metrics.items()
+      })
     metrics["eval/avg_episode_length"] = np.mean(eval_metrics.episode_steps)
     metrics["eval/std_episode_length"] = np.std(eval_metrics.episode_steps)
     metrics["eval/epoch_eval_time"] = epoch_eval_time
@@ -765,6 +849,10 @@ def _wandb_metric_name(name: str) -> str:
   if name.startswith("eval/episode_torque_smoothness/"):
     metric = name.removeprefix("eval/episode_torque_smoothness/")
     return f"smoothness/torque/{metric}"
+
+  if name.startswith("eval/tracking/"):
+    metric = name.removeprefix("eval/tracking/")
+    return f"tracking/eval_{metric}"
 
   if name.startswith("eval/episode_reward"):
     metric = name.removeprefix("eval/episode_reward")
@@ -1002,7 +1090,7 @@ def main(argv):
     reward_scales = env_cfg.get("reward_config", {}).get("scales", {})
     environment_action_rate_scale = reward_scales.get("action_rate")
     wandb.init(
-        project=_wandb_project_name(env_name),
+        project=_WANDB_PROJECT.value or _wandb_project_name(env_name),
         group=wandb_group,
         name=run_name,
         config={
@@ -1131,6 +1219,7 @@ def main(argv):
         _EvaluatorWithTorqueFft,
         torque_sample_period=env.dt * ppo_params.action_repeat,
         torque_fft_cutoffs_hz=torque_fft_cutoffs_hz,
+        track_velocity_mae=env_name.startswith("SilverBadger"),
     )
   ppo_losses.compute_ppo_loss = functools.partial(
       _compute_ppo_loss_with_mean_action_rate,
