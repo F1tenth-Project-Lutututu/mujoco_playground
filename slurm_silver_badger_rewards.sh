@@ -13,7 +13,7 @@
 #SBATCH --array=0-19
 #SBATCH --gres=gpu:1
 
-set -euo pipefail
+#set -euo pipefail
 
 # Tests four weights for the existing tracking_lin_vel reward, with five seeds
 # per weight. No other environment or reward setting is changed.
