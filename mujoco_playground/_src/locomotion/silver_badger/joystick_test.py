@@ -29,6 +29,16 @@ class JoystickTest(absltest.TestCase):
 
     np.testing.assert_allclose(actual, [0.0, 0.5, 1.0, 2.0, 0.75, 1.0])
 
+  def test_terrain_curriculum_difficulty_ramps_and_clips(self):
+    steps = jp.array([0, 5, 10, 20])
+
+    curriculum_fn = joystick._terrain_curriculum_difficulty  # pylint: disable=protected-access
+    actual = curriculum_fn(
+        steps, initial_difficulty=0.2, ramp_steps=10
+    )
+
+    np.testing.assert_allclose(actual, [0.2, 0.6, 1.0, 1.0])
+
   def test_default_tracking_reward_weights(self):
     config = joystick.default_config()
 
