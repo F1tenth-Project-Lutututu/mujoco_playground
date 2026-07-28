@@ -39,6 +39,7 @@ def default_config() -> config_dict.ConfigDict:
       early_termination=True,
       action_repeat=1,
       action_scale=0.3,
+      domain_randomization=False,
       history_len=3,
       obs_noise=config_dict.create(
           scales=config_dict.create(
@@ -84,6 +85,18 @@ def default_config() -> config_dict.ConfigDict:
       njmax=12 + 4 * 4,
   )
   torque_penalty.add_config(config.reward_config)
+  return config
+
+
+def robustness_config(
+    *,
+    pushes: bool = False,
+    domain_randomization: bool = False,
+) -> config_dict.ConfigDict:
+  """Returns a Spot robustness-task configuration."""
+  config = default_config()
+  config.pert_config.enable = pushes
+  config.domain_randomization = domain_randomization
   return config
 
 

@@ -215,6 +215,7 @@ def default_config() -> config_dict.ConfigDict:
       Kd=0.5,
       action_repeat=1,
       action_scale=0.5,
+      domain_randomization=False,
       history_len=1,
       soft_joint_pos_limit_factor=0.95,
       noise_config=config_dict.create(
@@ -306,6 +307,19 @@ def velocity_35_config() -> config_dict.ConfigDict:
 # Retain the terrain-specific name for compatibility with existing callers.
 flat_terrain_25_config = velocity_25_config
 flat_terrain_35_config = velocity_35_config
+
+
+def robustness_config(
+    base_config=default_config,
+    *,
+    pushes: bool = False,
+    domain_randomization: bool = False,
+) -> config_dict.ConfigDict:
+  """Returns a Go1 robustness-task configuration."""
+  config = base_config()
+  config.pert_config.enable = pushes
+  config.domain_randomization = domain_randomization
+  return config
 
 
 class Joystick(go1_base.Go1Env):
