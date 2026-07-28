@@ -4,12 +4,30 @@ from absl.testing import absltest
 import jax
 import jax.numpy as jp
 import mujoco
+import numpy as np
 
 from mujoco_playground import registry
 from mujoco_playground._src.locomotion.silver_badger import joystick
 
 
 class JoystickTest(absltest.TestCase):
+
+  def test_heightfield_height_matches_mujoco_triangles(self):
+    heights = jp.array([[0.0, 2.0], [1.0, 4.0]])
+    points = jp.array([
+        [-1.0, -1.0],
+        [1.0, -1.0],
+        [-1.0, 1.0],
+        [1.0, 1.0],
+        [0.5, -0.5],
+        [-0.5, 0.5],
+    ])
+
+    actual = joystick._heightfield_height(  # pylint: disable=protected-access
+        points, heights, x_size=1.0, y_size=1.0, z_scale=0.5
+    )
+
+    np.testing.assert_allclose(actual, [0.0, 0.5, 1.0, 2.0, 0.75, 1.0])
 
   def test_default_tracking_reward_weights(self):
     config = joystick.default_config()

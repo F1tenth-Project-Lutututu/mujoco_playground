@@ -210,6 +210,34 @@ def _adaptive_highpass_weight(
   return min_weight + (max_weight - min_weight) * jp.exp(-disturbance / sigma)
 
 
+def _heightfield_height(
+    xy: jax.Array,
+    heights: jax.Array,
+    x_size: float,
+    y_size: float,
+    z_scale: float,
+) -> jax.Array:
+  """Samples MuJoCo's piecewise-planar height-field surface at local xy."""
+  ncol, nrow = heights.shape
+  grid_x = (xy[..., 0] + x_size) / (2.0 * x_size) * (ncol - 1)
+  grid_y = (xy[..., 1] + y_size) / (2.0 * y_size) * (nrow - 1)
+  grid_x = jp.clip(grid_x, 0.0, ncol - 1)
+  grid_y = jp.clip(grid_y, 0.0, nrow - 1)
+
+  col = jp.minimum(jp.floor(grid_x).astype(int), ncol - 2)
+  row = jp.minimum(jp.floor(grid_y).astype(int), nrow - 2)
+  u = grid_x - col
+  v = grid_y - row
+
+  z00 = heights[col, row]
+  z10 = heights[col + 1, row]
+  z01 = heights[col, row + 1]
+  z11 = heights[col + 1, row + 1]
+  lower_triangle = (1.0 - u) * z00 + v * z11 + (u - v) * z10
+  upper_triangle = (1.0 - v) * z00 + u * z11 + (v - u) * z01
+  return jp.where(u >= v, lower_triangle, upper_triangle) * z_scale
+
+
 def default_config() -> config_dict.ConfigDict:
   return config_dict.create(
       ctrl_dt=0.02,
@@ -372,6 +400,20 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
         [self._mj_model.site(name).id for name in consts.FEET_SITES]
     )
     self._floor_geom_id = self._mj_model.geom("floor").id
+    hfield_id = self._mj_model.geom_dataid[self._floor_geom_id]
+    self._terrain_hfield = None
+    if hfield_id >= 0:
+      nrow = self._mj_model.hfield_nrow[hfield_id]
+      ncol = self._mj_model.hfield_ncol[hfield_id]
+      adr = self._mj_model.hfield_adr[hfield_id]
+      self._terrain_hfield = jp.asarray(
+          self._mj_model.hfield_data[adr : adr + nrow * ncol].reshape(
+              (ncol, nrow), order="F"
+          )
+      )
+      self._terrain_hfield_size = jp.asarray(
+          self._mj_model.hfield_size[hfield_id]
+      )
     self._feet_geom_id = np.array(
         [self._mj_model.geom(name).id for name in consts.FEET_GEOMS]
     )
@@ -619,9 +661,10 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
     contact_filt = contact | state.info["last_contact"]
     first_contact = (state.info["feet_air_time"] > 0.0) * contact_filt
     state.info["feet_air_time"] += self.dt
-    p_f = data.site_xpos[self._feet_site_id]
-    p_fz = p_f[..., -1]
-    state.info["swing_peak"] = jp.maximum(state.info["swing_peak"], p_fz)
+    foot_clearance = self._foot_terrain_clearance(data)
+    state.info["swing_peak"] = jp.maximum(
+        state.info["swing_peak"], foot_clearance
+    )
 
     done = self._get_termination(data)
 
@@ -962,6 +1005,24 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
 
   # Feet related rewards.
 
+  def _foot_terrain_clearance(self, data: mjx.Data) -> jax.Array:
+    """Returns foot height above the terrain directly below each foot."""
+    foot_pos = data.site_xpos[self._feet_site_id]
+    floor_pos = data.geom_xpos[self._floor_geom_id]
+    floor_mat = data.geom_xmat[self._floor_geom_id]
+    foot_pos_local = (foot_pos - floor_pos) @ floor_mat
+    if self._terrain_hfield is None:
+      terrain_height = jp.zeros_like(foot_pos_local[..., 2])
+    else:
+      terrain_height = _heightfield_height(
+          foot_pos_local[..., :2],
+          self._terrain_hfield,
+          self._terrain_hfield_size[0],
+          self._terrain_hfield_size[1],
+          self._terrain_hfield_size[2],
+      )
+    return foot_pos_local[..., 2] - terrain_height
+
   def _cost_feet_slip(
       self, data: mjx.Data, contact: jax.Array, info: dict[str, Any]
   ) -> jax.Array:
@@ -975,9 +1036,10 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
     feet_vel = data.sensordata[self._foot_linvel_sensor_adr]
     vel_xy = feet_vel[..., :2]
     vel_norm = jp.sqrt(jp.linalg.norm(vel_xy, axis=-1))
-    foot_pos = data.site_xpos[self._feet_site_id]
-    foot_z = foot_pos[..., -1]
-    delta = jp.abs(foot_z - self._config.reward_config.max_foot_height)
+    foot_clearance = self._foot_terrain_clearance(data)
+    delta = jp.abs(
+        foot_clearance - self._config.reward_config.max_foot_height
+    )
     return jp.sum(delta * vel_norm)
 
   def _cost_feet_height(
