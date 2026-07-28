@@ -238,6 +238,16 @@ def _heightfield_height(
   return jp.where(u >= v, lower_triangle, upper_triangle) * z_scale
 
 
+def _terrain_curriculum_difficulty(
+    steps: jax.Array,
+    initial_difficulty: float,
+    ramp_steps: int,
+) -> jax.Array:
+  """Linearly increases terrain amplitude from initial to full difficulty."""
+  progress = jp.clip(steps / ramp_steps, 0.0, 1.0)
+  return initial_difficulty + (1.0 - initial_difficulty) * progress
+
+
 def default_config() -> config_dict.ConfigDict:
   return config_dict.create(
       ctrl_dt=0.02,
@@ -252,6 +262,11 @@ def default_config() -> config_dict.ConfigDict:
       domain_randomization=False,
       history_len=1,
       soft_joint_pos_limit_factor=0.95,
+      terrain_curriculum=config_dict.create(
+          enabled=True,
+          initial_difficulty=0.1,
+          ramp_steps=25_000,
+      ),
       noise_config=config_dict.create(
           level=1.0,  # Set to 0.0 to disable noise.
           scales=config_dict.create(
@@ -400,6 +415,14 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
         [self._mj_model.site(name).id for name in consts.FEET_SITES]
     )
     self._floor_geom_id = self._mj_model.geom("floor").id
+    self._floor_pos = jp.asarray(
+        self._mj_model.geom_pos[self._floor_geom_id]
+    )
+    floor_mat = np.empty(9)
+    mujoco.mju_quat2Mat(
+        floor_mat, self._mj_model.geom_quat[self._floor_geom_id]
+    )
+    self._floor_mat = jp.asarray(floor_mat.reshape(3, 3))
     hfield_id = self._mj_model.geom_dataid[self._floor_geom_id]
     self._terrain_hfield = None
     if hfield_id >= 0:
@@ -414,6 +437,16 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
       self._terrain_hfield_size = jp.asarray(
           self._mj_model.hfield_size[hfield_id]
       )
+    curriculum = self._config.terrain_curriculum
+    if not 0.0 <= curriculum.initial_difficulty <= 1.0:
+      raise ValueError(
+          "terrain_curriculum.initial_difficulty must be between 0 and 1."
+      )
+    if curriculum.ramp_steps <= 0:
+      raise ValueError("terrain_curriculum.ramp_steps must be positive.")
+    self._terrain_curriculum_enabled = bool(
+        self._terrain_hfield is not None and curriculum.enabled
+    )
     self._feet_geom_id = np.array(
         [self._mj_model.geom(name).id for name in consts.FEET_GEOMS]
     )
@@ -528,6 +561,12 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
     rng, key = jax.random.split(rng)
     dxy = jax.random.uniform(key, (2,), minval=-0.5, maxval=0.5)
     qpos = qpos.at[0:2].set(qpos[0:2] + dxy)
+    terrain_difficulty = self._terrain_difficulty(jp.asarray(0))
+    qpos = qpos.at[2].set(
+        self._init_q[2]
+        + self._terrain_height_world(qpos[:2], terrain_difficulty)
+        - self._floor_pos[2]
+    )
     rng, key = jax.random.split(rng)
     yaw = jax.random.uniform(key, (1,), minval=-3.14, maxval=3.14)
     quat = math.axis_angle_to_quat(jp.array([0, 0, 1]), yaw)
@@ -540,6 +579,7 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
         jax.random.uniform(key, (6,), minval=-0.5, maxval=0.5)
     )
 
+    terrain_model = self._terrain_model(terrain_difficulty)
     data = mjx_env.make_data(
         self.mj_model,
         qpos=qpos,
@@ -550,7 +590,7 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
         naccdmax=self._config.naccdmax,
         njmax=self._config.njmax,
     )
-    data = mjx.forward(self.mjx_model, data)
+    data = mjx.forward(terrain_model, data)
 
     rng, key1, key2, key3 = jax.random.split(rng, 4)
     time_until_next_pert = jax.random.uniform(
@@ -601,6 +641,8 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
         "feet_air_time": jp.zeros(4),
         "last_contact": jp.zeros(4, dtype=bool),
         "swing_peak": jp.zeros(4),
+        "terrain_curriculum_steps": jp.asarray(0, dtype=jp.int32),
+        "terrain_difficulty": terrain_difficulty,
         "steps_until_next_pert": steps_until_next_pert,
         "pert_duration_seconds": pert_duration_seconds,
         "pert_duration": pert_duration_steps,
@@ -629,6 +671,7 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
     for metric_name in self._torque_spectrum_metric_names:
       metrics[metric_name] = jp.zeros(())
     metrics["swing_peak"] = jp.zeros(())
+    metrics["terrain/difficulty"] = terrain_difficulty
 
     obs = self._get_obs(data, info)
     reward, done = jp.zeros(2)
@@ -647,11 +690,29 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
       state = self._maybe_apply_perturbation(state)
     # state = self._reset_if_outside_bounds(state)
 
+    terrain_difficulty = self._terrain_difficulty(
+        state.info["terrain_curriculum_steps"]
+    )
+    terrain_model = self._terrain_model(terrain_difficulty)
+    episode_reset = state.info.get("episode_done", False)
+
+    def align_reset_height(data: mjx.Data) -> mjx.Data:
+      qpos = data.qpos.at[2].set(
+          self._init_q[2]
+          + self._terrain_height_world(data.qpos[:2], terrain_difficulty)
+          - self._floor_pos[2]
+      )
+      return mjx.forward(terrain_model, data.replace(qpos=qpos))
+
+    data = jax.lax.cond(
+        episode_reset, align_reset_height, lambda data: data, state.data
+    )
+
     motor_targets = self._default_pose + action * self._config.action_scale
     if self._config.lock_spine:
       motor_targets = motor_targets.at[0].set(self._default_pose[0])
     data = mjx_env.step(
-        self.mjx_model, state.data, motor_targets, self.n_substeps
+        terrain_model, data, motor_targets, self.n_substeps
     )
 
     contact = jp.array([
@@ -661,14 +722,13 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
     contact_filt = contact | state.info["last_contact"]
     first_contact = (state.info["feet_air_time"] > 0.0) * contact_filt
     state.info["feet_air_time"] += self.dt
-    foot_clearance = self._foot_terrain_clearance(data)
+    foot_clearance = self._foot_terrain_clearance(data, terrain_difficulty)
     state.info["swing_peak"] = jp.maximum(
         state.info["swing_peak"], foot_clearance
     )
 
     done = self._get_termination(data)
 
-    episode_reset = state.info.get("episode_done", False)
     torque_spectrum_highpass, torque_spectrum_filter_state = (
         self._apply_highpass_filter(
             jp.broadcast_to(
@@ -753,6 +813,8 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
     state.info["feet_air_time"] *= ~contact
     state.info["last_contact"] = contact
     state.info["swing_peak"] *= ~contact
+    state.info["terrain_curriculum_steps"] += 1
+    state.info["terrain_difficulty"] = terrain_difficulty
     for k, v in rewards.items():
       state.metrics[f"reward/{k}"] = v
     state.metrics["reward_without_action_rate"] = reward_without_action_rate
@@ -772,6 +834,7 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
     ):
       state.metrics[metric_name] = energy
     state.metrics["swing_peak"] = jp.mean(state.info["swing_peak"])
+    state.metrics["terrain/difficulty"] = terrain_difficulty
 
     done = done.astype(reward.dtype)
     state = state.replace(
@@ -910,7 +973,9 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
         ),
         "energy": self._cost_energy(data.qvel[6:], data.actuator_force),
         "feet_slip": self._cost_feet_slip(data, contact, info),
-        "feet_clearance": self._cost_feet_clearance(data),
+        "feet_clearance": self._cost_feet_clearance(
+            data, info["terrain_difficulty"]
+        ),
         "feet_height": self._cost_feet_height(
             info["swing_peak"], first_contact, info
         ),
@@ -1005,7 +1070,42 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
 
   # Feet related rewards.
 
-  def _foot_terrain_clearance(self, data: mjx.Data) -> jax.Array:
+  def _terrain_difficulty(self, steps: jax.Array) -> jax.Array:
+    if not self._terrain_curriculum_enabled:
+      return jp.asarray(1.0)
+    curriculum = self._config.terrain_curriculum
+    return _terrain_curriculum_difficulty(
+        steps, curriculum.initial_difficulty, curriculum.ramp_steps
+    )
+
+  def _terrain_model(self, difficulty: jax.Array) -> mjx.Model:
+    if self._terrain_hfield is None:
+      return self.mjx_model
+    return self.mjx_model.tree_replace({
+        "hfield_data": self.mjx_model.hfield_data * difficulty
+    })
+
+  def _terrain_height_world(
+      self, world_xy: jax.Array, difficulty: jax.Array
+  ) -> jax.Array:
+    """Returns terrain surface world-z below a world-frame xy position."""
+    if self._terrain_hfield is None:
+      return self._floor_pos[2]
+    world_pos = jp.array([world_xy[0], world_xy[1], self._floor_pos[2]])
+    local_xy = ((world_pos - self._floor_pos) @ self._floor_mat)[:2]
+    local_z = _heightfield_height(
+        local_xy,
+        self._terrain_hfield,
+        self._terrain_hfield_size[0],
+        self._terrain_hfield_size[1],
+        self._terrain_hfield_size[2] * difficulty,
+    )
+    local_surface = jp.array([local_xy[0], local_xy[1], local_z])
+    return (self._floor_pos + local_surface @ self._floor_mat.T)[2]
+
+  def _foot_terrain_clearance(
+      self, data: mjx.Data, difficulty: jax.Array
+  ) -> jax.Array:
     """Returns foot height above the terrain directly below each foot."""
     foot_pos = data.site_xpos[self._feet_site_id]
     floor_pos = data.geom_xpos[self._floor_geom_id]
@@ -1019,7 +1119,7 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
           self._terrain_hfield,
           self._terrain_hfield_size[0],
           self._terrain_hfield_size[1],
-          self._terrain_hfield_size[2],
+          self._terrain_hfield_size[2] * difficulty,
       )
     return foot_pos_local[..., 2] - terrain_height
 
@@ -1032,11 +1132,15 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
     vel_xy_norm_sq = jp.sum(jp.square(vel_xy), axis=-1)
     return jp.sum(vel_xy_norm_sq * contact) * (cmd_norm > 0.01)
 
-  def _cost_feet_clearance(self, data: mjx.Data) -> jax.Array:
+  def _cost_feet_clearance(
+      self, data: mjx.Data, terrain_difficulty: jax.Array
+  ) -> jax.Array:
     feet_vel = data.sensordata[self._foot_linvel_sensor_adr]
     vel_xy = feet_vel[..., :2]
     vel_norm = jp.sqrt(jp.linalg.norm(vel_xy, axis=-1))
-    foot_clearance = self._foot_terrain_clearance(data)
+    foot_clearance = self._foot_terrain_clearance(
+        data, terrain_difficulty
+    )
     delta = jp.abs(
         foot_clearance - self._config.reward_config.max_foot_height
     )
