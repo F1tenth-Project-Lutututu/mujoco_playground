@@ -37,6 +37,8 @@ from tqdm.auto import tqdm
 
 MODELS_DIRECTORY = Path("eagle")
 OUTPUT_DIRECTORY = Path("evaluations")
+# Optional exact run-name filter used by specialized batch pipelines.
+MODEL_NAMES: frozenset[str] | None = None
 #ENV_NAME = "Go1JoystickFlatTerrain"
 ENV_NAME = "Go1JoystickRoughTerrain"
 
@@ -279,6 +281,13 @@ def main(environment: str | None = None) -> None:
   models_directory = _resolve(MODELS_DIRECTORY / ENV_NAME)
   output_root = _resolve(OUTPUT_DIRECTORY / ENV_NAME)
   models = _model_directories(models_directory)
+  if MODEL_NAMES is not None:
+    models = [model for model in models if model.name in MODEL_NAMES]
+    missing = sorted(MODEL_NAMES - {model.name for model in models})
+    if missing:
+      raise FileNotFoundError(
+          "Configured model directories are missing: " + ", ".join(missing)
+      )
   failures: list[tuple[str, str]] = []
   pending = []
   skipped = 0

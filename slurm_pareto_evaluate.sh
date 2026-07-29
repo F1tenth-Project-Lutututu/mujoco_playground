@@ -33,7 +33,19 @@ export XLA_PYTHON_CLIENT_MEM_FRACTION=0.90
 export MUJOCO_GL=egl
 
 echo "Host: $(hostname --fqdn)"
+echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
+python - <<'PY'
+import jax
+
+devices = jax.devices()
+backend = jax.default_backend()
+print(f"JAX preflight: backend={backend}, devices={devices}")
+if backend != "gpu" or not any(device.platform == "gpu" for device in devices):
+  raise RuntimeError(
+      "Slurm job has no JAX-visible GPU; refusing CPU fallback."
+  )
+PY
 echo "Manifest: $MANIFEST"
 echo "Models root: $MODELS_ROOT"
 echo "Output root: $OUTPUT_ROOT"
