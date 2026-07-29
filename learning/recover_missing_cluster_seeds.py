@@ -27,6 +27,7 @@ from learning import download_models_to_evaluate as downloader
 
 
 SEEDED_RUN = re.compile(r"(?P<family>.+)-seed(?P<seed>\d+)")
+DATED_FAMILY = re.compile(r"(?P<date>\d{6})-.+")
 
 
 @dataclass(frozen=True)
@@ -99,6 +100,15 @@ def _launcher_arguments(run_config: dict[str, Any]) -> list[str]:
         f"found {active}"
     )
   method, signed_scale = active[0]
+  if method == "hp":
+    highpass_order = float(
+        overrides.get("reward_config.torque_highpass_order", 1.0)
+    )
+    if highpass_order != 1.0:
+      raise ValueError(
+          "slurm.sh fixes the high-pass order at 1 and cannot reproduce "
+          f"the saved order {highpass_order:g}"
+      )
   # Twelve scientific digits are ample for configured penalty sweeps while
   # suppressing binary-float artifacts such as 0.0006 becoming
   # 5.999999999999999e-4 in reconstructed run names.
@@ -109,15 +119,68 @@ def _launcher_arguments(run_config: dict[str, Any]) -> list[str]:
       float(overrides.get("reward_config.torque_highpass_cutoff_hz", 5.0)),
       ".15g",
   )
+  # slurm.sh removes the decimal point when constructing the historical
+  # difference-order tag: 1.0 -> m10, 2.0 -> m20.
   difference_order = format(
       float(
           overrides.get(
               "reward_config.torque_highpass_difference_order", 1.0
           )
       ),
-      ".15g",
+      ".1f",
   )
   return [method, scale, environment, cutoff, difference_order, timesteps]
+
+
+def _launcher_family(arguments: Sequence[str], date_prefix: str) -> str:
+  """Reproduces the run-family naming rules implemented by slurm.sh."""
+  method, scale, _, cutoff, difference_order, timesteps = arguments
+  method_name = {
+      "ar": "baseline",
+      "tr": "torquerate",
+      "hp": "highpass",
+  }.get(method)
+  if method_name is None:
+    raise ValueError(f"Unsupported launcher method: {method!r}")
+  if re.fullmatch(r"[1-9][0-9]*[Mm]", timesteps):
+    timestep_count = int(timesteps[:-1]) * 1_000_000
+  elif re.fullmatch(r"[1-9][0-9]*", timesteps):
+    timestep_count = int(timesteps)
+  else:
+    raise ValueError(f"Invalid saved timestep count: {timesteps!r}")
+  timestep_tag = f"{timestep_count // 1_000_000}M"
+
+  strength_tag = scale.lower().lstrip("+")
+  strength_tag = re.sub(r"e-0*([0-9]+)", r"em\1", strength_tag)
+  strength_tag = re.sub(r"e\+0*([0-9]+)", r"ep\1", strength_tag)
+  strength_tag = re.sub(r"e0*([0-9]+)", r"ep\1", strength_tag)
+  strength_tag = strength_tag.replace(".", "p")
+  suffix = ""
+  if method == "hp":
+    cutoff_tag = re.sub(r"\.0+$", "", cutoff.lower()).replace(".", "")
+    difference_tag = difference_order.lower().replace(".", "")
+    suffix = f"-f{cutoff_tag}o1m{difference_tag}"
+  return (
+      f"{date_prefix}-{method_name}-{timestep_tag}-{method}"
+      f"{strength_tag}{suffix}"
+  )
+
+
+def _validate_launcher_family(
+    family: str, launcher_arguments: Sequence[str]
+) -> None:
+  """Fails when reconstructed arguments would change the run family."""
+  match = DATED_FAMILY.fullmatch(family)
+  if match is None:
+    raise ValueError(f"Run family lacks a YYMMDD prefix: {family!r}")
+  reconstructed = _launcher_family(
+      launcher_arguments, match.group("date")
+  )
+  if reconstructed != family:
+    raise ValueError(
+        "reconstructed launcher changes the run family: "
+        f"expected {family!r}, got {reconstructed!r}"
+    )
 
 
 def _saved_run_config(
@@ -187,6 +250,7 @@ def main(argv: Sequence[str] | None = None) -> int:
           host, environment_root, group.template_run
       )
       launcher_arguments = _launcher_arguments(config)
+      _validate_launcher_family(group.family, launcher_arguments)
     except (KeyError, ValueError, json.JSONDecodeError) as error:
       print(f"{group.family}: cannot reconstruct launcher: {error}")
       continue
