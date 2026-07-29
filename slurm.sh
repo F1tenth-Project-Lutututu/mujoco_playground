@@ -78,6 +78,126 @@ STRENGTH_TAG=$(sed -E \
 eval "$(/mnt/storage_6/project_data/pl0467-01/soft/miniconda3/bin/conda shell.bash hook)"
 conda activate spectral_fixed
 
+# Fail fast when Slurm allocates a GPU that CUDA/JAX cannot use.  Requeue only
+# the affected array task and avoid the node that just failed.  Slurm increments
+# SLURM_RESTART_COUNT on every requeue, preventing an infinite retry loop.
+MAX_GPU_REQUEUES=${MAX_GPU_REQUEUES:-3}
+GPU_DIAGNOSTICS_DIR=${GPU_DIAGNOSTICS_DIR:-logs/gpu_diagnostics}
+if ! [[ $MAX_GPU_REQUEUES =~ ^[0-9]+$ ]]; then
+  echo "MAX_GPU_REQUEUES must be a non-negative integer, got: $MAX_GPU_REQUEUES" >&2
+  exit 2
+fi
+
+log_gpu_diagnostics() {
+  local diagnostic_file=$1
+  mkdir -p "$GPU_DIAGNOSTICS_DIR"
+  {
+    echo "=== GPU failure diagnostics ==="
+    date --iso-8601=seconds
+    echo "hostname=$(hostname --fqdn 2>&1)"
+    echo "slurmd_nodename=${SLURMD_NODENAME:-unset}"
+    echo "job_id=${SLURM_JOB_ID:-unset}"
+    echo "array_job_id=${SLURM_ARRAY_JOB_ID:-unset}"
+    echo "array_task_id=${SLURM_ARRAY_TASK_ID:-unset}"
+    echo "restart_count=${SLURM_RESTART_COUNT:-0}"
+    echo "cuda_visible_devices=${CUDA_VISIBLE_DEVICES:-unset}"
+    echo "slurm_job_gpus=${SLURM_JOB_GPUS:-unset}"
+    echo "slurm_step_gpus=${SLURM_STEP_GPUS:-unset}"
+    echo "gpu_device_ordinal=${GPU_DEVICE_ORDINAL:-unset}"
+    echo
+    echo "=== Slurm job record ==="
+    scontrol show job --details "${SLURM_JOB_ID:-}" 2>&1 || true
+    echo
+    echo "=== NVIDIA device files ==="
+    ls -la /dev/nvidia* 2>&1 || true
+    echo
+    echo "=== NVIDIA driver ==="
+    cat /proc/driver/nvidia/version 2>&1 || true
+    echo
+    echo "=== nvidia-smi -L ==="
+    nvidia-smi -L 2>&1 || true
+    echo
+    echo "=== nvidia-smi ==="
+    nvidia-smi 2>&1 || true
+    echo
+    echo "=== NVIDIA health and ECC ==="
+    nvidia-smi -q 2>&1 || true
+    echo
+    echo "=== NVIDIA topology ==="
+    nvidia-smi topo -m 2>&1 || true
+    echo
+    echo "=== Loaded NVIDIA modules ==="
+    lsmod 2>&1 | grep -E '^nvidia' || true
+    echo
+    echo "=== Recent kernel GPU messages ==="
+    dmesg --level=err,warn 2>&1 | tail -200 || true
+    echo
+    echo "=== JAX probe ==="
+    python - <<'PY'
+import os
+import platform
+import traceback
+
+print("python:", platform.python_version())
+print("CUDA_VISIBLE_DEVICES:", os.environ.get("CUDA_VISIBLE_DEVICES"))
+print("SLURM_JOB_GPUS:", os.environ.get("SLURM_JOB_GPUS"))
+try:
+  import jax
+  import jaxlib
+
+  print("jax:", jax.__version__)
+  print("jaxlib:", jaxlib.__version__)
+  print("devices:", jax.devices())
+  print("default_backend:", jax.default_backend())
+except Exception:
+  traceback.print_exc()
+PY
+  } 2>&1 | tee "$diagnostic_file"
+}
+
+if ! python - <<'PY'
+import jax
+
+devices = jax.devices()
+backend = jax.default_backend()
+print(f"JAX preflight: backend={backend}, devices={devices}")
+if backend != "gpu" or not any(device.platform == "gpu" for device in devices):
+  raise RuntimeError("Slurm allocated a GPU, but JAX cannot access it.")
+PY
+then
+  RESTART_COUNT=${SLURM_RESTART_COUNT:-0}
+  DIAGNOSTIC_FILE="${GPU_DIAGNOSTICS_DIR}/gpu_failure-${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-unknown}}_${SLURM_ARRAY_TASK_ID:-0}-restart${RESTART_COUNT}-$(date +%Y%m%dT%H%M%S).log"
+  log_gpu_diagnostics "$DIAGNOSTIC_FILE"
+
+  if ((RESTART_COUNT >= MAX_GPU_REQUEUES)); then
+    echo "GPU preflight failed after $RESTART_COUNT requeues; not retrying." >&2
+    echo "Diagnostics: $DIAGNOSTIC_FILE" >&2
+    exit 70
+  fi
+
+  FAILED_NODE=${SLURMD_NODENAME:-$(hostname --short)}
+  JOB_RECORD=$(scontrol show job --oneliner "$SLURM_JOB_ID")
+  CURRENT_EXCLUSIONS=$(sed -n 's/.* ExcNodeList=\([^ ]*\).*/\1/p' <<< "$JOB_RECORD")
+  if [[ -z $CURRENT_EXCLUSIONS || $CURRENT_EXCLUSIONS == "(null)" ]]; then
+    NEW_EXCLUSIONS=$FAILED_NODE
+  elif [[ ,$CURRENT_EXCLUSIONS, == *",$FAILED_NODE,"* ]]; then
+    NEW_EXCLUSIONS=$CURRENT_EXCLUSIONS
+  else
+    NEW_EXCLUSIONS="${CURRENT_EXCLUSIONS},${FAILED_NODE}"
+  fi
+
+  echo "Excluding $FAILED_NODE and requeueing task ${SLURM_ARRAY_JOB_ID:-$SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID:-0} (attempt $((RESTART_COUNT + 1))/$MAX_GPU_REQUEUES)." >&2
+  if ! scontrol update JobId="$SLURM_JOB_ID" ExcNodeList="$NEW_EXCLUSIONS"; then
+    echo "Could not update the failed-node exclusion; refusing an unsafe requeue." >&2
+    exit 71
+  fi
+  if ! scontrol requeue "$SLURM_JOB_ID"; then
+    echo "Slurm refused to requeue task $SLURM_JOB_ID." >&2
+    exit 72
+  fi
+  exit 0
+fi
+
 EXP_NAME_SUFFIX=
 case "$METHOD" in
   ar)
