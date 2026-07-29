@@ -29,23 +29,14 @@ class JoystickTest(absltest.TestCase):
 
     np.testing.assert_allclose(actual, [0.0, 0.5, 1.0, 2.0, 0.75, 1.0])
 
-  def test_terrain_curriculum_difficulty_ramps_and_clips(self):
-    steps = jp.array([0, 5, 10, 20])
-
-    curriculum_fn = joystick._terrain_curriculum_difficulty  # pylint: disable=protected-access
-    actual = curriculum_fn(
-        steps, initial_difficulty=0.2, ramp_steps=10
-    )
-
-    np.testing.assert_allclose(actual, [0.2, 0.6, 1.0, 1.0])
-
   def test_default_tracking_reward_weights(self):
     config = joystick.default_config()
 
-    self.assertEqual(config.reward_config.scales.tracking_lin_vel, 1.0)
-    self.assertEqual(config.reward_config.scales.tracking_ang_vel, 0.5)
+    self.assertEqual(config.reward_config.scales.tracking_lin_vel, 2.0)
+    self.assertEqual(config.reward_config.scales.tracking_ang_vel, 1.0)
     self.assertEqual(config.Kp, 20.0)
-    self.assertEqual(config.action_scale, 0.5)
+    self.assertEqual(config.action_scale, 1.0)
+    self.assertNotIn("terrain_curriculum", config)
 
   def test_reset_and_step_shapes(self):
     config = joystick.default_config()
