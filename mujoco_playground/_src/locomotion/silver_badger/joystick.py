@@ -257,7 +257,6 @@ def default_config() -> config_dict.ConfigDict:
       Kd=0.5,
       action_repeat=1,
       action_scale=0.25,
-      lock_spine=True,
       policy_observes_linear_velocity=True,
       domain_randomization=False,
       history_len=1,
@@ -398,6 +397,11 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
         config_overrides=config_overrides,
     )
     self._post_init()
+
+  @property
+  def action_size(self) -> int:
+    """Number of policy-controlled leg joints (the spine stays locked)."""
+    return self.mjx_model.nu - 1
 
   def _post_init(self) -> None:
     self._init_q = jp.array(self._mj_model.keyframe("home").qpos)
@@ -626,8 +630,8 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
         "rng": rng,
         "command": cmd,
         "steps_until_next_cmd": steps_until_next_cmd,
-        "last_act": jp.zeros(self.mjx_model.nu),
-        "last_last_act": jp.zeros(self.mjx_model.nu),
+        "last_act": jp.zeros(self.action_size),
+        "last_last_act": jp.zeros(self.action_size),
         "torque_spectrum_filter_state": self._initial_highpass_state(
             jp.broadcast_to(
                 data.actuator_force,
@@ -706,9 +710,10 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
         episode_reset, align_reset_height, lambda data: data, state.data
     )
 
-    motor_targets = self._default_pose + action * self._config.action_scale
-    if self._config.lock_spine:
-      motor_targets = motor_targets.at[0].set(self._default_pose[0])
+    motor_targets = jp.concatenate((
+        self._default_pose[:1],
+        self._default_pose[1:] + action * self._config.action_scale,
+    ))
     data = mjx_env.step(
         terrain_model, data, motor_targets, self.n_substeps
     )
@@ -903,7 +908,7 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
         noisy_gravity,  # 3
         noisy_joint_angles - self._default_pose,  # 13
         noisy_joint_vel,  # 13
-        info["last_act"],  # 13
+        info["last_act"],  # 12 leg actions; the spine is locked.
         info["command"],  # 3
     ])
     state = jp.hstack([
