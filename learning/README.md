@@ -122,6 +122,9 @@ difference order, and training timestep count. It then invokes `slurm.sh` with
 an array containing only the missing indices. Recovered tasks therefore also
 use the launcher's JAX GPU preflight, diagnostic logging, failed-node
 exclusion, and bounded automatic replacement submission.
+If a surviving seed has no readable saved configuration (for example, it
+failed before writing one), that family is reported and skipped without
+preventing other recoverable families from being submitted.
 
 Seeds `0,1,2,3,4` are expected by default. Specify another set when the
 original sweep used a different array:
@@ -309,10 +312,33 @@ use `--no-require-cuda` only when intentional CPU evaluation is acceptable.
 After evaluation, generate the Pareto-front figure and its CSV table:
 
 ```bash
-python -m learning.plot_policy_pareto \
-  --environment Go1JoystickFlatTerrain \
-  --output evaluations/pareto/Go1JoystickFlatTerrain/policy_pareto.png
+python -m learning.plot_policy_pareto Go1JoystickFlatTerrain
 ```
+
+By default the figure and CSV table are written to
+`evaluations/pareto/<environment>/policy_pareto.png` and
+`policy_pareto.csv`. Use `--output` only when a different destination is
+needed. The older `--environment Go1JoystickFlatTerrain` form remains
+supported.
+
+Use `--xlim MIN` to change the lower reward cutoff while allowing Matplotlib
+to fit the upper limit automatically:
+
+```bash
+python -m learning.plot_policy_pareto Go1JoystickFlatTerrain \
+  --xlim 25
+```
+
+Provide both `--xlim MIN MAX` to include only runs in a selected reward range
+and set both displayed x-axis limits:
+
+```bash
+python -m learning.plot_policy_pareto Go1JoystickFlatTerrain \
+  --xlim 25 40
+```
+
+Without `--xlim`, points below reward 31 are excluded and Matplotlib chooses
+the upper limit automatically.
 
 Each point pools all random-task rollouts and seeds for one method and penalty
 scale. The default x-axis is
@@ -356,9 +382,20 @@ the checkpoints. The localhost controller uploads only `pareto_manifest.json`;
 the cluster worker reads the original checkpoints from Eagle's `logs`
 directory and writes evaluation reports to cluster storage.
 
-First create a validated manifest with the regular download command. The
-manifest is small, so the locally downloaded checkpoint copies are not used by
-the cluster evaluation. Submit the evaluation from localhost:
+Submit the evaluation from localhost using only the environment name:
+
+```bash
+python -m learning.pareto_cluster submit Go1JoystickFlatTerrain
+```
+
+The cluster worker discovers matching run directories directly in Eagle's
+`logs/<environment>/`, selects their latest complete checkpoints, validates
+that each method's sweep differs only by penalty scale and seed, and writes
+the resulting `pareto_manifest.json` into the remote evaluation directory.
+Use `--run-date 260729` when the logs contain incompatible experiment cohorts
+from different dates.
+
+An existing local manifest can still freeze an already reviewed selection:
 
 ```bash
 python -m learning.pareto_cluster submit \
@@ -407,15 +444,16 @@ python -m learning.pareto_cluster fetch Go1JoystickFlatTerrain \
   --local-output-root evaluations/pareto_cluster
 ```
 
-Plot the downloaded reports by explicitly supplying the cluster evaluation
-root and the manifest copied into it:
+Plot the downloaded reports by supplying the environment and `--cluster`:
 
 ```bash
-python -m learning.plot_policy_pareto \
-  --manifest evaluations/pareto_cluster/Go1JoystickFlatTerrain/pareto_manifest.json \
-  --evaluation-root evaluations/pareto_cluster/Go1JoystickFlatTerrain \
-  --output evaluations/pareto_cluster/Go1JoystickFlatTerrain/policy_pareto.png
+python -m learning.plot_policy_pareto Go1JoystickFlatTerrain --cluster
 ```
+
+This reads both the copied manifest and reports from
+`evaluations/pareto_cluster/Go1JoystickFlatTerrain/` and writes the plot and
+CSV table back into that directory. Explicit `--manifest`,
+`--evaluation-root`, and `--output` options remain available as overrides.
 
 After evaluation, compare every completed policy family without manually
 building `METHODS`:

@@ -16,6 +16,7 @@
 
 import datetime
 import functools
+import inspect
 import json
 import os
 import sys
@@ -644,6 +645,25 @@ def _tracks_velocity_mae(env_name: str) -> bool:
   return "Joystick" in env_name
 
 
+def _velocity_tracking_accessors(env):
+  """Returns compatible local-linear-velocity and gyro accessors."""
+  if hasattr(env, "_get_local_linvel") and hasattr(env, "_get_localrpyrate"):
+    return env._get_local_linvel, env._get_localrpyrate
+  if not hasattr(env, "get_local_linvel") or not hasattr(env, "get_gyro"):
+    raise AttributeError(
+        f"{type(env).__name__} exposes no supported velocity accessors."
+    )
+  linear_velocity = env.get_local_linvel
+  angular_velocity = env.get_gyro
+  # G1's sensor API additionally requires the body frame name.
+  if len(inspect.signature(linear_velocity).parameters) == 2:
+    return (
+        lambda data: linear_velocity(data, "pelvis"),
+        lambda data: angular_velocity(data, "pelvis"),
+    )
+  return linear_velocity, angular_velocity
+
+
 class _EvaluatorWithTorqueFft:
   """Brax evaluator that adds whole-episode torque diagnostics."""
 
@@ -674,7 +694,9 @@ class _EvaluatorWithTorqueFft:
           "or use --action_repeat=1."
       )
 
-    tracking_env = eval_env
+    tracking_accessors = (
+        _velocity_tracking_accessors(eval_env) if track_velocity_mae else None
+    )
     eval_env = brax_envs.training.EvalWrapper(eval_env)
 
     def generate_eval_unroll(policy_params, key):
@@ -695,10 +717,10 @@ class _EvaluatorWithTorqueFft:
           # expose velocity tracking but do not expose torque diagnostics.
           torque = jp.zeros((num_eval_envs, 1), dtype=jp.float32)
         if track_velocity_mae:
-          linear_velocity = jax.vmap(tracking_env.get_local_linvel)(
-              next_state.data
-          )
-          angular_velocity = jax.vmap(tracking_env.get_gyro)(next_state.data)
+          assert tracking_accessors is not None
+          linear_accessor, angular_accessor = tracking_accessors
+          linear_velocity = jax.vmap(linear_accessor)(next_state.data)
+          angular_velocity = jax.vmap(angular_accessor)(next_state.data)
           command = current_state.info["command"]
           linear_absolute_error = jp.mean(
               jp.abs(linear_velocity[:, :2] - command[:, :2]), axis=-1

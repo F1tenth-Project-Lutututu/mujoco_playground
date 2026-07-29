@@ -36,32 +36,43 @@ def _ssh(host: str, command: str) -> str:
 
 
 def submit(args: argparse.Namespace) -> None:
-  manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
-  environment = downloader._validate_name(
-      str(manifest["environment"]), "environment name"
-  )
-  transfer_id = uuid.uuid4().hex
-  remote_job = args.remote_project_root / ".pareto-jobs" / transfer_id
-  remote_manifest = remote_job / "pareto_manifest.json"
-  _ssh(args.host, f"mkdir -p {shlex.quote(str(remote_job))}")
-  subprocess.run(
-      (
-          "scp",
-          str(args.manifest.resolve()),
-          f"{args.host}:{shlex.quote(str(remote_manifest))}",
-      ),
-      check=True,
-  )
+  if bool(args.environment) == bool(args.manifest):
+    raise ValueError(
+        "Specify either an environment name or --manifest, but not both."
+    )
+  if args.manifest is not None:
+    manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+    environment = downloader._validate_name(
+        str(manifest["environment"]), "environment name"
+    )
+    transfer_id = uuid.uuid4().hex
+    remote_job = args.remote_project_root / ".pareto-jobs" / transfer_id
+    source = remote_job / "pareto_manifest.json"
+    _ssh(args.host, f"mkdir -p {shlex.quote(str(remote_job))}")
+    subprocess.run(
+        (
+            "scp",
+            str(args.manifest.resolve()),
+            f"{args.host}:{shlex.quote(str(source))}",
+        ),
+        check=True,
+    )
+  else:
+    environment = downloader._validate_name(
+        args.environment, "environment name"
+    )
+    source = environment
   output_root = args.remote_output_root
   submission = shlex.join([
       "sbatch",
       "--parsable",
       str(args.remote_project_root / "slurm_pareto_evaluate.sh"),
-      str(remote_manifest),
+      str(source),
       str(args.remote_models_root),
       str(output_root),
       str(args.num_random_tasks),
       str(args.task_seed),
+      str(args.run_date or ""),
   ])
   job_id = _ssh(
       args.host,
@@ -143,7 +154,12 @@ def _build_parser() -> argparse.ArgumentParser:
   subparsers = parser.add_subparsers(dest="command", required=True)
 
   submit_parser = subparsers.add_parser("submit")
-  submit_parser.add_argument("--manifest", type=Path, required=True)
+  submit_parser.add_argument("environment", nargs="?")
+  submit_parser.add_argument(
+      "--manifest",
+      type=Path,
+      help="Use an existing local manifest instead of cluster discovery.",
+  )
   submit_parser.add_argument(
       "--remote-project-root",
       type=PurePosixPath,
@@ -161,6 +177,11 @@ def _build_parser() -> argparse.ArgumentParser:
   )
   submit_parser.add_argument("--num-random-tasks", type=int, default=2048)
   submit_parser.add_argument("--task-seed", type=int, default=0)
+  submit_parser.add_argument(
+      "--run-date",
+      type=int,
+      help="Restrict cluster discovery to a YYMMDD run-name prefix.",
+  )
   submit_parser.set_defaults(handler=submit)
 
   fetch_parser = subparsers.add_parser("fetch")

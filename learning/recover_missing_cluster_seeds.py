@@ -251,7 +251,12 @@ def main(argv: Sequence[str] | None = None) -> int:
       )
       launcher_arguments = _launcher_arguments(config)
       _validate_launcher_family(group.family, launcher_arguments)
-    except (KeyError, ValueError, json.JSONDecodeError) as error:
+    except (
+        KeyError,
+        ValueError,
+        json.JSONDecodeError,
+        subprocess.CalledProcessError,
+    ) as error:
       print(f"{group.family}: cannot reconstruct launcher: {error}")
       continue
     indices = ",".join(map(str, group.missing))

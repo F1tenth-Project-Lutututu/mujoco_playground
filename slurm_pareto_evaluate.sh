@@ -15,15 +15,16 @@
 set -euo pipefail
 
 if (( $# < 3 )); then
-  echo "Usage: sbatch $0 <manifest> <models-root> <output-root> [num-random-tasks] [task-seed]" >&2
+  echo "Usage: sbatch $0 <environment-or-manifest> <models-root> <output-root> [num-random-tasks] [task-seed] [run-date]" >&2
   exit 2
 fi
 
-MANIFEST=$1
+SOURCE=$1
 MODELS_ROOT=$2
 OUTPUT_ROOT=$3
 NUM_RANDOM_TASKS=${4:-2048}
 TASK_SEED=${5:-0}
+RUN_DATE=${6:-}
 
 eval "$(/mnt/storage_6/project_data/pl0467-01/soft/miniconda3/bin/conda shell.bash hook)"
 conda activate spectral_fixed
@@ -50,14 +51,23 @@ then
   echo "JAX GPU preflight failed inside the Slurm GPU job step." >&2
   exit 70
 fi
-echo "Manifest: $MANIFEST"
+echo "Evaluation source: $SOURCE"
 echo "Models root: $MODELS_ROOT"
 echo "Output root: $OUTPUT_ROOT"
 echo "Random tasks per policy: $NUM_RANDOM_TASKS"
 
+SOURCE_ARGUMENT=(--environment "$SOURCE")
+if [[ -f "$SOURCE" ]]; then
+  SOURCE_ARGUMENT=(--manifest "$SOURCE")
+fi
+RUN_DATE_ARGUMENT=()
+if [[ -n "$RUN_DATE" ]]; then
+  RUN_DATE_ARGUMENT=(--run-date "$RUN_DATE")
+fi
 srun --ntasks=1 --gpus-per-task=1 python -m learning.evaluate_pareto_on_cluster \
-  --manifest "$MANIFEST" \
+  "${SOURCE_ARGUMENT[@]}" \
   --models-root "$MODELS_ROOT" \
   --output-root "$OUTPUT_ROOT" \
   --num-random-tasks "$NUM_RANDOM_TASKS" \
-  --task-seed "$TASK_SEED"
+  --task-seed "$TASK_SEED" \
+  "${RUN_DATE_ARGUMENT[@]}"

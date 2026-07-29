@@ -8,6 +8,7 @@ executables and each rollout uses a large batch of random tasks.
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 import json
 import os
 from pathlib import Path
@@ -17,9 +18,13 @@ from typing import Sequence
 
 def _build_parser() -> argparse.ArgumentParser:
   parser = argparse.ArgumentParser(description=__doc__)
-  parser.add_argument("--manifest", type=Path, required=True)
+  source = parser.add_mutually_exclusive_group(required=True)
+  source.add_argument("--manifest", type=Path)
+  source.add_argument("--environment")
   parser.add_argument("--models-root", type=Path, required=True)
   parser.add_argument("--output-root", type=Path, required=True)
+  parser.add_argument("--run-date", type=int)
+  parser.add_argument("--min-checkpoint-step", type=int, default=400_000_000)
   parser.add_argument("--num-random-tasks", type=int, default=2048)
   parser.add_argument("--task-seed", type=int, default=0)
   parser.add_argument("--episode-length", type=int, default=1000)
@@ -41,14 +46,9 @@ def main(argv: Sequence[str] | None = None) -> None:
   os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.90")
   os.environ.setdefault("MUJOCO_GL", "egl")
 
-  manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
-  environment = str(manifest["environment"])
-  runs = manifest.get("runs", [])
-  if not runs:
-    raise ValueError(f"Manifest contains no evaluable runs: {args.manifest}")
-
   from learning import evaluate_all_models  # pylint: disable=g-import-not-at-top
   from learning import evaluate_policy  # pylint: disable=g-import-not-at-top
+  from learning import pareto_policy_pipeline  # pylint: disable=g-import-not-at-top
   import jax  # pylint: disable=g-import-not-at-top
 
   devices = jax.devices()
@@ -74,6 +74,77 @@ def main(argv: Sequence[str] | None = None) -> None:
         "submitting."
     )
 
+  if args.manifest is not None:
+    manifest_path = args.manifest
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    environment = str(manifest["environment"])
+  else:
+    environment = str(args.environment)
+    model_environment = args.models_root / environment
+    selected = pareto_policy_pipeline.select_runs(
+        [
+            path.name
+            for path in model_environment.iterdir()
+            if path.is_dir()
+        ],
+        run_date=args.run_date,
+    )
+    completed = []
+    skipped = []
+    for run in selected:
+      checkpoints = model_environment / run.run_name / "checkpoints"
+      numeric = (
+          [
+              path
+              for path in checkpoints.iterdir()
+              if path.is_dir() and path.name.isdigit()
+          ]
+          if checkpoints.is_dir()
+          else []
+      )
+      if not numeric:
+        skipped.append({
+            **asdict(run),
+            "reason": "no numeric checkpoint exists",
+        })
+        continue
+      checkpoint = max(numeric, key=lambda path: int(path.name))
+      if int(checkpoint.name) < args.min_checkpoint_step:
+        skipped.append({
+            **asdict(run),
+            "reason": (
+                f"latest checkpoint {checkpoint.name} is below "
+                f"{args.min_checkpoint_step:012d}"
+            ),
+        })
+        continue
+      completed.append(
+          pareto_policy_pipeline.PolicyRun(
+              **{
+                  **asdict(run),
+                  "checkpoint": checkpoint.name,
+              }
+          )
+      )
+    if not completed:
+      raise ValueError(f"No complete Pareto runs found for {environment}.")
+    pareto_policy_pipeline.validate_sweeps(
+        model_environment, completed, environment
+    )
+    environment_output = args.output_root / environment
+    manifest_path = (
+        environment_output / pareto_policy_pipeline.MANIFEST_NAME
+    )
+    pareto_policy_pipeline._write_manifest(
+        manifest_path, environment, completed, selected, skipped
+    )
+    pareto_policy_pipeline._print_download_report(completed, skipped)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+  runs = manifest.get("runs", [])
+  if not runs:
+    raise ValueError(f"Manifest contains no evaluable runs: {manifest_path}")
+
   evaluate_all_models.MODEL_NAMES = frozenset(
       str(run["run_name"]) for run in runs
   )
@@ -91,10 +162,12 @@ def main(argv: Sequence[str] | None = None) -> None:
 
   environment_output = args.output_root / environment
   environment_output.mkdir(parents=True, exist_ok=True)
-  shutil.copy2(args.manifest, environment_output / "pareto_manifest.json")
+  copied_manifest = environment_output / "pareto_manifest.json"
+  if manifest_path.resolve() != copied_manifest.resolve():
+    shutil.copy2(manifest_path, copied_manifest)
   worker_config = {
       "environment": environment,
-      "manifest": str(args.manifest.resolve()),
+      "manifest": str(manifest_path.resolve()),
       "models_root": str(args.models_root.resolve()),
       "output_root": str(args.output_root.resolve()),
       "num_random_tasks": args.num_random_tasks,
