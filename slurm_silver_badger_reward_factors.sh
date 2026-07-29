@@ -37,8 +37,9 @@ ANGULAR_WEIGHT=$2
 TERMINATION_WEIGHT=${3:--1.0}
 #ENV_NAME=${4:-SilverBadgerJoystickFlatTerrain}
 ENV_NAME=${4:-SilverBadgerJoystickRoughTerrain}
+#ENV_NAME=${4:-Go1JoystickRoughTerrain}
 NUM_TIMESTEPS=${5:-400000000}
-WANDB_PROJECT=${6:-spectral_playground_silver_badger_factor_search}
+WANDB_PROJECT=${6:-spectral_playground_silver_badger_rough_factor_search}
 SEED=${SLURM_ARRAY_TASK_ID:-0}
 NUM_EVALS=16
 
@@ -62,7 +63,7 @@ OVERRIDES=$(printf \
 LINEAR_TAG=$(sed 's/[^[:alnum:]]/p/g' <<< "$LINEAR_WEIGHT")
 ANGULAR_TAG=$(sed 's/[^[:alnum:]]/p/g' <<< "$ANGULAR_WEIGHT")
 TERMINATION_TAG=$(sed 's/[^[:alnum:]]/p/g' <<< "$TERMINATION_WEIGHT")
-EXPERIMENT="silver-badger-tracking-lin${LINEAR_TAG}-ang${ANGULAR_TAG}-term${TERMINATION_TAG}"
+EXPERIMENT="sb-tracking-curr-lin${LINEAR_TAG}-ang${ANGULAR_TAG}-term${TERMINATION_TAG}"
 
 eval "$(/mnt/storage_6/project_data/pl0467-01/soft/miniconda3/bin/conda shell.bash hook)"
 conda activate spectral_fixed
