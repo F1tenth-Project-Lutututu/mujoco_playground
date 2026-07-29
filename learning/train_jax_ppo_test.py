@@ -107,6 +107,20 @@ class RunConfigTest(absltest.TestCase):
         "tracking/eval_yaw_rate_mae",
     )
 
+  def test_all_joystick_environments_enable_tracking_mae(self):
+    for env_name in (
+        "Go1JoystickRoughTerrain",
+        "G1JoystickFlatTerrain",
+        "T1JoystickRoughTerrain",
+        "SpotJoystick",
+        "SilverBadgerJoystickRoughTerrain",
+    ):
+      self.assertTrue(train_jax_ppo._tracks_velocity_mae(env_name))
+
+  def test_non_joystick_environments_do_not_enable_tracking_mae(self):
+    for env_name in ("Go1Getup", "Go1Handstand", "CartpoleBalance"):
+      self.assertFalse(train_jax_ppo._tracks_velocity_mae(env_name))
+
   def test_run_logdir_has_environment_parent(self):
     root = self.create_tempdir().full_path
 
