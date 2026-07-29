@@ -13,10 +13,14 @@ Example:
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path, PurePosixPath
 import re
 import shlex
+import shutil
 import subprocess
+import tempfile
+import time
 from typing import Sequence
 
 
@@ -27,6 +31,8 @@ DEFAULT_REMOTE_LOGS = PurePosixPath(
     "spectral_playground/logs"
 )
 SAFE_NAME = re.compile(r"[A-Za-z0-9_.-]+")
+DOWNLOAD_ATTEMPTS = 5
+DOWNLOAD_RETRY_DELAY_SECONDS = 2.0
 
 
 def _validate_name(value: str, description: str) -> str:
@@ -120,11 +126,49 @@ def _latest_checkpoint(
 
 
 def _copy_remote(
-  host: str, remote_path: PurePosixPath, local_parent: Path
+    host: str,
+    remote_path: PurePosixPath,
+    local_parent: Path,
+    *,
+    attempts: int = DOWNLOAD_ATTEMPTS,
+    retry_delay_seconds: float = DOWNLOAD_RETRY_DELAY_SECONDS,
 ) -> None:
+  """Copies a remote path atomically, retrying transient transport failures."""
+  if attempts <= 0:
+    raise ValueError("attempts must be positive")
   local_parent.mkdir(parents=True, exist_ok=True)
   remote = f"{host}:{shlex.quote(str(remote_path))}"
-  _run(("scp", "-r", remote, str(local_parent)))
+  target = local_parent / remote_path.name
+
+  for attempt in range(1, attempts + 1):
+    staging_parent = Path(
+        tempfile.mkdtemp(prefix=f".{remote_path.name}.download-", dir=local_parent)
+    )
+    try:
+      _run(("scp", "-r", remote, str(staging_parent)))
+      staged_target = staging_parent / remote_path.name
+      if not staged_target.exists():
+        raise RuntimeError(
+            f"scp reported success but did not create {staged_target}"
+        )
+      if target.is_dir():
+        shutil.rmtree(target)
+      elif target.exists() or target.is_symlink():
+        target.unlink()
+      os.replace(staged_target, target)
+      return
+    except (subprocess.CalledProcessError, RuntimeError) as error:
+      if attempt == attempts:
+        raise
+      delay = min(retry_delay_seconds * 2 ** (attempt - 1), 30.0)
+      print(
+          f"Download failed for {remote_path} (attempt {attempt}/{attempts}): "
+          f"{error}. Retrying in {delay:g}s...",
+          flush=True,
+      )
+      time.sleep(delay)
+    finally:
+      shutil.rmtree(staging_parent, ignore_errors=True)
 
 
 def download(

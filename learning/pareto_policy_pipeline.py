@@ -208,7 +208,19 @@ def download(
         f"[{index}/{len(runs)}] {run.run_name}: checkpoint {checkpoint}",
         flush=True,
     )
-    if not local_checkpoint.is_dir():
+    # Orbax checkpoints end with _sharding.  An interrupted legacy scp may
+    # leave the directory in place without that file; download it again.
+    checkpoint_complete = (
+        local_checkpoint.is_dir()
+        and (local_checkpoint / "_sharding").is_file()
+    )
+    if not checkpoint_complete:
+      if local_checkpoint.exists():
+        print(
+            f"[{index}/{len(runs)}] {run.run_name}: replacing incomplete "
+            "local checkpoint",
+            flush=True,
+        )
       downloader._copy_remote(
           host,
           remote_run / "checkpoints" / checkpoint,
