@@ -1049,8 +1049,6 @@ def main(argv):
     env_cfg_overrides["vision_config.nworld"] = ppo_params.num_envs
   if _PLAYGROUND_CONFIG_OVERRIDES.value is not None:
     env_cfg_overrides.update(json.loads(_PLAYGROUND_CONFIG_OVERRIDES.value))
-  if _PLAY_ONLY.value and env_name.startswith("SilverBadgerJoystickRough"):
-    env_cfg_overrides["terrain_curriculum.enabled"] = False
   if mean_action_rate_cost < 0.0:
     raise ValueError("--mean_action_rate_cost must be non-negative.")
   if mean_action_rate_cost > 0.0:
@@ -1281,8 +1279,6 @@ def main(argv):
         )
 
   eval_env_overrides = dict(env_cfg_overrides)
-  if env_name.startswith("SilverBadgerJoystickRough"):
-    eval_env_overrides["terrain_curriculum.enabled"] = False
   if vision:
     eval_env_overrides["vision_config.nworld"] = num_eval_envs
   eval_env = registry.load(
