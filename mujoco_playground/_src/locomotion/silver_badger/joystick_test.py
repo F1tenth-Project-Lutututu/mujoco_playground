@@ -42,8 +42,10 @@ class JoystickTest(absltest.TestCase):
   def test_default_tracking_reward_weights(self):
     config = joystick.default_config()
 
-    self.assertEqual(config.reward_config.scales.tracking_lin_vel, 9.0)
-    self.assertEqual(config.reward_config.scales.tracking_ang_vel, 3.0)
+    self.assertEqual(config.reward_config.scales.tracking_lin_vel, 1.0)
+    self.assertEqual(config.reward_config.scales.tracking_ang_vel, 0.5)
+    self.assertEqual(config.Kp, 20.0)
+    self.assertEqual(config.action_scale, 0.5)
 
   def test_reset_and_step_shapes(self):
     config = joystick.default_config()
