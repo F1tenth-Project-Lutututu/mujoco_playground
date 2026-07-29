@@ -55,6 +55,17 @@ class RecoverMissingClusterSeedsTest(unittest.TestCase):
     }
     self.assertEqual(recovery._launcher_arguments(config)[1], "2e-2")
 
+  def test_launcher_arguments_remove_binary_float_artifacts(self):
+    config = {
+        "command": [
+            "train-jax-ppo",
+            "--num_timesteps=400000000",
+            "--env_name=Go1JoystickRoughTerrain",
+            '--playground_config_overrides={"reward_config.scales.torque_rate": -0.0006}',
+        ]
+    }
+    self.assertEqual(recovery._launcher_arguments(config)[1], "6e-4")
+
 
 if __name__ == "__main__":
   unittest.main()

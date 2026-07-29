@@ -99,7 +99,10 @@ def _launcher_arguments(run_config: dict[str, Any]) -> list[str]:
         f"found {active}"
     )
   method, signed_scale = active[0]
-  mantissa, exponent = f"{abs(float(signed_scale)):.15e}".split("e")
+  # Twelve scientific digits are ample for configured penalty sweeps while
+  # suppressing binary-float artifacts such as 0.0006 becoming
+  # 5.999999999999999e-4 in reconstructed run names.
+  mantissa, exponent = f"{abs(float(signed_scale)):.12e}".split("e")
   mantissa = mantissa.rstrip("0").rstrip(".")
   scale = f"{mantissa}e{int(exponent):+d}"
   cutoff = format(
