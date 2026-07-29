@@ -53,13 +53,17 @@ class JoystickTest(absltest.TestCase):
     state = env.reset(jax.random.PRNGKey(0))
     next_state = env.step(state, jp.ones(env.action_size))
 
-    self.assertEqual(env.action_size, 13)
-    self.assertEqual(state.obs["state"].shape, (51,))
-    self.assertEqual(state.obs["privileged_state"].shape, (129,))
-    self.assertEqual(next_state.obs["state"].shape, (51,))
+    self.assertEqual(env.action_size, 12)
+    self.assertEqual(state.obs["state"].shape, (50,))
+    self.assertEqual(state.obs["privileged_state"].shape, (128,))
+    self.assertEqual(next_state.obs["state"].shape, (50,))
     self.assertEqual(next_state.reward.shape, ())
     self.assertEqual(next_state.done.shape, ())
     self.assertEqual(next_state.data.ctrl[0], env._default_pose[0])
+    np.testing.assert_allclose(
+        next_state.data.ctrl[1:],
+        env._default_pose[1:] + config.action_scale,
+    )
 
   def test_no_linear_velocity_actor_observation(self):
     config = joystick.no_linear_velocity_config()
@@ -69,9 +73,9 @@ class JoystickTest(absltest.TestCase):
     state = env.reset(jax.random.PRNGKey(0))
 
     self.assertFalse(config.policy_observes_linear_velocity)
-    self.assertEqual(state.obs["state"].shape, (48,))
+    self.assertEqual(state.obs["state"].shape, (47,))
     # The critic still receives the ground-truth local linear velocity.
-    self.assertEqual(state.obs["privileged_state"].shape, (126,))
+    self.assertEqual(state.obs["privileged_state"].shape, (125,))
 
   def test_rough_terrain_uses_height_field(self):
     config = joystick.default_config()
