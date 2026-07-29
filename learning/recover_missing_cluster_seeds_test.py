@@ -39,7 +39,7 @@ class RecoverMissingClusterSeedsTest(unittest.TestCase):
             "1e-5",
             "Go1JoystickRoughTerrain",
             "7",
-            "2",
+            "2.0",
             "400000000",
         ],
     )
@@ -65,6 +65,55 @@ class RecoverMissingClusterSeedsTest(unittest.TestCase):
         ]
     }
     self.assertEqual(recovery._launcher_arguments(config)[1], "6e-4")
+
+  def test_launcher_arguments_preserve_m10_default_convention(self):
+    config = {
+        "command": [
+            "train-jax-ppo",
+            "--num_timesteps=400000000",
+            "--env_name=Go1JoystickRoughTerrain",
+            '--playground_config_overrides={"reward_config.scales.torque_high_freq": -1e-5}',
+        ]
+    }
+    arguments = recovery._launcher_arguments(config)
+
+    self.assertEqual(arguments[4], "1.0")
+
+  def test_launcher_family_round_trips_all_naming_conventions(self):
+    cases = (
+        (
+            ["ar", "2e-2", "Env", "5", "1.0", "400000000"],
+            "260729-baseline-400M-ar2em2",
+        ),
+        (
+            ["tr", "6e-4", "Env", "5", "1.0", "400M"],
+            "260729-torquerate-400M-tr6em4",
+        ),
+        (
+            ["hp", "1e-5", "Env", "7", "2.0", "400000000"],
+            "260729-highpass-400M-hp1em5-f7o1m20",
+        ),
+    )
+    for arguments, expected in cases:
+      with self.subTest(arguments=arguments):
+        self.assertEqual(
+            recovery._launcher_family(arguments, "260729"), expected
+        )
+        recovery._validate_launcher_family(expected, arguments)
+
+  def test_launcher_arguments_reject_unsupported_highpass_order(self):
+    config = {
+        "command": [
+            "train-jax-ppo",
+            "--num_timesteps=400000000",
+            "--env_name=Go1JoystickRoughTerrain",
+            "--playground_config_overrides="
+            '{"reward_config.scales.torque_high_freq": -1e-5, '
+            '"reward_config.torque_highpass_order": 2}',
+        ]
+    }
+    with self.assertRaisesRegex(ValueError, "fixes the high-pass order at 1"):
+      recovery._launcher_arguments(config)
 
 
 if __name__ == "__main__":
