@@ -639,6 +639,11 @@ def _tracking_mae_metrics(
   }
 
 
+def _tracks_velocity_mae(env_name: str) -> bool:
+  """Whether an environment exposes joystick velocity-tracking signals."""
+  return "Joystick" in env_name
+
+
 class _EvaluatorWithTorqueFft:
   """Brax evaluator that adds whole-episode torque diagnostics."""
 
@@ -659,6 +664,7 @@ class _EvaluatorWithTorqueFft:
     self._eval_walltime = 0.0
     self._torque_sample_period = torque_sample_period
     self._torque_fft_cutoffs_hz = torque_fft_cutoffs_hz
+    self._track_torque = bool(torque_fft_cutoffs_hz)
     self._track_velocity_mae = track_velocity_mae
     fft_nyquist_hz = 0.5 / torque_sample_period
     if any(cutoff > fft_nyquist_hz for cutoff in torque_fft_cutoffs_hz):
@@ -682,7 +688,12 @@ class _EvaluatorWithTorqueFft:
         actions, _ = policy(current_state.obs, action_key)
         active = current_state.info["eval_metrics"].active_episodes
         next_state = eval_env.step(current_state, actions)
-        torque = next_state.info["torque_for_spectrum"]
+        if self._track_torque:
+          torque = next_state.info["torque_for_spectrum"]
+        else:
+          # Keep the scan output shape static for joystick environments that
+          # expose velocity tracking but do not expose torque diagnostics.
+          torque = jp.zeros((num_eval_envs, 1), dtype=jp.float32)
         if track_velocity_mae:
           linear_velocity = jax.vmap(tracking_env.get_local_linvel)(
               next_state.data
@@ -757,23 +768,24 @@ class _EvaluatorWithTorqueFft:
             np.std(value) if aggregate_episodes else value
         )
 
-    fft_metrics = _torque_fft_energy_metrics(
-        np.asarray(torques),
-        np.asarray(active_steps),
-        self._torque_sample_period,
-        self._torque_fft_cutoffs_hz,
-    )
-    metrics.update({
-        f"eval/episode_torque_spectrum/{name}": value
-        for name, value in fft_metrics.items()
-    })
-    smoothness_metrics = _torque_smoothness_metrics(
-        np.asarray(torques), np.asarray(active_steps)
-    )
-    metrics.update({
-        f"eval/episode_torque_smoothness/{name}": value
-        for name, value in smoothness_metrics.items()
-    })
+    if self._track_torque:
+      fft_metrics = _torque_fft_energy_metrics(
+          np.asarray(torques),
+          np.asarray(active_steps),
+          self._torque_sample_period,
+          self._torque_fft_cutoffs_hz,
+      )
+      metrics.update({
+          f"eval/episode_torque_spectrum/{name}": value
+          for name, value in fft_metrics.items()
+      })
+      smoothness_metrics = _torque_smoothness_metrics(
+          np.asarray(torques), np.asarray(active_steps)
+      )
+      metrics.update({
+          f"eval/episode_torque_smoothness/{name}": value
+          for name, value in smoothness_metrics.items()
+      })
     if self._track_velocity_mae:
       tracking_metrics = _tracking_mae_metrics(
           np.asarray(linear_absolute_errors),
@@ -1216,12 +1228,13 @@ def main(argv):
           "torque_spectrum_cutoffs_hz", ()
       )
   )
-  if torque_fft_cutoffs_hz:
+  track_velocity_mae = _tracks_velocity_mae(env_name)
+  if torque_fft_cutoffs_hz or track_velocity_mae:
     acting.Evaluator = functools.partial(
         _EvaluatorWithTorqueFft,
         torque_sample_period=env.dt * ppo_params.action_repeat,
         torque_fft_cutoffs_hz=torque_fft_cutoffs_hz,
-        track_velocity_mae=env_name.startswith("SilverBadger"),
+        track_velocity_mae=track_velocity_mae,
     )
   ppo_losses.compute_ppo_loss = functools.partial(
       _compute_ppo_loss_with_mean_action_rate,
