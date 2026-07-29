@@ -16,7 +16,7 @@
 
 Example:
 
-  python -m learning.plot_policy_pareto
+  python -m learning.plot_policy_pareto Go1JoystickFlatTerrain
 
 Each point pools all random-task rollouts and seeds for one method/penalty
 scale.  Reward is maximized and every configured y-axis metric is minimized.
@@ -44,7 +44,7 @@ DEFAULT_X_METRIC = "eval_reward_means/total_without_regularization"
 MIN_X = 31.0
 AGGREGATE_CACHE_NAME = "pareto_aggregates.csv"
 AGGREGATE_CACHE_MANIFEST_NAME = "pareto_aggregates_cache.json"
-AGGREGATE_CACHE_VERSION = 1
+AGGREGATE_CACHE_VERSION = 2
 DEFAULT_Y_METRICS = (
     "smoothness/torque/mssd_mean_squared_second_difference_per_dof",
     "smoothness/torque/msgfd_mean_absolute_savgol_filter_deviation_per_dof",
@@ -71,6 +71,9 @@ class Point:
   x: float
   y: float
   sample_count: int
+  seed_count: int
+  expected_seed_count: int
+  missing_seeds: str
 
 
 def pareto_mask(x: np.ndarray, y: np.ndarray) -> np.ndarray:
@@ -104,7 +107,18 @@ def _manifest_runs(path: Path) -> list[dict]:
   runs = value.get("runs")
   if not isinstance(runs, list):
     raise ValueError(f"Invalid Pareto manifest: {path}")
-  return runs
+  coverage = {
+      (item["method"], item["scale_tag"]): item
+      for item in value.get("seed_coverage", [])
+  }
+  enriched = []
+  for run in runs:
+    item = coverage.get((run["method"], run["scale_tag"]), {})
+    enriched.append({
+        **run,
+        "_expected_seeds": item.get("expected_seeds", [run.get("seed")]),
+    })
+  return enriched
 
 
 def _report_paths(
@@ -193,10 +207,15 @@ def _build_aggregates(
         {
             "scale": float(run["scale"]),
             "sample_count": 0,
+            "seeds": set(),
+            "expected_seeds": set(run.get("_expected_seeds", [])),
             "sums": {},
             "counts": {},
         },
     )
+    group["expected_seeds"].update(run.get("_expected_seeds", []))
+    if run.get("seed") is not None:
+      group["seeds"].add(int(run["seed"]))
     with report.open(newline="", encoding="utf-8") as file:
       for row in csv.DictReader(file):
         group["sample_count"] = int(group["sample_count"]) + 1
@@ -220,11 +239,18 @@ def _build_aggregates(
     counts = group["counts"]
     assert isinstance(sums, dict)
     assert isinstance(counts, dict)
+    seeds = sorted(group["seeds"])
+    expected_seeds = sorted(group["expected_seeds"])
+    missing_seeds = sorted(set(expected_seeds) - set(seeds))
     rows.append({
         "method": method,
         "scale": group["scale"],
         "scale_tag": scale_tag,
         "sample_count": group["sample_count"],
+        "seed_count": len(seeds),
+        "expected_seed_count": len(expected_seeds),
+        "missing_seeds": ",".join(str(seed) for seed in missing_seeds),
+        "all_seeds_considered": not missing_seeds,
         **{
             metric: total / counts[metric]
             for metric, total in sums.items()
@@ -281,6 +307,9 @@ def _points_from_aggregates(
             x=_float(row, x_metric),
             y=_float(row, y_metric),
             sample_count=int(row["sample_count"]),
+            seed_count=int(row.get("seed_count", 0)),
+            expected_seed_count=int(row.get("expected_seed_count", 0)),
+            missing_seeds=row.get("missing_seeds", ""),
         )
     )
   return sorted(points, key=lambda point: (point.method, point.scale))
@@ -304,6 +333,7 @@ def plot(
     output: Path,
     x_metric: str,
     y_metrics: Sequence[str],
+    xlim: tuple[float, float | None] | None = None,
 ) -> Path:
   columns = 2
   rows = math.ceil(len(y_metrics) / columns)
@@ -313,16 +343,30 @@ def plot(
   aggregates = load_aggregates(manifest, evaluation_root)
   csv_rows = []
   for axis, y_metric in zip(axes.flat, y_metrics):
-    points = [
-        point
-        for point in _points_from_aggregates(
-            aggregates, x_metric, y_metric
-        )
-        if point.x >= MIN_X
-    ]
+    points = list(
+        _points_from_aggregates(aggregates, x_metric, y_metric)
+    )
+    if xlim is None:
+      points = [point for point in points if point.x >= MIN_X]
+    else:
+      points = [
+          point
+          for point in points
+          if point.x >= xlim[0]
+          and (xlim[1] is None or point.x <= xlim[1])
+      ]
     if not points:
+      selected_range = (
+          f">= {MIN_X:g}"
+          if xlim is None
+          else (
+              f">= {xlim[0]:g}"
+              if xlim[1] is None
+              else f"in [{xlim[0]:g}, {xlim[1]:g}]"
+          )
+      )
       raise ValueError(
-          f"No points for {y_metric!r} have {x_metric!r} >= {MIN_X:g}."
+          f"No points for {y_metric!r} have {x_metric!r} {selected_range}."
       )
     for method in METHOD_LABELS:
       method_points = [point for point in points if point.method == method]
@@ -344,8 +388,13 @@ def plot(
           marker="o",
       )
       for point, is_front in zip(method_points, front):
+        coverage_suffix = (
+            ""
+            if point.seed_count == point.expected_seed_count
+            else f"\n{point.seed_count}/{point.expected_seed_count} seeds"
+        )
         axis.annotate(
-            f"{point.scale:g}",
+            f"{point.scale:g}{coverage_suffix}",
             (point.x, point.y),
             xytext=(4, 4),
             textcoords="offset points",
@@ -361,9 +410,17 @@ def plot(
             "y": point.y,
             "pareto": bool(is_front),
             "sample_count": point.sample_count,
+            "seed_count": point.seed_count,
+            "expected_seed_count": point.expected_seed_count,
+            "missing_seeds": point.missing_seeds,
+            "all_seeds_considered": (
+                point.seed_count == point.expected_seed_count
+            ),
         })
     axis.set_xlabel(x_metric)
     axis.set_ylabel(y_metric)
+    if xlim is not None:
+      axis.set_xlim(left=xlim[0], right=xlim[1])
     axis.grid(alpha=0.25)
   for axis in axes.flat[len(y_metrics):]:
     axis.set_visible(False)
@@ -385,7 +442,16 @@ def plot(
 
 def _build_parser() -> argparse.ArgumentParser:
   parser = argparse.ArgumentParser(description=__doc__)
-  parser.add_argument("--environment", default=DEFAULT_ENVIRONMENT)
+  parser.add_argument(
+      "environment",
+      nargs="?",
+      help=f"Environment name (default: {DEFAULT_ENVIRONMENT}).",
+  )
+  parser.add_argument(
+      "--environment",
+      dest="environment_option",
+      help="Legacy/explicit alternative to the positional environment.",
+  )
   parser.add_argument(
       "--manifest",
       type=Path,
@@ -396,8 +462,32 @@ def _build_parser() -> argparse.ArgumentParser:
       type=Path,
       help="Defaults to evaluations/pareto/<environment>.",
   )
-  parser.add_argument("--output", type=Path, default=Path("policy_pareto.png"))
+  parser.add_argument(
+      "--cluster",
+      action="store_true",
+      help=(
+          "Read the manifest and reports from "
+          "evaluations/pareto_cluster/<environment>."
+      ),
+  )
+  parser.add_argument(
+      "--output",
+      type=Path,
+      help=(
+          "Defaults to evaluations/pareto/<environment>/policy_pareto.png."
+      ),
+  )
   parser.add_argument("--x-metric", default=DEFAULT_X_METRIC)
+  parser.add_argument(
+      "--xlim",
+      nargs="+",
+      type=float,
+      metavar="LIMIT",
+      help=(
+          "Set MIN, or MIN MAX, for the included and displayed x range. "
+          f"By default points below {MIN_X:g} are excluded."
+      ),
+  )
   parser.add_argument(
       "--y-metric",
       action="append",
@@ -409,20 +499,54 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> None:
   args = _build_parser().parse_args(argv)
-  manifest = args.manifest or (
-      pareto_policy_pipeline.DEFAULT_LOCAL_ROOT
-      / args.environment
-      / pareto_policy_pipeline.MANIFEST_NAME
+  if (
+      args.environment
+      and args.environment_option
+      and args.environment != args.environment_option
+  ):
+    raise ValueError(
+        "Positional environment and --environment specify different values."
+    )
+  environment = (
+      args.environment or args.environment_option or DEFAULT_ENVIRONMENT
   )
-  evaluation_root = args.evaluation_root or (
-      pareto_policy_pipeline.DEFAULT_OUTPUT_ROOT / args.environment
+  if args.cluster:
+    default_evaluation_root = (
+        PROJECT_ROOT / "evaluations" / "pareto_cluster" / environment
+    )
+    default_manifest = (
+        default_evaluation_root / pareto_policy_pipeline.MANIFEST_NAME
+    )
+  else:
+    default_evaluation_root = (
+        pareto_policy_pipeline.DEFAULT_OUTPUT_ROOT / environment
+    )
+    default_manifest = (
+        pareto_policy_pipeline.DEFAULT_LOCAL_ROOT
+        / environment
+        / pareto_policy_pipeline.MANIFEST_NAME
+    )
+  manifest = args.manifest or default_manifest
+  evaluation_root = args.evaluation_root or default_evaluation_root
+  if args.xlim is not None and len(args.xlim) not in (1, 2):
+    raise ValueError("--xlim accepts either MIN or MIN MAX.")
+  xlim = (
+      (args.xlim[0], args.xlim[1] if len(args.xlim) == 2 else None)
+      if args.xlim is not None
+      else None
+  )
+  if xlim is not None and xlim[1] is not None and xlim[0] >= xlim[1]:
+    raise ValueError("--xlim MIN must be smaller than MAX.")
+  output_path = args.output or (
+      evaluation_root / "policy_pareto.png"
   )
   output = plot(
       manifest,
       evaluation_root,
-      args.output,
+      output_path,
       args.x_metric,
       tuple(args.y_metrics or DEFAULT_Y_METRICS),
+      xlim,
   )
   print(f"Pareto plot: {output.resolve()}")
   print(f"Pareto table: {output.with_suffix('.csv').resolve()}")
