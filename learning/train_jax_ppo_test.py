@@ -121,6 +121,35 @@ class RunConfigTest(absltest.TestCase):
     for env_name in ("Go1Getup", "Go1Handstand", "CartpoleBalance"):
       self.assertFalse(train_jax_ppo._tracks_velocity_mae(env_name))
 
+  def test_velocity_accessors_support_barkour_private_api(self):
+    class Barkour:
+      def _get_local_linvel(self, data):
+        return ("linear", data)
+
+      def _get_localrpyrate(self, data):
+        return ("angular", data)
+
+    linear, angular = train_jax_ppo._velocity_tracking_accessors(Barkour())
+
+    self.assertEqual(linear("data"), ("linear", "data"))
+    self.assertEqual(angular("data"), ("angular", "data"))
+
+  def test_velocity_accessors_support_g1_frame_api(self):
+    G1 = type(
+        "G1",
+        (),
+        {
+            "__module__": "mujoco_playground._src.locomotion.g1.joystick",
+            "get_local_linvel": lambda self, data, frame: (data, frame),
+            "get_gyro": lambda self, data, frame: (data, frame),
+        },
+    )
+
+    linear, angular = train_jax_ppo._velocity_tracking_accessors(G1())
+
+    self.assertEqual(linear("data"), ("data", "pelvis"))
+    self.assertEqual(angular("data"), ("data", "pelvis"))
+
   def test_run_logdir_has_environment_parent(self):
     root = self.create_tempdir().full_path
 

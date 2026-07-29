@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 from learning import recover_missing_cluster_seeds as recovery
 
@@ -114,6 +115,46 @@ class RecoverMissingClusterSeedsTest(unittest.TestCase):
     }
     with self.assertRaisesRegex(ValueError, "fixes the high-pass order at 1"):
       recovery._launcher_arguments(config)
+
+  @mock.patch.object(recovery, "_ssh")
+  @mock.patch.object(recovery.downloader, "_remote_run_names")
+  def test_main_skips_template_without_run_config_and_submits_other_families(
+      self, remote_run_names, ssh
+  ):
+    remote_run_names.return_value = [
+        "260729-baseline-400M-ar4ep0-seed4",
+        "260729-torquerate-400M-tr8em4-seed4",
+    ]
+    baseline_config = {
+        "command": [
+            "train-jax-ppo",
+            "--num_timesteps=400000000",
+            "--env_name=TestEnvironment",
+            '--playground_config_overrides={"reward_config.scales.action_rate": -4}',
+        ]
+    }
+    missing_config = recovery.subprocess.CalledProcessError(
+        1, ("ssh", "eagle", "cat")
+    )
+    ssh.side_effect = [
+        recovery.json.dumps(baseline_config),
+        missing_config,
+        "Submitted batch job 123",
+    ]
+
+    result = recovery.main(
+        [
+            "TestEnvironment",
+            "--run-pattern=260729-*",
+            "--execute",
+        ]
+    )
+
+    self.assertEqual(result, 0)
+    self.assertEqual(ssh.call_count, 3)
+    submitted_command = ssh.call_args_list[-1].args[1]
+    self.assertIn("sbatch --array=0,1,2,3", submitted_command)
+    self.assertIn("slurm.sh ar 4e+0 TestEnvironment", submitted_command)
 
 
 if __name__ == "__main__":

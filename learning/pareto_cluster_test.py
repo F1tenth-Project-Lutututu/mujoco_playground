@@ -24,6 +24,18 @@ class ParetoClusterTest(unittest.TestCase):
         pareto_cluster.downloader.DEFAULT_REMOTE_LOGS,
     )
 
+  def test_submit_accepts_environment_without_manifest(self):
+    arguments = pareto_cluster._build_parser().parse_args([
+        "submit",
+        "Go1JoystickFlatTerrain",
+        "--run-date",
+        "260729",
+    ])
+
+    self.assertEqual(arguments.environment, "Go1JoystickFlatTerrain")
+    self.assertIsNone(arguments.manifest)
+    self.assertEqual(arguments.run_date, 260729)
+
   def test_fetch_defaults_to_cluster_result_roots(self):
     arguments = pareto_cluster._build_parser().parse_args([
         "fetch",
