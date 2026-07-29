@@ -167,6 +167,114 @@ checkpoint, evaluation settings, evaluator/environment code, and locked
 dependencies are unchanged. Set `REUSE_UNCHANGED_RESULTS = False` to force a
 complete reevaluation.
 
+### Pareto-front pipeline
+
+Use `pareto_policy_pipeline.py` to download and evaluate complete
+penalty-scale sweeps for the action-rate baseline, torque-rate penalty, and
+high-pass torque penalty. The default environment is
+`Go1JoystickFlatTerrain`.
+
+The remote run names must match these forms:
+
+```text
+YYMMDD-baseline-400M-ar<SCALE>-seed<SEED>
+YYMMDD-torquerate-400M-tr<SCALE>-seed<SEED>
+YYMMDD-highpass-400M-hp<SCALE>-f5o1m10-seed<SEED>
+```
+
+`<SCALE>` uses filename-safe scientific notation, such as `2em3` for `2e-3`
+or `1ep2` for `1e+2`. If several dates exist for the same method, scale, and
+seed, the pipeline selects the newest one. By default it skips runs whose
+latest checkpoint is below 400 million environment steps.
+
+To perform the complete download-and-evaluate workflow:
+
+```bash
+python -m learning.pareto_policy_pipeline all \
+  --environment Go1JoystickFlatTerrain
+```
+
+The download step connects through the `eagle` SSH host alias by default. Use
+`--host` and `--remote-logs` for a different cluster or logs directory:
+
+```bash
+python -m learning.pareto_policy_pipeline download \
+  --environment Go1JoystickFlatTerrain \
+  --host eagle \
+  --remote-logs /path/to/spectral_playground/logs
+```
+
+Downloaded checkpoints are stored under
+`eagle/pareto/<environment>/<run>/checkpoints/`. The pipeline writes
+`pareto_manifest.json` alongside them, containing the selected run,
+method, scale, seed, and checkpoint for every policy. It also verifies that
+runs within each method differ only in penalty scale, seed, and provenance;
+configuration mismatches stop the pipeline instead of silently producing an
+invalid comparison.
+
+Download and evaluation may be run separately. This is useful when downloading
+on a login node and evaluating on a GPU node:
+
+```bash
+python -m learning.pareto_policy_pipeline download \
+  --environment Go1JoystickFlatTerrain
+
+python -m learning.pareto_policy_pipeline evaluate \
+  --environment Go1JoystickFlatTerrain \
+  --num-random-tasks 1024 \
+  --task-seed 0
+```
+
+Evaluation uses the same reproducible random tasks for every policy and
+restores each checkpoint's saved environment configuration, which is necessary
+when regularizers add different filter-memory observations. It reports raw
+physical torque for all methods and writes results below
+`evaluations/pareto/<environment>/raw_torque/`. CUDA is required by default;
+use `--no-require-cuda` only when intentional CPU evaluation is acceptable.
+
+After evaluation, generate the Pareto-front figure and its CSV table:
+
+```bash
+python -m learning.plot_policy_pareto \
+  --environment Go1JoystickFlatTerrain \
+  --output evaluations/pareto/Go1JoystickFlatTerrain/policy_pareto.png
+```
+
+Each point pools all random-task rollouts and seeds for one method and penalty
+scale. The default x-axis is
+`eval_reward_means/total_without_regularization`, which is maximized. The
+default panels minimize torque MSSD, torque MSGFD, total torque spectral
+energy, and absolute mechanical energy. Points with reward below 31 are
+excluded. Solid lines connect the nondominated points separately for each
+method, and point labels show the decoded penalty scale.
+
+Use a custom reward metric or repeat `--y-metric` to select plot panels:
+
+```bash
+python -m learning.plot_policy_pareto \
+  --environment Go1JoystickFlatTerrain \
+  --x-metric eval_reward_means/total_without_regularization \
+  --y-metric smoothness/torque/mssd_mean_squared_second_difference_per_dof \
+  --y-metric torque_spectrum/eval/fft_above_5hz_energy_per_step \
+  --output policy_pareto.png
+```
+
+For non-default storage locations, pass matching paths to both stages:
+
+```bash
+python -m learning.pareto_policy_pipeline all \
+  --local-root /data/pareto-models \
+  --output-root /data/pareto-evaluations
+
+python -m learning.plot_policy_pareto \
+  --manifest /data/pareto-models/Go1JoystickFlatTerrain/pareto_manifest.json \
+  --evaluation-root /data/pareto-evaluations/Go1JoystickFlatTerrain
+```
+
+The plotter caches pooled rollout metrics as `pareto_aggregates.csv` and
+automatically rebuilds that cache when the manifest or any input
+`rollouts.csv` changes.
+
 After evaluation, compare every completed policy family without manually
 building `METHODS`:
 
