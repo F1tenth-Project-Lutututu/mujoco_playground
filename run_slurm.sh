@@ -25,15 +25,16 @@ export NUM_TIMESTEPS=400M
 #for P in 1e-1 1e-2 1e-3 1e-4; do
 #for P in 1e-2 1e-3 1e-4; do
 #for P in 1e0 1e1; do
-#for P in 5e-3; do
+for P in 6e-4; do
 #for P in 1e-5 8e-6 4e-6; do
 #for P in 2e-1 3e-1 1e0; do
 #for P in 2e-1 3e-1 5e-2; do
-#for P in 1e-5 2e-5 4e-5 8e-5; do
+#for P in 1e-5 2e-5 4e-5 6e-5 8e-5; do
+#for P in 2e-4 4e-4 6e-4 8e-4; do
 #for P in 4e-4 5e-4 3e-4; do
 #for P in 2e-4 4e-4 8e-4; do
 #for P in 2e-3 4e-3 8e-3; do
-for P in 2e-2 4e-2 8e-2; do
+#for P in 2e-2 4e-2 8e-2; do
 #for P in 2e-2 3e-2 4e-2; do
 #for P in 1e-2 2e-2 4e-2 6e-2; do
 #for P in 2e-1 4e-1 8e-1; do
@@ -58,7 +59,7 @@ for P in 2e-2 4e-2 8e-2; do
   #sbatch slurm.sh hp $P Go1JoystickFlatTerrain35 7.0 1.0
 
   #sbatch slurm.sh ar $P Go1JoystickFlatTerrain
-  #sbatch slurm.sh tr $P Go1JoystickFlatTerrain 
+  sbatch slurm.sh tr $P Go1JoystickFlatTerrain 
   #sbatch slurm.sh hp $P Go1JoystickFlatTerrain 5.0 1.0
 
   #sbatch slurm.sh ar $P Go1JoystickRoughTerrain
@@ -90,7 +91,7 @@ for P in 2e-2 4e-2 8e-2; do
   #sbatch slurm.sh hp $P BarkourJoystick 5.0 1.0
   #sbatch slurm.sh hp 3e-3 BarkourJoystick 5.0 $P 
 
-  sbatch slurm.sh ar $P SilverBadgerJoystickFlatTerrain
+  #sbatch slurm.sh ar $P SilverBadgerJoystickFlatTerrain
   #sbatch slurm.sh tr $P SilverBadgerJoystickFlatTerrain
   #sbatch slurm.sh hp $P SilverBadgerJoystickFlatTerrain 5.0 1.0
 

@@ -256,7 +256,7 @@ def default_config() -> config_dict.ConfigDict:
       Kp=20.0,
       Kd=0.5,
       action_repeat=1,
-      action_scale=0.25,
+      action_scale=0.5,
       policy_observes_linear_velocity=True,
       domain_randomization=False,
       history_len=1,
@@ -279,8 +279,8 @@ def default_config() -> config_dict.ConfigDict:
       reward_config=config_dict.create(
           scales=config_dict.create(
               # Tracking.
-              tracking_lin_vel=9.0,
-              tracking_ang_vel=3.0,
+              tracking_lin_vel=1.0,
+              tracking_ang_vel=0.5,
               # Base reward.
               lin_vel_z=-0.5,
               ang_vel_xy=-0.05,
