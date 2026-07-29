@@ -89,6 +89,58 @@ Older checkpoint directories containing only `config.json` are also supported:
 their environment configuration is restored automatically, while settings not
 present in that legacy file continue to use defaults or explicit flags.
 
+### Recovering missing cluster seeds
+
+GPU initialization failures can terminate an array task before it creates its
+`logs/<ENVIRONMENT>/<RUN>-seedN/` directory. Use
+`recover_missing_cluster_seeds.py` to compare the run directories on Eagle
+with the expected seed set and prepare replacement Slurm arrays.
+
+Inspection is read-only by default. For example, inspect the rough-terrain Go1
+runs submitted on 29 July 2026:
+
+```bash
+python -m learning.recover_missing_cluster_seeds \
+  Go1JoystickRoughTerrain \
+  --run-pattern '260729-*'
+```
+
+For every incomplete experiment family, the output lists the absent seeds, the
+surviving sibling used as the configuration template, and the exact `sbatch`
+command that would be submitted. Review this output before adding `--execute`:
+
+```bash
+python -m learning.recover_missing_cluster_seeds \
+  Go1JoystickRoughTerrain \
+  --run-pattern '260729-*' \
+  --execute
+```
+
+The recovery tool reads the surviving seed's `checkpoints/run_config.json` and
+reconstructs the penalty method and scale, environment, high-pass cutoff and
+difference order, and training timestep count. It then invokes `slurm.sh` with
+an array containing only the missing indices. Recovered tasks therefore also
+use the launcher's JAX GPU preflight, diagnostic logging, failed-node
+exclusion, and bounded automatic replacement submission.
+
+Seeds `0,1,2,3,4` are expected by default. Specify another set when the
+original sweep used a different array:
+
+```bash
+python -m learning.recover_missing_cluster_seeds \
+  Go1JoystickRoughTerrain \
+  --expected-seeds 0,1,2,3 \
+  --run-pattern '260729-*'
+```
+
+`--run-pattern` uses shell-style matching against the run family without its
+`-seedN` suffix. Use a narrow date or experiment pattern when inspecting a
+large log directory. A family cannot be inferred when every seed is absent,
+because there is no surviving run directory or saved configuration to use as
+a template. The tool reports missing run directories; it intentionally does
+not duplicate a seed merely because its checkpoint is incomplete or it may
+still be running.
+
 ### Reproducible policy evaluation
 
 Use the constant-command evaluator to compare policies with matched reset
@@ -217,13 +269,35 @@ on a login node and evaluating on a GPU node:
 
 ```bash
 python -m learning.pareto_policy_pipeline download \
-  --environment Go1JoystickFlatTerrain
+  --environment Go1JoystickFlatTerrain \
+  --run-date 260729
 
 python -m learning.pareto_policy_pipeline evaluate \
   --environment Go1JoystickFlatTerrain \
   --num-random-tasks 1024 \
   --task-seed 0
 ```
+
+`--run-date YYMMDD` restricts discovery to one experiment date. Use it when
+the remote logs contain matching run names from multiple dates with different
+task or controller configurations; without it, the pipeline selects the newest
+run independently for every method, scale, and seed.
+
+Run directories with no numeric checkpoint are reported and skipped. To also
+permanently delete those incomplete directories from the cluster so the same
+run names can be submitted again, explicitly enable:
+
+```bash
+python -m learning.pareto_policy_pipeline download \
+  --environment Go1JoystickFlatTerrain \
+  --run-date 260729 \
+  --delete-runs-without-checkpoints
+```
+
+This destructive option is disabled by default. It applies only to remote
+directories whose names match a Pareto run pattern and only after checkpoint
+discovery confirms that they contain no numeric checkpoint. Each deletion is
+shown in the terminal report and recorded in the manifest's `skipped_runs`.
 
 Evaluation uses the same reproducible random tasks for every policy and
 restores each checkpoint's saved environment configuration, which is necessary

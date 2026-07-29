@@ -33,7 +33,13 @@ from dataclasses import asdict, dataclass
 import json
 from pathlib import Path, PurePosixPath
 import re
+import shlex
+import shutil
+import subprocess
+import tarfile
+import tempfile
 from typing import Sequence
+import uuid
 
 from learning import download_models_to_evaluate as downloader
 
@@ -43,6 +49,8 @@ DEFAULT_ENVIRONMENT = "Go1JoystickFlatTerrain"
 DEFAULT_LOCAL_ROOT = PROJECT_ROOT / "eagle" / "pareto"
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "evaluations" / "pareto"
 MANIFEST_NAME = "pareto_manifest.json"
+EVALUATION_COVERAGE_NAME = "pareto_seed_coverage.json"
+DEFAULT_ARCHIVE_PARTITION = "standard"
 
 # The date prefix is captured so repeated sweeps can be deduplicated in favor
 # of the newest run.  The high-pass family fixes f=5 Hz, order=1, and
@@ -83,20 +91,25 @@ def decode_scale(tag: str) -> float:
   return float(f"{match.group(1)}e{sign}{match.group(3)}")
 
 
-def select_runs(run_names: Sequence[str]) -> list[PolicyRun]:
-  """Selects the newest run for every method, scale, and seed."""
+def select_runs(
+    run_names: Sequence[str], run_date: int | None = None
+) -> list[PolicyRun]:
+  """Selects runs for one date, or the newest per method, scale, and seed."""
   selected: dict[tuple[str, str, int], PolicyRun] = {}
   for run_name in run_names:
     for method, pattern in RUN_PATTERNS.items():
       match = pattern.fullmatch(run_name)
       if match is None:
         continue
+      date = int(match.group("date"))
+      if run_date is not None and date != run_date:
+        break
       run = PolicyRun(
           method=method,
           scale_tag=match.group("scale"),
           scale=decode_scale(match.group("scale")),
           seed=int(match.group("seed")),
-          date=int(match.group("date")),
+          date=date,
           run_name=run_name,
       )
       key = (run.method, run.scale_tag, run.seed)
@@ -110,7 +123,11 @@ def select_runs(run_names: Sequence[str]) -> list[PolicyRun]:
 
 
 def _write_manifest(
-    path: Path, environment: str, runs: Sequence[PolicyRun]
+    path: Path,
+    environment: str,
+    runs: Sequence[PolicyRun],
+    selected_runs: Sequence[PolicyRun],
+    skipped_runs: Sequence[dict],
 ) -> None:
   path.parent.mkdir(parents=True, exist_ok=True)
   payload = {
@@ -124,6 +141,8 @@ def _write_manifest(
           ),
       },
       "runs": [asdict(run) for run in runs],
+      "skipped_runs": list(skipped_runs),
+      "seed_coverage": _seed_coverage(selected_runs, runs, skipped_runs),
   }
   path.write_text(
       json.dumps(payload, indent=2, sort_keys=True) + "\n",
@@ -131,11 +150,92 @@ def _write_manifest(
   )
 
 
+def _seed_coverage(
+    selected_runs: Sequence[PolicyRun],
+    completed_runs: Sequence[PolicyRun],
+    skipped_runs: Sequence[dict],
+) -> list[dict]:
+  """Summarizes expected, available, and skipped seeds per sweep point."""
+  completed = {
+      (run.method, run.scale_tag, run.seed) for run in completed_runs
+  }
+  skipped_by_key = {
+      (item["method"], item["scale_tag"], item["seed"]): item["reason"]
+      for item in skipped_runs
+  }
+  groups: dict[tuple[str, str], dict] = {}
+  for run in selected_runs:
+    group = groups.setdefault(
+        (run.method, run.scale_tag),
+        {
+            "method": run.method,
+            "scale": run.scale,
+            "scale_tag": run.scale_tag,
+            "expected_seeds": [],
+            "completed_seeds": [],
+            "failed_seeds": [],
+        },
+    )
+    group["expected_seeds"].append(run.seed)
+    key = (run.method, run.scale_tag, run.seed)
+    if key in completed:
+      group["completed_seeds"].append(run.seed)
+    elif key in skipped_by_key:
+      group["failed_seeds"].append({
+          "seed": run.seed,
+          "run_name": run.run_name,
+          "reason": skipped_by_key[key],
+      })
+  result = []
+  for group in groups.values():
+    group["expected_seeds"].sort()
+    group["completed_seeds"].sort()
+    group["failed_seeds"].sort(key=lambda item: item["seed"])
+    group["all_seeds_available"] = (
+        group["expected_seeds"] == group["completed_seeds"]
+    )
+    result.append(group)
+  return sorted(result, key=lambda item: (item["method"], item["scale"]))
+
+
+def _print_download_report(
+    completed: Sequence[PolicyRun], skipped: Sequence[dict]
+) -> None:
+  """Prints a concise post-download success and failure report."""
+  print(
+      f"Download report: {len(completed)} completed, {len(skipped)} skipped.",
+      flush=True,
+  )
+  for item in skipped:
+    print(
+        f"  {item['run_name']} (seed {item['seed']}): {item['reason']}",
+        flush=True,
+    )
+
+
+def _fill_missing_defaults(value: dict, defaults: dict) -> dict:
+  """Recursively fills missing dictionary fields without replacing saved data."""
+  result = copy.deepcopy(value)
+  for key, default_value in defaults.items():
+    if key not in result:
+      result[key] = copy.deepcopy(default_value)
+    elif isinstance(result[key], dict) and isinstance(default_value, dict):
+      result[key] = _fill_missing_defaults(result[key], default_value)
+  return result
+
+
 def _comparable_run_config(
-    config: dict, method: str
+    config: dict,
+    method: str,
+    environment_defaults: dict | None = None,
 ) -> dict:
   """Removes seed/provenance and the swept scale from a run config."""
   result = copy.deepcopy(config)
+  if environment_defaults is not None:
+    saved_environment = result.get("environment_config", {})
+    result["environment_config"] = _fill_missing_defaults(
+        saved_environment, environment_defaults
+    )
   result.pop("created_at", None)
   result.pop("seed", None)
   result.pop("command", None)
@@ -153,8 +253,16 @@ def _comparable_run_config(
   return result
 
 
-def validate_sweeps(local_environment: Path, runs: Sequence[PolicyRun]) -> None:
+def validate_sweeps(
+    local_environment: Path,
+    runs: Sequence[PolicyRun],
+    environment: str,
+) -> None:
   """Checks that runs within each method differ only by scale and seed."""
+  # Imported lazily so importing the download pipeline itself stays lightweight.
+  from mujoco_playground._src import registry  # pylint: disable=g-import-not-at-top
+
+  environment_defaults = registry.get_default_config(environment).to_dict()
   references: dict[str, tuple[dict, str]] = {}
   for run in runs:
     config_path = (
@@ -163,7 +271,9 @@ def validate_sweeps(local_environment: Path, runs: Sequence[PolicyRun]) -> None:
     if not config_path.is_file():
       raise FileNotFoundError(f"Downloaded run config not found: {config_path}")
     config = json.loads(config_path.read_text(encoding="utf-8"))
-    comparable = _comparable_run_config(config, run.method)
+    comparable = _comparable_run_config(
+        config, run.method, environment_defaults
+    )
     if run.method not in references:
       references[run.method] = (comparable, run.run_name)
       continue
@@ -175,6 +285,122 @@ def validate_sweeps(local_environment: Path, runs: Sequence[PolicyRun]) -> None:
       )
 
 
+def _download_archive(
+    *,
+    host: str,
+    environment_root: PurePosixPath,
+    local_environment: Path,
+    members: Sequence[PurePosixPath],
+    partition: str,
+) -> None:
+  """Packs selected files in a Slurm worker job and downloads one archive."""
+  if not members:
+    return
+  transfer_id = uuid.uuid4().hex
+  remote_transfer_root = environment_root / f".pareto-transfer-{transfer_id}"
+  remote_list = remote_transfer_root / "members.txt"
+  remote_archive = remote_transfer_root / "policies.tar.gz"
+  remote_log = remote_transfer_root / "tar.log"
+  quoted_transfer_root = shlex.quote(str(remote_transfer_root))
+  member_text = "".join(f"{member.as_posix()}\n" for member in members)
+
+  try:
+    subprocess.run(
+        [
+            "ssh",
+            host,
+            f"mkdir -p {quoted_transfer_root} && "
+            f"cat > {shlex.quote(str(remote_list))}",
+        ],
+        input=member_text,
+        text=True,
+        check=True,
+    )
+    tar_command = shlex.join([
+        "tar",
+        "-czf",
+        str(remote_archive),
+        "-C",
+        str(environment_root),
+        "-T",
+        str(remote_list),
+    ])
+    print(
+        f"Packaging {len(members)} paths on an Eagle {partition} worker...",
+        flush=True,
+    )
+    submit_command = shlex.join([
+        "sbatch",
+        "--wait",
+        "--parsable",
+        f"--partition={partition}",
+        "--nodes=1",
+        "--ntasks=1",
+        "--cpus-per-task=2",
+        "--mem=8G",
+        "--time=01:00:00",
+        "--job-name=pareto_pack",
+        f"--output={remote_log}",
+        f"--wrap={tar_command}",
+    ])
+    downloader._run(("ssh", host, submit_command))
+
+    local_environment.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix=".pareto-archive-", dir=local_environment
+    ) as temporary_directory:
+      temporary_path = Path(temporary_directory)
+      downloader._copy_remote(host, remote_archive, temporary_path)
+      local_archive = temporary_path / remote_archive.name
+      extraction_root = temporary_path / "extracted"
+      extraction_root.mkdir()
+      with tarfile.open(local_archive, "r:gz") as archive:
+        archive.extractall(extraction_root, filter="data")
+      for source in extraction_root.iterdir():
+        target = local_environment / source.name
+        if source.is_dir():
+          shutil.copytree(source, target, dirs_exist_ok=True)
+        else:
+          shutil.copy2(source, target)
+    print("Archive downloaded and unpacked.", flush=True)
+  finally:
+    # This directory is uniquely generated by this invocation.
+    subprocess.run(
+        ["ssh", host, f"rm -rf -- {quoted_transfer_root}"],
+        text=True,
+        check=False,
+    )
+
+
+def _checkpoint_complete(checkpoint: Path) -> bool:
+  """Returns whether an Orbax PPO checkpoint has all evaluator inputs."""
+  return (
+      checkpoint.is_dir()
+      and (checkpoint / "_sharding").is_file()
+      and (checkpoint / "ppo_network_config.json").is_file()
+  )
+
+
+def _delete_remote_run_without_checkpoint(
+    host: str,
+    environment_root: PurePosixPath,
+    run: PolicyRun,
+) -> None:
+  """Deletes one validated remote run known to have no numeric checkpoint."""
+  if not any(
+      pattern.fullmatch(run.run_name) for pattern in RUN_PATTERNS.values()
+  ):
+    raise ValueError(f"Refusing to delete unexpected run name: {run.run_name!r}")
+  remote_run = environment_root / run.run_name
+  if remote_run.parent != environment_root:
+    raise ValueError(f"Refusing to delete unsafe remote path: {remote_run}")
+  downloader._run((
+      "ssh",
+      host,
+      f"rm -rf -- {shlex.quote(str(remote_run))}",
+  ))
+
+
 def download(
     environment: str,
     *,
@@ -182,25 +408,67 @@ def download(
     remote_logs: PurePosixPath,
     local_root: Path,
     min_checkpoint_step: int,
+    archive_partition: str,
+    run_date: int | None = None,
+    delete_runs_without_checkpoints: bool = False,
 ) -> Path:
   """Downloads selected checkpoints and returns the manifest path."""
   environment_root = remote_logs / environment
   local_environment = local_root / environment
-  runs = select_runs(downloader._remote_run_names(host, environment_root))
+  runs = select_runs(
+      downloader._remote_run_names(host, environment_root), run_date=run_date
+  )
   if not runs:
-    raise ValueError(f"No requested Pareto sweep runs found at {environment_root}")
+    date_description = f" for date {run_date:06d}" if run_date else ""
+    raise ValueError(
+        "No requested Pareto sweep runs found"
+        f"{date_description} at {environment_root}"
+    )
 
   completed = []
+  skipped: list[dict] = []
+  archive_members: list[PurePosixPath] = []
   print(f"Selected {len(runs)} policies from {environment_root}.", flush=True)
   for index, run in enumerate(runs, start=1):
     remote_run = environment_root / run.run_name
-    checkpoint, configs = downloader._latest_checkpoint(host, remote_run)
+    try:
+      checkpoint, configs = downloader._latest_checkpoint(host, remote_run)
+    except ValueError as error:
+      if "No numeric checkpoints found" not in str(error):
+        raise
+      print(
+          f"[{index}/{len(runs)}] {run.run_name}: skipped because no numeric "
+          "checkpoint exists",
+          flush=True,
+      )
+      deleted = False
+      if delete_runs_without_checkpoints:
+        _delete_remote_run_without_checkpoint(host, environment_root, run)
+        deleted = True
+        print(
+            f"[{index}/{len(runs)}] {run.run_name}: deleted remote run "
+            "directory",
+            flush=True,
+        )
+      skipped.append({
+          **asdict(run),
+          "reason": "no numeric checkpoint exists",
+          "remote_directory_deleted": deleted,
+      })
+      continue
     if int(checkpoint) < min_checkpoint_step:
       print(
           f"[{index}/{len(runs)}] {run.run_name}: skipped because latest "
           f"checkpoint {checkpoint} is below {min_checkpoint_step:012d}",
           flush=True,
       )
+      skipped.append({
+          **asdict(run),
+          "reason": (
+              f"latest checkpoint {checkpoint} is below "
+              f"{min_checkpoint_step:012d}"
+          ),
+      })
       continue
     local_run = local_environment / run.run_name
     local_checkpoint = local_run / "checkpoints" / checkpoint
@@ -208,12 +476,9 @@ def download(
         f"[{index}/{len(runs)}] {run.run_name}: checkpoint {checkpoint}",
         flush=True,
     )
-    # Orbax checkpoints end with _sharding.  An interrupted legacy scp may
-    # leave the directory in place without that file; download it again.
-    checkpoint_complete = (
-        local_checkpoint.is_dir()
-        and (local_checkpoint / "_sharding").is_file()
-    )
+    # An interrupted transfer can leave a structurally valid Orbax checkpoint
+    # without the separate network configuration required by the evaluator.
+    checkpoint_complete = _checkpoint_complete(local_checkpoint)
     if not checkpoint_complete:
       if local_checkpoint.exists():
         print(
@@ -221,25 +486,59 @@ def download(
             "local checkpoint",
             flush=True,
         )
-      downloader._copy_remote(
-          host,
-          remote_run / "checkpoints" / checkpoint,
-          local_run / "checkpoints",
+      archive_members.append(
+          (remote_run / "checkpoints" / checkpoint).relative_to(
+              environment_root
+          )
       )
     for remote_config in configs:
       relative_parent = remote_config.relative_to(remote_run).parent
       local_config = local_run / Path(relative_parent) / remote_config.name
       if not local_config.is_file():
-        downloader._copy_remote(
-            host, remote_config, local_run / Path(relative_parent)
+        archive_members.append(
+            remote_config.relative_to(environment_root)
         )
     completed.append(
         PolicyRun(**{**asdict(run), "checkpoint": checkpoint})
     )
 
+  unique_members = list(dict.fromkeys(archive_members))
+  _download_archive(
+      host=host,
+      environment_root=environment_root,
+      local_environment=local_environment,
+      members=unique_members,
+      partition=archive_partition,
+  )
+  incomplete = [
+      str(
+          local_environment
+          / run.run_name
+          / "checkpoints"
+          / str(run.checkpoint)
+      )
+      for run in completed
+      if not _checkpoint_complete(
+          local_environment
+          / run.run_name
+          / "checkpoints"
+          / str(run.checkpoint)
+      )
+  ]
+  if incomplete:
+    _print_download_report(completed, skipped)
+    preview = "\n".join(f"  {path}" for path in incomplete[:10])
+    remainder = (
+        f"\n  ... and {len(incomplete) - 10} more" if len(incomplete) > 10 else ""
+    )
+    raise FileNotFoundError(
+        "Downloaded checkpoints are missing _sharding or "
+        f"ppo_network_config.json:\n{preview}{remainder}"
+    )
   manifest = local_environment / MANIFEST_NAME
-  validate_sweeps(local_environment, completed)
-  _write_manifest(manifest, environment, completed)
+  validate_sweeps(local_environment, completed, environment)
+  _write_manifest(manifest, environment, completed, runs, skipped)
+  _print_download_report(completed, skipped)
   print(f"Download manifest: {manifest}", flush=True)
   return manifest
 
@@ -260,6 +559,38 @@ def evaluate(
 
   manifest_path = local_root / environment / MANIFEST_NAME
   manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+  evaluation_environment = output_root / environment
+  evaluation_environment.mkdir(parents=True, exist_ok=True)
+  coverage_path = evaluation_environment / EVALUATION_COVERAGE_NAME
+  coverage_path.write_text(
+      json.dumps(
+          {
+              "environment": environment,
+              "source_manifest": str(manifest_path.resolve()),
+              "seed_coverage": manifest.get("seed_coverage", []),
+              "skipped_runs": manifest.get("skipped_runs", []),
+          },
+          indent=2,
+          sort_keys=True,
+      )
+      + "\n",
+      encoding="utf-8",
+  )
+  incomplete_coverage = [
+      item
+      for item in manifest.get("seed_coverage", [])
+      if not item.get("all_seeds_available", True)
+  ]
+  print(f"Evaluation seed coverage: {coverage_path}", flush=True)
+  for item in incomplete_coverage:
+    missing = [
+        failure["seed"] for failure in item.get("failed_seeds", [])
+    ]
+    print(
+        f"  WARNING {item['method']} scale {item['scale']:g}: not all seeds "
+        f"will be considered; missing {missing}",
+        flush=True,
+    )
   evaluate_all_models.MODEL_NAMES = frozenset(
       str(run["run_name"]) for run in manifest["runs"]
   )
@@ -295,10 +626,33 @@ def _build_parser() -> argparse.ArgumentParser:
   parser.add_argument("--num-random-tasks", type=int, default=1024)
   parser.add_argument("--task-seed", type=int, default=0)
   parser.add_argument(
+      "--run-date",
+      type=int,
+      help=(
+          "Restrict downloads to one YYMMDD run-name prefix. Use this when "
+          "different dates contain incompatible experiment configurations."
+      ),
+  )
+  parser.add_argument(
+      "--delete-runs-without-checkpoints",
+      action=argparse.BooleanOptionalAction,
+      default=False,
+      help=(
+          "Permanently delete matched remote run directories when they have "
+          "no numeric checkpoint, allowing the run name to be submitted "
+          "again (default: false)."
+      ),
+  )
+  parser.add_argument(
       "--min-checkpoint-step",
       type=int,
       default=400_000_000,
       help="Skip incomplete nominal 400M runs (default: %(default)s).",
+  )
+  parser.add_argument(
+      "--archive-partition",
+      default=DEFAULT_ARCHIVE_PARTITION,
+      help="Eagle CPU partition used to build the transfer archive.",
   )
   parser.add_argument(
       "--require-cuda",
@@ -317,8 +671,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         args.environment,
         host=args.host,
         remote_logs=args.remote_logs,
-        local_root=args.local_root,
-        min_checkpoint_step=args.min_checkpoint_step,
+      local_root=args.local_root,
+      min_checkpoint_step=args.min_checkpoint_step,
+      archive_partition=args.archive_partition,
+      run_date=args.run_date,
+      delete_runs_without_checkpoints=args.delete_runs_without_checkpoints,
     )
   if args.command in ("evaluate", "all"):
     evaluate(
