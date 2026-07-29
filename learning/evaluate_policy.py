@@ -88,6 +88,19 @@ def _safe_name(value: str) -> str:
   return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_") or "scenario"
 
 
+def _infer_env_name_from_path(path: Path) -> str | None:
+  """Returns the closest registered environment directory in a path."""
+  registered = set(registry.ALL_ENVS)
+  return next(
+      (
+          candidate.name
+          for candidate in path.parents
+          if candidate.name in registered
+      ),
+      None,
+  )
+
+
 def _jsonable(value: Any) -> Any:
   if isinstance(value, dict):
     return {str(k): _jsonable(v) for k, v in value.items()}
@@ -213,9 +226,7 @@ def _smoothness_metrics(
       else 0.0
   )
   metrics["acceleration_rms_per_dof_per_second2"] = (
-      float(
-          np.sqrt(np.mean(np.square(second_delta / sample_period**2)))
-      )
+      float(np.sqrt(np.mean(np.square(second_delta / sample_period**2))))
       if len(second_delta)
       else 0.0
   )
@@ -279,9 +290,7 @@ def _tracking_metrics(
       "vertical_velocity_rms": float(
           np.sqrt(np.mean(np.square(local_linear_velocity[:, 2])))
       ),
-      "roll_pitch_rate_rms": float(
-          np.sqrt(np.mean(np.square(gyro[:, :2])))
-      ),
+      "roll_pitch_rate_rms": float(np.sqrt(np.mean(np.square(gyro[:, :2])))),
       "orientation_error_rms_degrees": float(
           np.rad2deg(np.sqrt(np.mean(np.square(orientation_error))))
       ),
@@ -422,7 +431,9 @@ def _episode_rows(
       elif metric_name == "reward_without_regularization":
         row["eval_reward_means/total_without_regularization"] = value
       elif metric_name.startswith("torque_spectrum/"):
-        row[f"torque_spectrum/eval/online_{metric_name.removeprefix('torque_spectrum/')}"] = value
+        row[
+            f"torque_spectrum/eval/online_{metric_name.removeprefix('torque_spectrum/')}"
+        ] = value
       else:
         row[f"rollouts/eval_{metric_name}"] = value
 
@@ -476,14 +487,22 @@ def _episode_rows(
             sample_period,
         ).items()
     })
-    if feet_height_target is not None and "feet_position" in episodes:
+    rollout_feet_height_target = feet_height_target
+    if "feet_height_target" in episodes:
+      target_values = episodes["feet_height_target"][rollout_index]
+      if target_values.size:
+        rollout_feet_height_target = float(target_values.reshape(-1)[0])
+    if (
+        rollout_feet_height_target is not None
+        and "feet_position" in episodes
+    ):
       row.update({
           f"tracking/{key}": value
           for key, value in _feet_height_metrics(
               episodes["feet_position"][rollout_index],
               episodes["feet_contact"][rollout_index],
               episodes["command"][rollout_index],
-              feet_height_target,
+              rollout_feet_height_target,
           ).items()
       })
     rows.append(row)
@@ -514,6 +533,14 @@ def _where_batch(mask, new, old):
   return jp.where(expanded, new, old)
 
 
+def _get_upvector(env, data):
+  """Returns the local up vector across locomotion environment APIs."""
+  if hasattr(env, "get_upvector"):
+    return env.get_upvector(data)
+  # Projected gravity points down in the robot frame.
+  return -env.get_gravity(data)
+
+
 def _rollout(
     env,
     policy,
@@ -539,9 +566,7 @@ def _rollout(
     state = _set_constant_command(env, state, jp.asarray(command))
   policy_steps = episode_length // action_repeat
   active = jp.ones((num_rollouts,), dtype=bool)
-  policy_keys = jax.random.split(
-      jax.random.PRNGKey(policy_seed), num_rollouts
-  )
+  policy_keys = jax.random.split(jax.random.PRNGKey(policy_seed), num_rollouts)
 
   def scan_step(carry, _):
     current_state, current_active, keys = carry
@@ -560,7 +585,7 @@ def _rollout(
     done = next_state.done.astype(bool)
     local_linear_velocity = jax.vmap(env.get_local_linvel)(next_state.data)
     gyro = jax.vmap(env.get_gyro)(next_state.data)
-    upvector = jax.vmap(env.get_upvector)(next_state.data)
+    upvector = jax.vmap(lambda data: _get_upvector(env, data))(next_state.data)
     feet_position = jax.vmap(env.get_feet_pos)(next_state.data)
     signals = {
         "active": current_active,
@@ -578,12 +603,15 @@ def _rollout(
         "upvector": upvector,
         "feet_position": feet_position,
         "feet_contact": next_state.info["last_contact"],
-        "feet_air_time": next_state.info["feet_air_time"],
         **{
             f"metric/{name}": value
             for name, value in next_state.metrics.items()
         },
     }
+    if "feet_air_time" in next_state.info:
+      signals["feet_air_time"] = next_state.info["feet_air_time"]
+    if "foot_height" in next_state.info:
+      signals["feet_height_target"] = next_state.info["foot_height"]
     if record_full_signals:
       signals.update({
           "accelerometer": jax.vmap(env.get_accelerometer)(next_state.data),
@@ -663,33 +691,153 @@ def _write_rows(path: Path, rows: Sequence[Mapping[str, Any]]):
     writer.writerows(rows)
 
 
+def _restore_checkpoint_observation_structure(
+    env_config: config_dict.ConfigDict,
+    saved: Mapping[str, Any] | None,
+) -> None:
+  """Restores saved options that define filter-memory observations."""
+  if not saved:
+    return
+  saved_reward_config = saved.get("environment_config", {}).get(
+      "reward_config", {}
+  )
+  if "reward_config" not in env_config:
+    return
+  options = (
+      "torque_highpass_observe_state",
+      "torque_highpass_cutoff_hz",
+      "torque_highpass_order",
+      "torque_highpass_difference_order",
+      "torque_highpass_signal",
+      "torque_highpass_normalize_by_capacity",
+      "torque_rate_observe_state",
+  )
+  for option in options:
+    if option in saved_reward_config and option in env_config.reward_config:
+      env_config.reward_config[option] = saved_reward_config[option]
+
+
+def _apply_torque_normalization_override(
+    env_config: config_dict.ConfigDict, requested: bool | None
+) -> None:
+  """Overrides torque normalization unless it is part of policy input."""
+  if requested is None:
+    return
+  if "reward_config" not in env_config:
+    raise ValueError("The environment has no reward_config to override.")
+  reward_config = env_config.reward_config
+  if reward_config.get("torque_highpass_observe_state", False):
+    current = reward_config.torque_highpass_normalize_by_capacity
+    if requested != current:
+      print(
+          "Warning: ignoring the torque high-pass normalization override "
+          "because this policy observes its saved filter state."
+      )
+    return
+  reward_config.torque_highpass_normalize_by_capacity = requested
+
+
+def _replace_network_observation_size(
+    network_config: config_dict.ConfigDict,
+    observation_size: Any,
+) -> config_dict.ConfigDict:
+  """Replaces potentially malformed checkpoint shape metadata."""
+  # ConfigDict normally preserves field types.  A serialized ShapeDtypeStruct
+  # is loaded as a ConfigDict, which cannot then be replaced by an integer or
+  # observation-shape mapping unless type safety is disabled.
+  compatible_config = config_dict.ConfigDict(
+      network_config.to_dict(), type_safe=False
+  )
+  compatible_config.observation_size = observation_size
+  return compatible_config
+
+
+def _fixed_feet_height_target(
+    env_config: config_dict.ConfigDict,
+) -> float | None:
+  """Returns a fixed swing-height target when the environment defines one."""
+  reward_config = env_config.get("reward_config")
+  if reward_config is None:
+    return None
+  target = reward_config.get("max_foot_height")
+  return None if target is None else float(target)
+
+
 def _load_policy_and_environment(args):
   checkpoint = train_utils._resolve_checkpoint_path(args.checkpoint)
   if checkpoint is None:
     raise ValueError("A checkpoint path is required.")
   saved = train_utils._load_run_config(checkpoint)
-  env_name = args.env_name or (saved or {}).get("env_name")
+  environment_config_source = None
+  if args.environment_config_checkpoint is not None:
+    if not args.use_saved_environment_config:
+      raise ValueError(
+          "--environment_config_checkpoint requires"
+          " --use_saved_environment_config."
+      )
+    environment_config_source = train_utils._resolve_checkpoint_path(
+        args.environment_config_checkpoint
+    )
+    if environment_config_source is None:
+      raise ValueError("The environment config checkpoint path is invalid.")
+    environment_saved = train_utils._load_run_config(environment_config_source)
+    if not environment_saved or "environment_config" not in environment_saved:
+      raise ValueError(
+          "The environment config checkpoint does not store an "
+          f"environment_config: {environment_config_source}"
+      )
+  else:
+    environment_saved = saved
+  env_name = (
+      args.env_name
+      or (saved or {}).get("env_name")
+      or _infer_env_name_from_path(Path(checkpoint))
+  )
   if env_name is None:
     raise ValueError(
-        "This legacy checkpoint does not store env_name; pass --env_name."
+        "This legacy checkpoint does not store env_name and no registered "
+        "environment directory was found in its path; pass --env_name."
     )
   default_env_config = registry.get_default_config(env_name)
   if (
       args.use_saved_environment_config
-      and saved
-      and "environment_config" in saved
+      and environment_saved
+      and "environment_config" in environment_saved
   ):
-    env_config = config_dict.ConfigDict(train_utils._merge_saved_config(
-        default_env_config.to_dict(), saved["environment_config"]
-    ))
+    env_config = config_dict.ConfigDict(
+        train_utils._merge_saved_config(
+            default_env_config.to_dict(),
+            environment_saved["environment_config"],
+        )
+    )
   else:
     env_config = default_env_config
+  # Even a shared evaluation environment must retain observation-shape options
+  # from the policy checkpoint so its saved network remains compatible.
+  _restore_checkpoint_observation_structure(env_config, saved)
+  _apply_torque_normalization_override(
+      env_config, args.torque_highpass_normalize_by_capacity
+  )
   if args.disable_perturbations and "pert_config" in env_config:
     env_config.pert_config.enable = False
+  if (
+      env_name.startswith("SilverBadgerJoystickRough")
+      and "terrain_curriculum" in env_config
+  ):
+    env_config.terrain_curriculum.enabled = False
   env = registry.load(env_name, config=env_config)
 
   network_config = train_utils._load_checkpoint_network_config(
       checkpoint / "ppo_network_config.json"
+  )
+  # Some Brax checkpoint versions serialize JAX ShapeDtypeStruct values as
+  # {"shape": [...], "dtype": ...}.  Brax then mistakes a scalar observation
+  # shape (for example Spot's 69-vector) for a keyed observation mapping and
+  # attempts to access the configured "state" key.  The environment has
+  # already been reconstructed with all checkpoint observation-shape options,
+  # so its concrete size is the authoritative, Brax-compatible representation.
+  network_config = _replace_network_observation_size(
+      network_config, env.observation_size
   )
   network = brax_checkpoint.get_network(
       network_config, ppo_networks.make_ppo_networks
@@ -765,14 +913,18 @@ def evaluate(args, rollout_cache: dict[str, Any] | None = None) -> Path:
   if episode_length % action_repeat:
     raise ValueError("episode_length must be divisible by action_repeat.")
   sample_period = float(env.dt * action_repeat)
-  feet_height_target = float(env_config.reward_config.max_foot_height)
+  feet_height_target = _fixed_feet_height_target(env_config)
   nyquist_hz = 0.5 / sample_period
   if any(cutoff > nyquist_hz for cutoff in cutoffs_hz):
     raise ValueError(
         f"FFT cutoffs cannot exceed the {nyquist_hz:g} Hz Nyquist frequency."
     )
 
-  output_dir = Path(args.output_dir) if args.output_dir else _default_output_dir(checkpoint)
+  output_dir = (
+      Path(args.output_dir)
+      if args.output_dir
+      else _default_output_dir(checkpoint)
+  )
   output_dir.mkdir(parents=True, exist_ok=True)
   random_task_mode = args.num_random_tasks > 0
   num_parallel_rollouts = (
@@ -887,7 +1039,9 @@ def evaluate(args, rollout_cache: dict[str, Any] | None = None) -> Path:
   summary = {
       "metadata": {
           "schema_version": 4,
-          "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+          "created_at": (
+              datetime.datetime.now(datetime.timezone.utc).isoformat()
+          ),
           "checkpoint": str(checkpoint),
           "env_name": env_name,
           "seed": args.seed,
@@ -908,6 +1062,14 @@ def evaluate(args, rollout_cache: dict[str, Any] | None = None) -> Path:
           "signals_saved": args.save_signals,
           "video_rendered": args.render_video,
           "used_saved_environment_config": args.use_saved_environment_config,
+          "environment_config_checkpoint": (
+              str(args.environment_config_checkpoint)
+              if args.environment_config_checkpoint is not None
+              else None
+          ),
+          "torque_highpass_normalize_by_capacity": env_config.reward_config.get(
+              "torque_highpass_normalize_by_capacity", None
+          ),
           "deterministic": args.deterministic,
           "perturbations_disabled": args.disable_perturbations,
           "primary_comparison_metrics": [
@@ -936,6 +1098,14 @@ def evaluate(args, rollout_cache: dict[str, Any] | None = None) -> Path:
   flat_summary = {
       "checkpoint": str(checkpoint),
       "env_name": env_name,
+      "environment_config_checkpoint": (
+          str(args.environment_config_checkpoint)
+          if args.environment_config_checkpoint is not None
+          else ""
+      ),
+      "torque_highpass_normalize_by_capacity": env_config.reward_config.get(
+          "torque_highpass_normalize_by_capacity", None
+      ),
       **overall,
       **{
           f"scenario/{scenario}/{key}": value
@@ -952,7 +1122,8 @@ def evaluate(args, rollout_cache: dict[str, Any] | None = None) -> Path:
       raise ImportError("Install wandb to use --use_wandb.") from error
     run = wandb.init(
         project=args.wandb_project,
-        name=args.wandb_run_name or f"evaluation-{checkpoint.parent.parent.name}-{checkpoint.name}",
+        name=args.wandb_run_name
+        or f"evaluation-{checkpoint.parent.parent.name}-{checkpoint.name}",
         job_type="policy-evaluation",
         config=summary["metadata"],
     )
@@ -971,19 +1142,29 @@ def evaluate(args, rollout_cache: dict[str, Any] | None = None) -> Path:
 
 def _build_parser() -> argparse.ArgumentParser:
   parser = argparse.ArgumentParser(description=__doc__)
-  parser.add_argument("--checkpoint", required=True, help="Checkpoint or checkpoints directory.")
-  parser.add_argument("--env_name", help="Required only for legacy checkpoints without run_config.json.")
+  parser.add_argument(
+      "--checkpoint", required=True, help="Checkpoint or checkpoints directory."
+  )
+  parser.add_argument(
+      "--env_name",
+      help=(
+          "Environment override. Legacy checkpoints infer it from a registered "
+          "environment directory in the checkpoint path when possible."
+      ),
+  )
   parser.add_argument("--output_dir")
-  parser.add_argument("--commands", help="JSON object mapping names to [vx, vy, yaw_rate].")
+  parser.add_argument(
+      "--commands", help="JSON object mapping names to [vx, vy, yaw_rate]."
+  )
   parser.add_argument("--num_rollouts", type=int, default=8)
   parser.add_argument(
       "--num_random_tasks",
       type=int,
       default=0,
       help=(
-          "Evaluate this many environment-sampled tasks in one parallel batch. "
-          "This preserves random command schedules instead of using --commands; "
-          "the task set is fixed by --task_seed."
+          "Evaluate this many environment-sampled tasks in one parallel batch."
+          " This preserves random command schedules instead of using"
+          " --commands; the task set is fixed by --task_seed."
       ),
   )
   parser.add_argument(
@@ -994,7 +1175,9 @@ def _build_parser() -> argparse.ArgumentParser:
   )
   parser.add_argument("--episode_length", type=int)
   parser.add_argument("--seed", type=int, default=0)
-  parser.add_argument("--fft_cutoffs_hz", default=",".join(map(str, DEFAULT_FFT_CUTOFFS_HZ)))
+  parser.add_argument(
+      "--fft_cutoffs_hz", default=",".join(map(str, DEFAULT_FFT_CUTOFFS_HZ))
+  )
   parser.add_argument(
       "--savgol_window_length",
       type=int,
@@ -1007,8 +1190,14 @@ def _build_parser() -> argparse.ArgumentParser:
       default=DEFAULT_SAVGOL_POLYORDER,
       help="Savitzky-Golay polynomial order used by MSGFD (default: 3).",
   )
-  parser.add_argument("--deterministic", action=argparse.BooleanOptionalAction, default=True)
-  parser.add_argument("--disable_perturbations", action=argparse.BooleanOptionalAction, default=True)
+  parser.add_argument(
+      "--deterministic", action=argparse.BooleanOptionalAction, default=True
+  )
+  parser.add_argument(
+      "--disable_perturbations",
+      action=argparse.BooleanOptionalAction,
+      default=True,
+  )
   parser.add_argument(
       "--save_signals",
       action=argparse.BooleanOptionalAction,
@@ -1035,11 +1224,30 @@ def _build_parser() -> argparse.ArgumentParser:
           "Disable for a common default evaluation environment."
       ),
   )
+  parser.add_argument(
+      "--environment_config_checkpoint",
+      help=(
+          "Load the shared evaluation environment configuration from this "
+          "checkpoint instead of from the policy checkpoint. Requires "
+          "--use_saved_environment_config."
+      ),
+  )
+  parser.add_argument(
+      "--torque_highpass_normalize_by_capacity",
+      action=argparse.BooleanOptionalAction,
+      default=None,
+      help=(
+          "Override torque capacity normalization in the evaluation "
+          "environment; omit to retain the selected environment config."
+      ),
+  )
   parser.add_argument("--camera", default="track")
   parser.add_argument("--video_width", type=int, default=640)
   parser.add_argument("--video_height", type=int, default=480)
   parser.add_argument("--use_wandb", action="store_true")
-  parser.add_argument("--wandb_project", default="spectral_playground_policy_evaluation")
+  parser.add_argument(
+      "--wandb_project", default="spectral_playground_policy_evaluation"
+  )
   parser.add_argument("--wandb_run_name")
   return parser
 
@@ -1070,8 +1278,8 @@ def main(
       or args.savgol_polyorder >= args.savgol_window_length
   ):
     raise ValueError(
-        "--savgol_polyorder must be non-negative and smaller than "
-        "--savgol_window_length."
+        "--savgol_polyorder must be non-negative and smaller than"
+        " --savgol_window_length."
     )
   evaluate(args, rollout_cache=rollout_cache)
 

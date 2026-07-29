@@ -14,6 +14,8 @@
 # ==============================================================================
 """Tests for constant-command policy evaluation metrics."""
 
+from pathlib import Path
+
 from absl.testing import absltest
 from flax import struct
 import jax
@@ -133,6 +135,138 @@ class _RandomTaskFakeEnv(_FakeEnv):
 
 class EvaluatePolicyTest(absltest.TestCase):
 
+  def test_replace_network_observation_size_accepts_serialized_shape(self):
+    network_config = config_dict.ConfigDict({
+        "action_size": 12,
+        "observation_size": {
+            "shape": [69],
+            "dtype": "unserializable object: float32",
+        },
+    })
+
+    compatible = evaluate_policy._replace_network_observation_size(
+        network_config, 69
+    )
+
+    self.assertEqual(compatible.observation_size, 69)
+    # Do not mutate the loaded checkpoint metadata supplied by the caller.
+    self.assertIsInstance(
+        network_config.observation_size, config_dict.ConfigDict
+    )
+
+  def test_fixed_feet_height_target_is_optional(self):
+    go1_config = config_dict.ConfigDict({
+        "reward_config": {"max_foot_height": 0.1}
+    })
+    spot_config = config_dict.ConfigDict({
+        "reward_config": {"tracking_sigma": 0.25}
+    })
+
+    self.assertEqual(
+        evaluate_policy._fixed_feet_height_target(go1_config), 0.1
+    )
+    self.assertIsNone(
+        evaluate_policy._fixed_feet_height_target(spot_config)
+    )
+
+  def test_get_upvector_falls_back_to_negative_gravity(self):
+    class GravityOnlyEnv:
+
+      def get_gravity(self, data):
+        del data
+        return jp.asarray([0.1, 0.2, -0.9])
+
+    np.testing.assert_allclose(
+        evaluate_policy._get_upvector(GravityOnlyEnv(), None),
+        [-0.1, -0.2, 0.9],
+    )
+
+  def test_restores_checkpoint_observation_structure(self):
+    env_config = config_dict.ConfigDict(
+        {
+            "reward_config": {
+                "torque_highpass_observe_state": False,
+                "torque_highpass_cutoff_hz": 2.0,
+                "torque_highpass_order": 2,
+                "torque_highpass_difference_order": 0.0,
+                "torque_highpass_signal": "action",
+                "torque_highpass_normalize_by_capacity": True,
+                "torque_rate_observe_state": False,
+            }
+        }
+    )
+    saved = {
+        "environment_config": {
+            "reward_config": {
+                "torque_highpass_observe_state": True,
+                "torque_highpass_cutoff_hz": 5.0,
+                "torque_highpass_order": 1,
+                "torque_highpass_difference_order": 1.0,
+                "torque_highpass_signal": "torque",
+                "torque_highpass_normalize_by_capacity": False,
+                "torque_rate_observe_state": True,
+            }
+        }
+    }
+
+    evaluate_policy._restore_checkpoint_observation_structure(env_config, saved)
+
+    self.assertTrue(env_config.reward_config.torque_highpass_observe_state)
+    self.assertEqual(env_config.reward_config.torque_highpass_cutoff_hz, 5.0)
+    self.assertEqual(env_config.reward_config.torque_highpass_order, 1)
+    self.assertEqual(
+        env_config.reward_config.torque_highpass_difference_order, 1.0
+    )
+    self.assertEqual(env_config.reward_config.torque_highpass_signal, "torque")
+    self.assertFalse(
+        env_config.reward_config.torque_highpass_normalize_by_capacity
+    )
+    self.assertTrue(env_config.reward_config.torque_rate_observe_state)
+
+  def test_observed_filter_state_preserves_training_normalization(self):
+    env_config = config_dict.ConfigDict(
+        {
+            "reward_config": {
+                "torque_highpass_observe_state": True,
+                "torque_highpass_normalize_by_capacity": False,
+            }
+        }
+    )
+
+    evaluate_policy._apply_torque_normalization_override(env_config, True)
+
+    self.assertFalse(
+        env_config.reward_config.torque_highpass_normalize_by_capacity
+    )
+
+  def test_old_checkpoint_keeps_default_observation_structure(self):
+    env_config = config_dict.ConfigDict(
+        {"reward_config": {"torque_highpass_observe_state": False}}
+    )
+
+    evaluate_policy._restore_checkpoint_observation_structure(
+        env_config, {"environment_config": {"reward_config": {}}}
+    )
+
+    self.assertFalse(env_config.reward_config.torque_highpass_observe_state)
+
+  def test_infers_environment_name_from_checkpoint_path(self):
+    checkpoint = Path(
+        "/models/Go1JoystickFlatTerrain/experiment/checkpoints/000000001000"
+    )
+
+    self.assertEqual(
+        evaluate_policy._infer_env_name_from_path(checkpoint),
+        "Go1JoystickFlatTerrain",
+    )
+
+  def test_environment_inference_returns_none_without_registered_parent(self):
+    self.assertIsNone(
+        evaluate_policy._infer_env_name_from_path(
+            Path("/models/unknown/experiment/checkpoints/000000001000")
+        )
+    )
+
   def test_expensive_artifacts_are_disabled_and_cuda_required_by_default(self):
     args = evaluate_policy._build_parser().parse_args(["--checkpoint", "test"])
 
@@ -245,7 +379,12 @@ class EvaluatePolicyTest(absltest.TestCase):
         )
     )()
     second = evaluate_policy._rollout(
-        env, policy, None, keys, episode_length=2, action_repeat=1,
+        env,
+        policy,
+        None,
+        keys,
+        episode_length=2,
+        action_repeat=1,
         policy_seed=999,
     )
     self.assertEqual(first["command"].shape, (2, 3, 3))
@@ -256,9 +395,7 @@ class EvaluatePolicyTest(absltest.TestCase):
 
   def test_episode_rows_use_random_task_command_schedule(self):
     time_steps = 4
-    command = np.broadcast_to(
-        np.asarray([0.5, -0.25, 0.2]), (time_steps, 1, 3)
-    )
+    command = np.broadcast_to(np.asarray([0.5, -0.25, 0.2]), (time_steps, 1, 3))
     signals = {
         "active": np.ones((time_steps, 1), dtype=bool),
         "done": np.zeros((time_steps, 1), dtype=bool),
@@ -269,9 +406,7 @@ class EvaluatePolicyTest(absltest.TestCase):
         "actuator_force": np.zeros((time_steps, 1, 12)),
         "local_linear_velocity": command,
         "gyro": np.broadcast_to([0.0, 0.0, 0.2], (time_steps, 1, 3)),
-        "upvector": np.broadcast_to(
-            [0.0, 0.0, 1.0], (time_steps, 1, 3)
-        ),
+        "upvector": np.broadcast_to([0.0, 0.0, 1.0], (time_steps, 1, 3)),
         "qvel": np.zeros((time_steps, 1, 18)),
     }
     rows = evaluate_policy._episode_rows(
@@ -319,9 +454,7 @@ class EvaluatePolicyTest(absltest.TestCase):
     metrics = evaluate_policy._smoothness_metrics(
         signal, sample_period=0.5, cutoffs_hz=(0.5,)
     )
-    self.assertAlmostEqual(
-        metrics["mean_squared_delta_l2_per_step"], 5.0
-    )
+    self.assertAlmostEqual(metrics["mean_squared_delta_l2_per_step"], 5.0)
     self.assertAlmostEqual(metrics["delta_rms_per_dof"], np.sqrt(2.5))
 
   def test_mssd_and_msgfd_for_quadratic_signal(self):
@@ -410,9 +543,7 @@ class EvaluatePolicyTest(absltest.TestCase):
         "metric/reward_without_regularization": np.full(
             (time_steps, rollouts), 0.25
         ),
-        "metric/reward/tracking_lin_vel": np.full(
-            (time_steps, rollouts), 0.5
-        ),
+        "metric/reward/tracking_lin_vel": np.full((time_steps, rollouts), 0.5),
     }
     rows = evaluate_policy._episode_rows(
         signals,

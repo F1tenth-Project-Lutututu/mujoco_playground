@@ -48,6 +48,31 @@ def main(argv: Sequence[str] | None = None) -> None:
     raise ValueError(f"Manifest contains no evaluable runs: {args.manifest}")
 
   from learning import evaluate_all_models  # pylint: disable=g-import-not-at-top
+  from learning import evaluate_policy  # pylint: disable=g-import-not-at-top
+  import jax  # pylint: disable=g-import-not-at-top
+
+  devices = jax.devices()
+  if jax.default_backend() != "gpu" or not any(
+      device.platform == "gpu" for device in devices
+  ):
+    raise RuntimeError(
+        "Cluster Pareto evaluation requires a visible CUDA GPU; "
+        f"JAX backend is {jax.default_backend()!r}, devices={devices}. "
+        "Check the Slurm GPU allocation and CUDA_VISIBLE_DEVICES."
+    )
+  evaluator_options = {
+      option
+      for action in evaluate_policy._build_parser()._actions
+      for option in action.option_strings
+  }
+  required_option = "--no-torque_highpass_normalize_by_capacity"
+  if required_option not in evaluator_options:
+    raise RuntimeError(
+        "The Eagle checkout is older than the cluster Pareto worker: "
+        f"evaluate_policy.py does not support {required_option}. Update the "
+        "remote repository to the same revision as localhost before "
+        "submitting."
+    )
 
   evaluate_all_models.MODEL_NAMES = frozenset(
       str(run["run_name"]) for run in runs
