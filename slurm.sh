@@ -78,13 +78,19 @@ STRENGTH_TAG=$(sed -E \
 eval "$(/mnt/storage_6/project_data/pl0467-01/soft/miniconda3/bin/conda shell.bash hook)"
 conda activate spectral_fixed
 
-# Fail fast when Slurm allocates a GPU that CUDA/JAX cannot use.  Requeue only
-# the affected array task and avoid the node that just failed.  Slurm increments
-# SLURM_RESTART_COUNT on every requeue, preventing an infinite retry loop.
+# Fail fast when Slurm allocates a GPU that CUDA/JAX cannot use.  A running job
+# cannot update its own ExcNodeList, so submit a replacement one-seed array
+# which excludes the failed node.  Carry an explicit counter between
+# replacement jobs to prevent an infinite retry loop.
 MAX_GPU_REQUEUES=${MAX_GPU_REQUEUES:-3}
+GPU_RETRY_COUNT=${GPU_RETRY_COUNT:-0}
 GPU_DIAGNOSTICS_DIR=${GPU_DIAGNOSTICS_DIR:-logs/gpu_diagnostics}
 if ! [[ $MAX_GPU_REQUEUES =~ ^[0-9]+$ ]]; then
   echo "MAX_GPU_REQUEUES must be a non-negative integer, got: $MAX_GPU_REQUEUES" >&2
+  exit 2
+fi
+if ! [[ $GPU_RETRY_COUNT =~ ^[0-9]+$ ]]; then
+  echo "GPU_RETRY_COUNT must be a non-negative integer, got: $GPU_RETRY_COUNT" >&2
   exit 2
 fi
 
@@ -99,7 +105,8 @@ log_gpu_diagnostics() {
     echo "job_id=${SLURM_JOB_ID:-unset}"
     echo "array_job_id=${SLURM_ARRAY_JOB_ID:-unset}"
     echo "array_task_id=${SLURM_ARRAY_TASK_ID:-unset}"
-    echo "restart_count=${SLURM_RESTART_COUNT:-0}"
+    echo "gpu_retry_count=$GPU_RETRY_COUNT"
+    echo "slurm_restart_count=${SLURM_RESTART_COUNT:-0}"
     echo "cuda_visible_devices=${CUDA_VISIBLE_DEVICES:-unset}"
     echo "slurm_job_gpus=${SLURM_JOB_GPUS:-unset}"
     echo "slurm_step_gpus=${SLURM_STEP_GPUS:-unset}"
@@ -165,12 +172,11 @@ if backend != "gpu" or not any(device.platform == "gpu" for device in devices):
   raise RuntimeError("Slurm allocated a GPU, but JAX cannot access it.")
 PY
 then
-  RESTART_COUNT=${SLURM_RESTART_COUNT:-0}
-  DIAGNOSTIC_FILE="${GPU_DIAGNOSTICS_DIR}/gpu_failure-${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-unknown}}_${SLURM_ARRAY_TASK_ID:-0}-restart${RESTART_COUNT}-$(date +%Y%m%dT%H%M%S).log"
+  DIAGNOSTIC_FILE="${GPU_DIAGNOSTICS_DIR}/gpu_failure-${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-unknown}}_${SLURM_ARRAY_TASK_ID:-0}-retry${GPU_RETRY_COUNT}-$(date +%Y%m%dT%H%M%S).log"
   log_gpu_diagnostics "$DIAGNOSTIC_FILE"
 
-  if ((RESTART_COUNT >= MAX_GPU_REQUEUES)); then
-    echo "GPU preflight failed after $RESTART_COUNT requeues; not retrying." >&2
+  if ((GPU_RETRY_COUNT >= MAX_GPU_REQUEUES)); then
+    echo "GPU preflight failed after $GPU_RETRY_COUNT retries; not retrying." >&2
     echo "Diagnostics: $DIAGNOSTIC_FILE" >&2
     exit 70
   fi
@@ -186,13 +192,23 @@ then
     NEW_EXCLUSIONS="${CURRENT_EXCLUSIONS},${FAILED_NODE}"
   fi
 
-  echo "Excluding $FAILED_NODE and requeueing task ${SLURM_ARRAY_JOB_ID:-$SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID:-0} (attempt $((RESTART_COUNT + 1))/$MAX_GPU_REQUEUES)." >&2
-  if ! scontrol update JobId="$SLURM_JOB_ID" ExcNodeList="$NEW_EXCLUSIONS"; then
-    echo "Could not update the failed-node exclusion; refusing an unsafe requeue." >&2
+  SCRIPT_PATH=$(sed -n 's/.* Command=\([^ ]*\).*/\1/p' <<< "$JOB_RECORD")
+  if [[ -z $SCRIPT_PATH || ! -f $SCRIPT_PATH ]]; then
+    echo "Could not resolve the submitted Slurm script from: $JOB_RECORD" >&2
     exit 71
   fi
-  if ! scontrol requeue "$SLURM_JOB_ID"; then
-    echo "Slurm refused to requeue task $SLURM_JOB_ID." >&2
+
+  NEXT_GPU_RETRY_COUNT=$((GPU_RETRY_COUNT + 1))
+  echo "Excluding $FAILED_NODE and submitting replacement seed ${SLURM_ARRAY_TASK_ID:-0} (attempt $NEXT_GPU_RETRY_COUNT/$MAX_GPU_REQUEUES)." >&2
+  if ! (
+    cd "${SLURM_SUBMIT_DIR:-$(dirname "$SCRIPT_PATH")}" &&
+    sbatch \
+      --array="${SLURM_ARRAY_TASK_ID:-0}" \
+      --exclude="$NEW_EXCLUSIONS" \
+      --export="ALL,GPU_RETRY_COUNT=$NEXT_GPU_RETRY_COUNT" \
+      "$SCRIPT_PATH" "$@"
+  ); then
+    echo "Slurm refused to submit the replacement task." >&2
     exit 72
   fi
   exit 0
