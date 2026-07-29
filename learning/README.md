@@ -349,6 +349,74 @@ The plotter caches pooled rollout metrics as `pareto_aggregates.csv` and
 automatically rebuilds that cache when the manifest or any input
 `rollouts.csv` changes.
 
+#### Evaluating Pareto sweeps on Eagle
+
+Large sweeps can be evaluated directly on an Eagle H100 without downloading
+the checkpoints. The localhost controller uploads only `pareto_manifest.json`;
+the cluster worker reads the original checkpoints from Eagle's `logs`
+directory and writes evaluation reports to cluster storage.
+
+First create a validated manifest with the regular download command. The
+manifest is small, so the locally downloaded checkpoint copies are not used by
+the cluster evaluation. Submit the evaluation from localhost:
+
+```bash
+python -m learning.pareto_cluster submit \
+  --manifest eagle/pareto/Go1JoystickFlatTerrain/pareto_manifest.json
+```
+
+The command prints the Slurm job ID, status command, and remote output path.
+Defaults assume the repository and logs use the standard Eagle locations. Use
+`--remote-project-root`, `--remote-models-root`, or `--remote-output-root` when
+they differ.
+
+The cluster job uses `slurm_pareto_evaluate.sh`, requests one GPU on the
+`proxima` partition, and evaluates all policies in a single Python process.
+This allows compatible policies to reuse the same JAX-compiled rollout. Each
+policy evaluates 2048 random tasks in parallel by default, XLA preallocates
+90% of GPU memory, and videos and raw signal archives are disabled. These
+settings are intended for an 80 GB H100. Reduce the batch if an environment
+uses substantially more state:
+
+```bash
+python -m learning.pareto_cluster submit \
+  --manifest eagle/pareto/SilverBadgerJoystickFlatTerrain/pareto_manifest.json \
+  --num-random-tasks 1024
+```
+
+The worker continues after an individual policy failure so one damaged
+checkpoint does not waste the remaining allocation. Evaluation caching is
+unchanged, so resubmitting skips reports whose checkpoint, settings, code, and
+dependencies have not changed.
+
+After the Slurm job finishes, package the environment's result directory on an
+Eagle CPU worker and download it as one compressed tar archive:
+
+```bash
+python -m learning.pareto_cluster fetch Go1JoystickFlatTerrain
+```
+
+Results are safely extracted by default under
+`evaluations/pareto_cluster/<environment>/`. The temporary remote archive is
+deleted after either success or failure. Custom roots must match those used at
+submission:
+
+```bash
+python -m learning.pareto_cluster fetch Go1JoystickFlatTerrain \
+  --remote-output-root /path/on/eagle/pareto-results \
+  --local-output-root evaluations/pareto_cluster
+```
+
+Plot the downloaded reports by explicitly supplying the cluster evaluation
+root and the manifest copied into it:
+
+```bash
+python -m learning.plot_policy_pareto \
+  --manifest evaluations/pareto_cluster/Go1JoystickFlatTerrain/pareto_manifest.json \
+  --evaluation-root evaluations/pareto_cluster/Go1JoystickFlatTerrain \
+  --output evaluations/pareto_cluster/Go1JoystickFlatTerrain/policy_pareto.png
+```
+
 After evaluation, compare every completed policy family without manually
 building `METHODS`:
 
