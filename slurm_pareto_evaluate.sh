@@ -35,7 +35,7 @@ export MUJOCO_GL=egl
 echo "Host: $(hostname --fqdn)"
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
-python - <<'PY'
+if ! srun --ntasks=1 --gpus-per-task=1 python - <<'PY'
 import jax
 
 devices = jax.devices()
@@ -46,12 +46,16 @@ if backend != "gpu" or not any(device.platform == "gpu" for device in devices):
       "Slurm job has no JAX-visible GPU; refusing CPU fallback."
   )
 PY
+then
+  echo "JAX GPU preflight failed inside the Slurm GPU job step." >&2
+  exit 70
+fi
 echo "Manifest: $MANIFEST"
 echo "Models root: $MODELS_ROOT"
 echo "Output root: $OUTPUT_ROOT"
 echo "Random tasks per policy: $NUM_RANDOM_TASKS"
 
-python -m learning.evaluate_pareto_on_cluster \
+srun --ntasks=1 --gpus-per-task=1 python -m learning.evaluate_pareto_on_cluster \
   --manifest "$MANIFEST" \
   --models-root "$MODELS_ROOT" \
   --output-root "$OUTPUT_ROOT" \
