@@ -43,6 +43,9 @@ from scipy import signal as scipy_signal
 from learning import train_jax_ppo as train_utils
 
 
+EVALUATOR_COMPATIBILITY_VERSION = 2
+
+
 DEFAULT_COMMANDS = {
     "stand": (0.0, 0.0, 0.0),
     "forward_0p5": (0.5, 0.0, 0.0),
@@ -537,8 +540,28 @@ def _get_upvector(env, data):
   """Returns the local up vector across locomotion environment APIs."""
   if hasattr(env, "get_upvector"):
     return env.get_upvector(data)
+  if hasattr(env, "_get_gravity"):
+    return -env._get_gravity(data)
   # Projected gravity points down in the robot frame.
   return -env.get_gravity(data)
+
+
+def _get_feet_position(env, data):
+  """Returns foot positions across locomotion environment APIs."""
+  if hasattr(env, "get_feet_pos"):
+    return env.get_feet_pos(data)
+  if hasattr(env, "_feet_site_id"):
+    return data.site_xpos[env._feet_site_id]
+  raise AttributeError(f"{type(env).__name__} exposes no foot positions.")
+
+
+def _get_accelerometer(env, data):
+  """Returns accelerometer data across locomotion environment APIs."""
+  if hasattr(env, "get_accelerometer"):
+    return env.get_accelerometer(data)
+  if hasattr(env, "_get_sensor_data"):
+    return env._get_sensor_data(data, "accelerometer")
+  raise AttributeError(f"{type(env).__name__} exposes no accelerometer.")
 
 
 def _rollout(
@@ -567,6 +590,9 @@ def _rollout(
   policy_steps = episode_length // action_repeat
   active = jp.ones((num_rollouts,), dtype=bool)
   policy_keys = jax.random.split(jax.random.PRNGKey(policy_seed), num_rollouts)
+  linear_velocity_accessor, gyro_accessor = (
+      train_utils._velocity_tracking_accessors(env)
+  )
 
   def scan_step(carry, _):
     current_state, current_active, keys = carry
@@ -583,10 +609,12 @@ def _rollout(
     )
     reward = jp.sum(repeated_rewards, axis=0)
     done = next_state.done.astype(bool)
-    local_linear_velocity = jax.vmap(env.get_local_linvel)(next_state.data)
-    gyro = jax.vmap(env.get_gyro)(next_state.data)
+    local_linear_velocity = jax.vmap(linear_velocity_accessor)(next_state.data)
+    gyro = jax.vmap(gyro_accessor)(next_state.data)
     upvector = jax.vmap(lambda data: _get_upvector(env, data))(next_state.data)
-    feet_position = jax.vmap(env.get_feet_pos)(next_state.data)
+    feet_position = jax.vmap(
+        lambda data: _get_feet_position(env, data)
+    )(next_state.data)
     signals = {
         "active": current_active,
         "done": done,
@@ -614,7 +642,9 @@ def _rollout(
       signals["feet_height_target"] = next_state.info["foot_height"]
     if record_full_signals:
       signals.update({
-          "accelerometer": jax.vmap(env.get_accelerometer)(next_state.data),
+          "accelerometer": jax.vmap(
+              lambda data: _get_accelerometer(env, data)
+          )(next_state.data),
           "qpos": next_state.data.qpos,
           "qacc": next_state.data.qacc,
           "ctrl": next_state.data.ctrl,
@@ -867,6 +897,13 @@ def _default_output_dir(checkpoint: epath.Path) -> Path:
   return Path("evaluations") / run_name / checkpoint.name
 
 
+def _scenario_rollouts_path(
+    scenario_dir: Path, random_task_mode: bool
+) -> Path | None:
+  """Returns a per-scenario CSV path unless it would duplicate the overall CSV."""
+  return None if random_task_mode else scenario_dir / "rollouts.csv"
+
+
 def _rollout_cache_key(
     env_name: str,
     env_config: config_dict.ConfigDict,
@@ -1010,7 +1047,14 @@ def evaluate(args, rollout_cache: dict[str, Any] | None = None) -> Path:
         }
         for i, row in enumerate(rows)
     ]
-    _write_rows(scenario_dir / "rollouts.csv", indexed_rows)
+    # Random-task evaluation has exactly one scenario, so ``all_rows`` below
+    # is identical to ``indexed_rows``. Keep only the canonical top-level
+    # rollout table rather than storing a second multi-megabyte CSV.
+    scenario_rollouts_path = _scenario_rollouts_path(
+        scenario_dir, random_task_mode
+    )
+    if scenario_rollouts_path is not None:
+      _write_rows(scenario_rollouts_path, indexed_rows)
     summary = {
         **_aggregate(rows),
         **_wandb_compatible_summary(rows),
