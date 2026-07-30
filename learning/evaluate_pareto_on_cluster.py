@@ -73,6 +73,18 @@ def main(argv: Sequence[str] | None = None) -> None:
         "remote repository to the same revision as localhost before "
         "submitting."
     )
+  required_evaluator_version = 2
+  evaluator_version = getattr(
+      evaluate_policy, "EVALUATOR_COMPATIBILITY_VERSION", 0
+  )
+  if evaluator_version < required_evaluator_version:
+    raise RuntimeError(
+        "The Eagle checkout is older than the cluster Pareto worker: "
+        "evaluate_policy.py lacks quadruped API compatibility "
+        f"(version {evaluator_version}, required "
+        f"{required_evaluator_version}). Update the remote repository to "
+        "the same revision as localhost before submitting."
+    )
 
   if args.manifest is not None:
     manifest_path = args.manifest

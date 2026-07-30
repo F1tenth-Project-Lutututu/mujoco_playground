@@ -135,6 +135,51 @@ class _RandomTaskFakeEnv(_FakeEnv):
 
 class EvaluatePolicyTest(absltest.TestCase):
 
+  def test_random_tasks_do_not_duplicate_overall_rollouts(self):
+    self.assertIsNone(
+        evaluate_policy._scenario_rollouts_path(
+            Path("evaluation/random_tasks"), random_task_mode=True
+        )
+    )
+
+  def test_constant_command_scenarios_keep_their_rollouts(self):
+    scenario_dir = Path("evaluation/forward")
+    self.assertEqual(
+        evaluate_policy._scenario_rollouts_path(
+            scenario_dir, random_task_mode=False
+        ),
+        scenario_dir / "rollouts.csv",
+    )
+
+  def test_barkour_private_measurement_accessors(self):
+    class Barkour:
+      _feet_site_id = jp.asarray([1, 3])
+
+      def _get_gravity(self, data):
+        del data
+        return jp.asarray([0.0, 0.0, -1.0])
+
+      def _get_sensor_data(self, data, name):
+        del data
+        if name != "accelerometer":
+          raise ValueError(name)
+        return jp.asarray([1.0, 2.0, 3.0])
+    data = type("Data", (), {
+        "site_xpos": jp.arange(12, dtype=jp.float32).reshape(4, 3)
+    })()
+    env = Barkour()
+
+    np.testing.assert_array_equal(
+        evaluate_policy._get_upvector(env, data), [0.0, 0.0, 1.0]
+    )
+    np.testing.assert_array_equal(
+        evaluate_policy._get_feet_position(env, data),
+        np.asarray(data.site_xpos)[[1, 3]],
+    )
+    np.testing.assert_array_equal(
+        evaluate_policy._get_accelerometer(env, data), [1.0, 2.0, 3.0]
+    )
+
   def test_replace_network_observation_size_accepts_serialized_shape(self):
     network_config = config_dict.ConfigDict({
         "action_size": 12,
