@@ -16,8 +16,11 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import fnmatch
-from pathlib import PurePosixPath
+import json
+import os
+from pathlib import Path, PurePosixPath
 import shlex
+import time
 from typing import Sequence
 
 from learning import download_models_to_evaluate as downloader
@@ -26,11 +29,19 @@ from learning import pareto_cluster
 
 QUADRUPED_PREFIXES = (
     "Barkour",
-    "G1",
     "Go1",
     "SilverBadger",
     "Spot",
 )
+CACHE_FORMAT_VERSION = 1
+DEFAULT_CACHE_MAX_AGE_SECONDS = 300.0
+
+
+def _default_cache_file() -> Path:
+  cache_root = Path(
+      os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")
+  )
+  return cache_root / "mujoco_playground" / "cluster_evaluations.json"
 
 
 @dataclass(frozen=True)
@@ -115,6 +126,108 @@ def collect_coverage(
   return rows
 
 
+def _cache_key(
+    host: str,
+    remote_logs: PurePosixPath,
+    evaluation_root: PurePosixPath,
+    pattern: str,
+) -> str:
+  return json.dumps(
+      [host, str(remote_logs), str(evaluation_root), pattern],
+      separators=(",", ":"),
+  )
+
+
+def _read_cached_coverage(
+    cache_file: Path,
+    key: str,
+    max_age_seconds: float,
+    now: float,
+) -> list[Coverage] | None:
+  try:
+    cache = json.loads(cache_file.read_text(encoding="utf-8"))
+    if not isinstance(cache, dict):
+      return None
+    entry = cache["entries"][key]
+    if (
+        cache["cache_format_version"] != CACHE_FORMAT_VERSION
+        or now - float(entry["created_at"]) > max_age_seconds
+    ):
+      return None
+    return [Coverage(**row) for row in entry["rows"]]
+  except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+    return None
+
+
+def _write_cached_coverage(
+    cache_file: Path,
+    key: str,
+    rows: Sequence[Coverage],
+    now: float,
+) -> None:
+  try:
+    cache = json.loads(cache_file.read_text(encoding="utf-8"))
+    if (
+        not isinstance(cache, dict)
+        or cache.get("cache_format_version") != CACHE_FORMAT_VERSION
+    ):
+      cache = {}
+  except (OSError, ValueError, json.JSONDecodeError):
+    cache = {}
+  entries = cache.get("entries", {})
+  if not isinstance(entries, dict):
+    entries = {}
+  entries[key] = {
+      "created_at": now,
+      "rows": [
+          {
+              "environment": row.environment,
+              "evaluated_runs": row.evaluated_runs,
+              "saved_runs": row.saved_runs,
+          }
+          for row in rows
+      ],
+  }
+  payload = {
+      "cache_format_version": CACHE_FORMAT_VERSION,
+      "entries": entries,
+  }
+  try:
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    temporary = cache_file.with_suffix(cache_file.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(cache_file)
+  except OSError:
+    # Reporting should still succeed when the cache location is not writable.
+    return
+
+
+def collect_coverage_cached(
+    host: str,
+    remote_logs: PurePosixPath,
+    evaluation_root: PurePosixPath,
+    pattern: str = "*",
+    *,
+    cache_file: Path | None = None,
+    max_age_seconds: float = DEFAULT_CACHE_MAX_AGE_SECONDS,
+    refresh: bool = False,
+) -> list[Coverage]:
+  """Collects coverage, reusing a recent result for the same remote query."""
+  cache_file = cache_file or _default_cache_file()
+  key = _cache_key(host, remote_logs, evaluation_root, pattern)
+  now = time.time()
+  if not refresh:
+    cached = _read_cached_coverage(cache_file, key, max_age_seconds, now)
+    if cached is not None:
+      return cached
+  rows = collect_coverage(host, remote_logs, evaluation_root, pattern)
+  _write_cached_coverage(cache_file, key, rows, time.time())
+  return rows
+
+
 def format_table(rows: Sequence[Coverage]) -> str:
   """Formats coverage rows as a compact aligned text table."""
   headers = ("Environment", "Reports", "Saved runs", "Missing", "Status")
@@ -173,17 +286,41 @@ def _build_parser() -> argparse.ArgumentParser:
       default="*",
       help="Shell-style filter applied after quadruped discovery.",
   )
+  parser.add_argument(
+      "--cache-file",
+      type=Path,
+      default=None,
+      help="Persistent cache path (default: the user cache directory).",
+  )
+  parser.add_argument(
+      "--cache-max-age",
+      type=float,
+      default=DEFAULT_CACHE_MAX_AGE_SECONDS,
+      metavar="SECONDS",
+      help="Reuse cached results this old or newer (default: 300).",
+  )
+  parser.add_argument(
+      "--refresh-cache",
+      action="store_true",
+      help="Ignore cached results and query the cluster.",
+  )
   return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-  args = _build_parser().parse_args(argv)
+  parser = _build_parser()
+  args = parser.parse_args(argv)
   host = downloader._validate_name(args.host, "SSH host")
-  rows = collect_coverage(
+  if args.cache_max_age < 0:
+    parser.error("--cache-max-age must be non-negative")
+  rows = collect_coverage_cached(
       host,
       args.remote_logs,
       args.remote_evaluations,
       args.environment_pattern,
+      cache_file=args.cache_file,
+      max_age_seconds=args.cache_max_age,
+      refresh=args.refresh_cache,
   )
   if not rows:
     print("No matching quadruped locomotion environments found.")

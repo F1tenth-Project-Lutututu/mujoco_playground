@@ -1,6 +1,7 @@
 """Tests for cluster evaluation coverage reporting."""
 
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
+import tempfile
 from unittest import mock
 
 from absl.testing import absltest
@@ -18,6 +19,7 @@ class ReportClusterEvaluationsTest(absltest.TestCase):
             "Go1JoystickFlatTerrain",
             "SpotJoystickGaitTracking",
             "BerkeleyHumanoidJoystickFlatTerrain",
+            "G1JoystickFlatTerrain",
             "T1JoystickFlatTerrain",
             "Go1Stand",
         ],
@@ -62,6 +64,58 @@ class ReportClusterEvaluationsTest(absltest.TestCase):
     self.assertIn("Go1JoystickFlatTerrain", table)
     self.assertIn("COMPLETE", table)
     self.assertIn("INCOMPLETE", table)
+
+  def test_reuses_cached_coverage(self):
+    with tempfile.TemporaryDirectory() as temporary_directory:
+      cache_file = Path(temporary_directory) / "coverage.json"
+      expected = [report.Coverage("Go1JoystickFlatTerrain", 2, 3)]
+      with mock.patch.object(
+          report, "collect_coverage", return_value=expected
+      ) as collect:
+        first = report.collect_coverage_cached(
+            "eagle",
+            PurePosixPath("/logs"),
+            PurePosixPath("/evaluations"),
+            cache_file=cache_file,
+        )
+        second = report.collect_coverage_cached(
+            "eagle",
+            PurePosixPath("/logs"),
+            PurePosixPath("/evaluations"),
+            cache_file=cache_file,
+        )
+
+      self.assertEqual(first, expected)
+      self.assertEqual(second, expected)
+      collect.assert_called_once()
+
+  def test_refresh_cache_queries_cluster_again(self):
+    with tempfile.TemporaryDirectory() as temporary_directory:
+      cache_file = Path(temporary_directory) / "coverage.json"
+      with mock.patch.object(
+          report,
+          "collect_coverage",
+          side_effect=[
+              [report.Coverage("Go1JoystickFlatTerrain", 1, 3)],
+              [report.Coverage("Go1JoystickFlatTerrain", 2, 3)],
+          ],
+      ) as collect:
+        report.collect_coverage_cached(
+            "eagle",
+            PurePosixPath("/logs"),
+            PurePosixPath("/evaluations"),
+            cache_file=cache_file,
+        )
+        refreshed = report.collect_coverage_cached(
+            "eagle",
+            PurePosixPath("/logs"),
+            PurePosixPath("/evaluations"),
+            cache_file=cache_file,
+            refresh=True,
+        )
+
+      self.assertEqual(refreshed[0].evaluated_runs, 2)
+      self.assertEqual(collect.call_count, 2)
 
 
 if __name__ == "__main__":
