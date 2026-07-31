@@ -43,7 +43,7 @@ from scipy import signal as scipy_signal
 from learning import train_jax_ppo as train_utils
 
 
-EVALUATOR_COMPATIBILITY_VERSION = 2
+EVALUATOR_COMPATIBILITY_VERSION = 3
 
 
 DEFAULT_COMMANDS = {
@@ -460,6 +460,17 @@ def _episode_rows(
             savgol_polyorder,
         ).items()
     })
+    row.update({
+        f"smoothness/joint_velocity/{key}": value
+        for key, value in _smoothness_metrics(
+            # Exclude the floating-base linear and angular velocities.
+            episodes["qvel"][rollout_index, :, 6:],
+            sample_period,
+            cutoffs_hz,
+            savgol_window_length,
+            savgol_polyorder,
+        ).items()
+    })
     torque_metrics = _smoothness_metrics(
         episodes["actuator_force"][rollout_index],
         sample_period,
@@ -648,6 +659,40 @@ def _rollout(
           "qpos": next_state.data.qpos,
           "qacc": next_state.data.qacc,
           "ctrl": next_state.data.ctrl,
+          "time": next_state.data.time,
+          "act": next_state.data.act,
+          "act_dot": next_state.data.act_dot,
+          "qacc_warmstart": next_state.data.qacc_warmstart,
+          "qfrc_applied": next_state.data.qfrc_applied,
+          "qfrc_actuator": next_state.data.qfrc_actuator,
+          "qfrc_bias": next_state.data.qfrc_bias,
+          "qfrc_gravcomp": next_state.data.qfrc_gravcomp,
+          "qfrc_fluid": next_state.data.qfrc_fluid,
+          "qfrc_passive": next_state.data.qfrc_passive,
+          "qfrc_smooth": next_state.data.qfrc_smooth,
+          "qfrc_constraint": next_state.data.qfrc_constraint,
+          "qfrc_inverse": next_state.data.qfrc_inverse,
+          "qacc_smooth": next_state.data.qacc_smooth,
+          "xpos": next_state.data.xpos,
+          "xquat": next_state.data.xquat,
+          "xmat": next_state.data.xmat,
+          "xipos": next_state.data.xipos,
+          "ximat": next_state.data.ximat,
+          "xanchor": next_state.data.xanchor,
+          "xaxis": next_state.data.xaxis,
+          "geom_xpos": next_state.data.geom_xpos,
+          "geom_xmat": next_state.data.geom_xmat,
+          "site_xpos": next_state.data.site_xpos,
+          "site_xmat": next_state.data.site_xmat,
+          "cam_xpos": next_state.data.cam_xpos,
+          "cam_xmat": next_state.data.cam_xmat,
+          "subtree_com": next_state.data.subtree_com,
+          "cvel": next_state.data.cvel,
+          "mocap_pos": next_state.data.mocap_pos,
+          "mocap_quat": next_state.data.mocap_quat,
+          "xfrc_applied": next_state.data.xfrc_applied,
+          "eq_active": next_state.data.eq_active,
+          "userdata": next_state.data.userdata,
           "sensordata": next_state.data.sensordata,
           "obs/state": next_state.obs["state"],
           "obs/privileged_state": next_state.obs["privileged_state"],
@@ -1123,6 +1168,8 @@ def evaluate(args, rollout_cache: dict[str, Any] | None = None) -> Path:
               "smoothness/torque/mean_squared_delta_l2_per_step",
               "smoothness/torque/mssd_mean_squared_second_difference_per_dof",
               "smoothness/torque/msgfd_mean_absolute_savgol_filter_deviation_per_dof",
+              "smoothness/joint_velocity/mssd_mean_squared_second_difference_per_dof",
+              "smoothness/joint_velocity/msgfd_mean_absolute_savgol_filter_deviation_per_dof",
               "torque_spectrum/eval/fft_above_5hz_energy_per_step",
               "tracking/absolute_mechanical_energy",
               "tracking/total_absolute_torque_impulse",
