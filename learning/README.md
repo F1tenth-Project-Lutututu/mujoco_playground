@@ -144,6 +144,67 @@ a template. The tool reports missing run directories; it intentionally does
 not duplicate a seed merely because its checkpoint is incomplete or it may
 still be running.
 
+### Recovering incomplete cluster runs
+
+Use `recover_incomplete_cluster_runs.py` when a run directory exists but
+training stopped before producing a usable checkpoint. This is different from
+missing-seed recovery: the seed exists on Eagle, but its latest numeric
+checkpoint is below the required training step.
+
+Run the controller from the local repository, not from an Eagle shell. It
+inspects and modifies the remote log directory over SSH and submits the
+replacement training jobs through Slurm on Eagle. Inspection is read-only by
+default:
+
+```bash
+python -m learning.recover_incomplete_cluster_runs \
+  Go1JoystickRoughTerrainPushesAndDomainRandomization \
+  --run-pattern '260728-*'
+```
+
+The default minimum usable checkpoint is 400,000,000 steps. Override it when
+the original experiment used a different training length:
+
+```bash
+python -m learning.recover_incomplete_cluster_runs \
+  Go1JoystickRoughTerrainPushesAndDomainRandomization \
+  --run-pattern '260728-*' \
+  --min-checkpoint-step 800000000
+```
+
+The dry-run report shows every selected run, its latest checkpoint, the saved
+configuration used as a template, and the exact seed-specific `sbatch`
+command. A completed sibling from the same experiment family is preferred as
+the configuration template. If every seed in a family stopped early, each
+run's own `checkpoints/run_config.json` is used instead.
+
+After reviewing the report, add `--execute` to recover and resubmit the runs:
+
+```bash
+python -m learning.recover_incomplete_cluster_runs \
+  Go1JoystickRoughTerrainPushesAndDomainRandomization \
+  --run-pattern '260728-*' \
+  --execute
+```
+
+Execution does not delete the incomplete checkpoints. Before submitting each
+replacement, it moves the old run directory to:
+
+```text
+logs/<ENVIRONMENT>/.incomplete-runs/<RUN-NAME>
+```
+
+This frees the original run name while retaining the failed run for inspection
+or manual restoration. The destination must not already exist; if it does, the
+script stops rather than overwriting the earlier archive. Keep
+`--run-pattern` narrow enough to select only the intended experiment cohort.
+The local and Eagle checkouts should use compatible versions of `slurm.sh`.
+
+This command recovers training runs only. It does not repair malformed
+evaluation reports or resubmit evaluation jobs. Use
+`diagnose_cluster_evaluations.py` first to distinguish `NOT_EVALUATED` runs
+with low checkpoints from invalid reports and transient storage errors.
+
 ### Reproducible policy evaluation
 
 Use the constant-command evaluator to compare policies with matched reset
@@ -426,6 +487,35 @@ checkpoint does not waste the remaining allocation. Evaluation caching is
 unchanged, so resubmitting skips reports whose checkpoint, settings, code, and
 dependencies have not changed.
 
+Cluster evaluations retain compressed, batched `signals.npz` archives on
+Eagle. These include joint positions, velocities and accelerations; controls,
+actuator forces and velocities; generalized actuator and constraint forces;
+body/site poses; sensors, observations, contacts, commands, and perturbations.
+This full experiment record allows new trajectory-derived metrics to be
+computed without replaying policies.
+
+Recompute the currently supported joint-velocity metrics across every run in
+an environment on an Eagle CPU worker:
+
+```bash
+python -m learning.pareto_cluster metrics Go1JoystickFlatTerrain
+```
+
+Select individual metrics with repeatable short names:
+
+```bash
+python -m learning.pareto_cluster metrics Go1JoystickFlatTerrain \
+  --metric joint_velocity_mssd \
+  --metric joint_velocity_msgfd
+```
+
+The worker obtains exact archive paths from `pareto_manifest.json`, loads each
+archive once, and computes all rollouts in vectorized batches. Archives are
+streamed one policy at a time to bound host memory; it does not recursively
+scan the evaluation tree or read one file per rollout. The command updates
+`rollouts.csv`, scenario and top-level `summary.json`, and `summary.csv`
+in place. Its Slurm job ID and status command are printed on submission.
+
 After the Slurm job finishes, package the environment's result directory on an
 Eagle CPU worker and download it as one compressed tar archive:
 
@@ -435,8 +525,11 @@ python -m learning.pareto_cluster fetch Go1JoystickFlatTerrain
 
 Results are safely extracted by default under
 `evaluations/pareto_cluster/<environment>/`. The temporary remote archive is
-deleted after either success or failure. Custom roots must match those used at
-submission:
+deleted after either success or failure. By default, fetch excludes the large
+trajectory archives and videos, transferring only the manifest and metric
+reports needed for local plotting. Add `--include-signals` only when a local
+copy of the full experiment record is required. Custom roots must match those
+used at submission:
 
 ```bash
 python -m learning.pareto_cluster fetch Go1JoystickFlatTerrain \
