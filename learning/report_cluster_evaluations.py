@@ -33,8 +33,7 @@ QUADRUPED_PREFIXES = (
     "SilverBadger",
     "Spot",
 )
-CACHE_FORMAT_VERSION = 1
-DEFAULT_CACHE_MAX_AGE_SECONDS = 300.0
+CACHE_FORMAT_VERSION = 3
 
 
 def _default_cache_file() -> Path:
@@ -101,6 +100,55 @@ def _evaluated_run_names(
   return result
 
 
+def _changed_environment_names(
+    host: str,
+    evaluation_root: PurePosixPath,
+    since: float,
+) -> set[str]:
+  """Returns environments with completed reports modified since `since`."""
+  quoted_root = shlex.quote(str(evaluation_root))
+  paths = downloader._ssh_lines(
+      host,
+      f"if test -d {quoted_root}; then "
+      f"find {quoted_root} -type f -name rollouts.csv "
+      f"-newermt {shlex.quote(f'@{since}')} -printf '%p\\n' "
+      "2>/dev/null || true; fi",
+  )
+  changed = set()
+  for value in paths:
+    try:
+      relative = PurePosixPath(value).relative_to(evaluation_root)
+    except ValueError:
+      continue
+    if len(relative.parts) >= 3 and relative.parts[1] == "raw_torque":
+      changed.add(relative.parts[0])
+  return changed
+
+
+def _collect_environment_coverage(
+    host: str,
+    remote_logs: PurePosixPath,
+    evaluation_root: PurePosixPath,
+    environment: str,
+) -> Coverage:
+  # Recovery tools keep failed runs below hidden administrative directories
+  # such as `.incomplete-runs`. Only immediate, non-hidden run directories
+  # belong in saved-run coverage.
+  saved = {
+      name
+      for name in downloader._remote_run_names(
+          host, remote_logs / environment
+      )
+      if not name.startswith(".")
+  }
+  evaluated = _evaluated_run_names(host, evaluation_root, environment)
+  return Coverage(
+      environment=environment,
+      evaluated_runs=len(saved & evaluated),
+      saved_runs=len(saved),
+  )
+
+
 def collect_coverage(
     host: str,
     remote_logs: PurePosixPath,
@@ -108,22 +156,12 @@ def collect_coverage(
     pattern: str = "*",
 ) -> list[Coverage]:
   """Collects saved-versus-evaluated unique run counts from the cluster."""
-  rows = []
-  for environment in _environment_names(host, remote_logs, pattern):
-    saved = set(
-        downloader._remote_run_names(host, remote_logs / environment)
-    )
-    evaluated = _evaluated_run_names(
-        host, evaluation_root, environment
-    )
-    rows.append(
-        Coverage(
-            environment=environment,
-            evaluated_runs=len(saved & evaluated),
-            saved_runs=len(saved),
-        )
-    )
-  return rows
+  return [
+      _collect_environment_coverage(
+          host, remote_logs, evaluation_root, environment
+      )
+      for environment in _environment_names(host, remote_logs, pattern)
+  ]
 
 
 def _cache_key(
@@ -141,20 +179,18 @@ def _cache_key(
 def _read_cached_coverage(
     cache_file: Path,
     key: str,
-    max_age_seconds: float,
-    now: float,
-) -> list[Coverage] | None:
+) -> tuple[float, list[Coverage]] | None:
   try:
     cache = json.loads(cache_file.read_text(encoding="utf-8"))
     if not isinstance(cache, dict):
       return None
     entry = cache["entries"][key]
-    if (
-        cache["cache_format_version"] != CACHE_FORMAT_VERSION
-        or now - float(entry["created_at"]) > max_age_seconds
-    ):
+    if cache["cache_format_version"] != CACHE_FORMAT_VERSION:
       return None
-    return [Coverage(**row) for row in entry["rows"]]
+    return (
+        float(entry["checked_at"]),
+        [Coverage(**row) for row in entry["rows"]],
+    )
   except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
     return None
 
@@ -163,7 +199,7 @@ def _write_cached_coverage(
     cache_file: Path,
     key: str,
     rows: Sequence[Coverage],
-    now: float,
+    checked_at: float,
 ) -> None:
   try:
     cache = json.loads(cache_file.read_text(encoding="utf-8"))
@@ -178,7 +214,7 @@ def _write_cached_coverage(
   if not isinstance(entries, dict):
     entries = {}
   entries[key] = {
-      "created_at": now,
+      "checked_at": checked_at,
       "rows": [
           {
               "environment": row.environment,
@@ -212,19 +248,34 @@ def collect_coverage_cached(
     pattern: str = "*",
     *,
     cache_file: Path | None = None,
-    max_age_seconds: float = DEFAULT_CACHE_MAX_AGE_SECONDS,
     refresh: bool = False,
 ) -> list[Coverage]:
-  """Collects coverage, reusing a recent result for the same remote query."""
+  """Refreshes only environments changed since the previous invocation."""
   cache_file = cache_file or _default_cache_file()
   key = _cache_key(host, remote_logs, evaluation_root, pattern)
-  now = time.time()
-  if not refresh:
-    cached = _read_cached_coverage(cache_file, key, max_age_seconds, now)
-    if cached is not None:
-      return cached
-  rows = collect_coverage(host, remote_logs, evaluation_root, pattern)
-  _write_cached_coverage(cache_file, key, rows, time.time())
+  scan_started_at = time.time()
+  cached = None if refresh else _read_cached_coverage(cache_file, key)
+  if cached is None:
+    rows = collect_coverage(host, remote_logs, evaluation_root, pattern)
+  else:
+    checked_at, cached_rows = cached
+    environments = _environment_names(host, remote_logs, pattern)
+    cached_by_environment = {row.environment: row for row in cached_rows}
+    changed = _changed_environment_names(
+        host, evaluation_root, checked_at
+    )
+    refresh_environments = changed | (
+        set(environments) - cached_by_environment.keys()
+    )
+    rows = [
+        _collect_environment_coverage(
+            host, remote_logs, evaluation_root, environment
+        )
+        if environment in refresh_environments
+        else cached_by_environment[environment]
+        for environment in environments
+    ]
+  _write_cached_coverage(cache_file, key, rows, scan_started_at)
   return rows
 
 
@@ -293,13 +344,6 @@ def _build_parser() -> argparse.ArgumentParser:
       help="Persistent cache path (default: the user cache directory).",
   )
   parser.add_argument(
-      "--cache-max-age",
-      type=float,
-      default=DEFAULT_CACHE_MAX_AGE_SECONDS,
-      metavar="SECONDS",
-      help="Reuse cached results this old or newer (default: 300).",
-  )
-  parser.add_argument(
       "--refresh-cache",
       action="store_true",
       help="Ignore cached results and query the cluster.",
@@ -311,15 +355,12 @@ def main(argv: Sequence[str] | None = None) -> int:
   parser = _build_parser()
   args = parser.parse_args(argv)
   host = downloader._validate_name(args.host, "SSH host")
-  if args.cache_max_age < 0:
-    parser.error("--cache-max-age must be non-negative")
   rows = collect_coverage_cached(
       host,
       args.remote_logs,
       args.remote_evaluations,
       args.environment_pattern,
       cache_file=args.cache_file,
-      max_age_seconds=args.cache_max_age,
       refresh=args.refresh_cache,
   )
   if not rows:

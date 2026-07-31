@@ -54,6 +54,25 @@ class ReportClusterEvaluationsTest(absltest.TestCase):
     )
     self.assertEqual(rows[0].missing_runs, 1)
 
+  def test_ignores_hidden_administrative_directories(self):
+    with mock.patch.object(
+        report.downloader,
+        "_remote_run_names",
+        return_value=["run-a", ".incomplete-runs"],
+    ), mock.patch.object(
+        report,
+        "_evaluated_run_names",
+        return_value={"run-a"},
+    ):
+      row = report._collect_environment_coverage(
+          "eagle",
+          PurePosixPath("/logs"),
+          PurePosixPath("/evaluations"),
+          "Go1JoystickFlatTerrain",
+      )
+
+    self.assertEqual(row, report.Coverage("Go1JoystickFlatTerrain", 1, 1))
+
   def test_formats_table_and_status(self):
     table = report.format_table([
         report.Coverage("Go1JoystickFlatTerrain", 3, 3),
@@ -71,7 +90,13 @@ class ReportClusterEvaluationsTest(absltest.TestCase):
       expected = [report.Coverage("Go1JoystickFlatTerrain", 2, 3)]
       with mock.patch.object(
           report, "collect_coverage", return_value=expected
-      ) as collect:
+      ) as collect, mock.patch.object(
+          report,
+          "_environment_names",
+          return_value=["Go1JoystickFlatTerrain"],
+      ), mock.patch.object(
+          report, "_changed_environment_names", return_value=set()
+      ):
         first = report.collect_coverage_cached(
             "eagle",
             PurePosixPath("/logs"),
@@ -88,6 +113,48 @@ class ReportClusterEvaluationsTest(absltest.TestCase):
       self.assertEqual(first, expected)
       self.assertEqual(second, expected)
       collect.assert_called_once()
+
+  def test_refreshes_only_environments_changed_since_previous_invocation(self):
+    with tempfile.TemporaryDirectory() as temporary_directory:
+      cache_file = Path(temporary_directory) / "coverage.json"
+      initial = [
+          report.Coverage("Go1JoystickFlatTerrain", 1, 3),
+          report.Coverage("SpotJoystick", 2, 5),
+      ]
+      updated = report.Coverage("Go1JoystickFlatTerrain", 2, 3)
+      with mock.patch.object(
+          report, "collect_coverage", return_value=initial
+      ), mock.patch.object(
+          report,
+          "_environment_names",
+          return_value=["Go1JoystickFlatTerrain", "SpotJoystick"],
+      ), mock.patch.object(
+          report,
+          "_changed_environment_names",
+          return_value={"Go1JoystickFlatTerrain"},
+      ), mock.patch.object(
+          report, "_collect_environment_coverage", return_value=updated
+      ) as collect_environment:
+        report.collect_coverage_cached(
+            "eagle",
+            PurePosixPath("/logs"),
+            PurePosixPath("/evaluations"),
+            cache_file=cache_file,
+        )
+        rows = report.collect_coverage_cached(
+            "eagle",
+            PurePosixPath("/logs"),
+            PurePosixPath("/evaluations"),
+            cache_file=cache_file,
+        )
+
+      self.assertEqual(rows, [updated, initial[1]])
+      collect_environment.assert_called_once_with(
+          "eagle",
+          PurePosixPath("/logs"),
+          PurePosixPath("/evaluations"),
+          "Go1JoystickFlatTerrain",
+      )
 
   def test_refresh_cache_queries_cluster_again(self):
     with tempfile.TemporaryDirectory() as temporary_directory:
