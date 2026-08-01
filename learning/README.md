@@ -293,15 +293,41 @@ high-pass torque penalty. The default environment is
 The remote run names must match these forms:
 
 ```text
-YYMMDD-baseline-400M-ar<SCALE>-seed<SEED>
-YYMMDD-torquerate-400M-tr<SCALE>-seed<SEED>
-YYMMDD-highpass-400M-hp<SCALE>-f5o1m10-seed<SEED>
+YYMMDD-baseline-<STEPS>M-ar<SCALE>-seed<SEED>
+YYMMDD-torquerate-<STEPS>M-tr<SCALE>-seed<SEED>
+YYMMDD-highpass-<STEPS>M-hp<SCALE>-f<CUTOFF>o1m<M>-seed<SEED>
 ```
 
 `<SCALE>` uses filename-safe scientific notation, such as `2em3` for `2e-3`
-or `1ep2` for `1e+2`. If several dates exist for the same method, scale, and
-seed, the pipeline selects the newest one. By default it skips runs whose
-latest checkpoint is below 400 million environment steps.
+or `1ep2` for `1e+2`. Historical decimal tags use `m10` for `m=1.0` and
+`m15` for `m=1.5`; unambiguous decimal tags with `p` (for example `f2p5` or
+`m0p5`) are also accepted. Each `(cutoff, m)` combination is evaluated and
+plotted as a separate Pareto series. The historical `f5o1m10` series retains
+the `high_pass` method name, so existing manifests and plots stay compatible.
+If several dates exist for the same configured method, scale, and seed, the
+pipeline selects the newest one. By default it skips runs whose latest
+checkpoint is below 400 million environment steps.
+
+To train a grid, submit one Slurm array per penalty scale and `(cutoff, m)`
+pair. `slurm.sh` currently supplies seeds 0 through 4:
+
+```bash
+for cutoff in 2 5 10; do
+  for m in 0.0 1.0 2.0; do
+    for scale in 1e-5 3e-5 1e-4 3e-4; do
+      sbatch slurm.sh hp "$scale" Go1JoystickFlatTerrain "$cutoff" "$m"
+    done
+  done
+done
+```
+
+After training, the usual command discovers these variants alongside the
+existing action-rate, torque-rate, and 5 Hz / `m=1` runs:
+
+```bash
+python -m learning.pareto_cluster submit Go1JoystickFlatTerrain \
+  --run-date YYMMDD
+```
 
 To perform the complete download-and-evaluate workflow:
 
@@ -324,9 +350,9 @@ Downloaded checkpoints are stored under
 `eagle/pareto/<environment>/<run>/checkpoints/`. The pipeline writes
 `pareto_manifest.json` alongside them, containing the selected run,
 method, scale, seed, and checkpoint for every policy. It also verifies that
-runs within each method differ only in penalty scale, seed, and provenance;
-configuration mismatches stop the pipeline instead of silently producing an
-invalid comparison.
+runs within each configured method (including each high-pass cutoff/`m` pair)
+differ only in penalty scale, seed, and provenance; configuration mismatches
+stop the pipeline instead of silently producing an invalid comparison.
 
 Download and evaluation may be run separately. This is useful when downloading
 on a login node and evaluating on a GPU node:
@@ -407,7 +433,8 @@ scale. The default x-axis is
 default panels minimize torque MSSD, torque MSGFD, total torque spectral
 energy, and absolute mechanical energy. Points with reward below 31 are
 excluded. Solid lines connect the nondominated points separately for each
-method, and point labels show the decoded penalty scale.
+method and each high-pass cutoff/`m` configuration, and point labels show the
+decoded penalty scale.
 
 Use a custom reward metric or repeat `--y-metric` to select plot panels:
 
