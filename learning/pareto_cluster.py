@@ -1,9 +1,9 @@
-"""Submit Eagle Pareto evaluation jobs and fetch their results as tar archives.
+"""Submit/evolve Eagle Pareto evaluations and fetch their metric reports.
 
-Run this module on localhost. The ``submit`` command uploads a local manifest
-and starts one H100-oriented Slurm job. The ``fetch`` command packages the
-remote environment results on a CPU worker, downloads one archive, and safely
-extracts it below the local output root.
+``submit`` evaluates policies and retains full trajectory archives on Eagle.
+``metrics`` recomputes selected metrics from those archives without policy
+replay. ``fetch`` downloads compact reports by default, leaving large signal
+archives on the cluster unless ``--include-signals`` is explicitly requested.
 """
 
 from __future__ import annotations
@@ -84,6 +84,47 @@ def submit(args: argparse.Namespace) -> None:
   print(f"Status: ssh {args.host} squeue -j {job_id}")
 
 
+def metrics(args: argparse.Namespace) -> None:
+  """Submits CPU postprocessing over saved batched trajectory archives."""
+  environment = downloader._validate_name(args.environment, "environment name")
+  evaluation_root = args.remote_output_root / environment
+  manifest = evaluation_root / "pareto_manifest.json"
+  command = shlex.join([
+      "python",
+      "-m",
+      "learning.recompute_evaluation_metrics",
+      "--manifest",
+      str(manifest),
+      "--evaluation-root",
+      str(evaluation_root),
+      *[
+          argument
+          for metric in args.metric
+          for argument in ("--metric", metric)
+      ],
+  ])
+  wrapped = (
+      f"cd {shlex.quote(str(args.remote_project_root))} && {command}"
+  )
+  submission = shlex.join([
+      "sbatch",
+      "--parsable",
+      f"--partition={args.partition}",
+      "--nodes=1",
+      "--ntasks=1",
+      f"--cpus-per-task={args.cpus}",
+      f"--mem={args.memory}",
+      f"--time={args.time}",
+      "--job-name=pareto_metrics",
+      f"--wrap={wrapped}",
+  ])
+  job_id = _ssh(args.host, submission).split(";", maxsplit=1)[0]
+  print(f"Submitted Eagle metric job {job_id}.")
+  print(f"Environment: {environment}")
+  print(f"Metrics: {', '.join(args.metric)}")
+  print(f"Status: ssh {args.host} squeue -j {job_id}")
+
+
 def fetch(args: argparse.Namespace) -> None:
   environment = downloader._validate_name(args.environment, "environment name")
   remote_environment = args.remote_output_root / environment
@@ -91,14 +132,22 @@ def fetch(args: argparse.Namespace) -> None:
   remote_transfer = args.remote_output_root / f".pareto-results-{transfer_id}"
   remote_archive = remote_transfer / f"{environment}.tar.gz"
   remote_log = remote_transfer / "tar.log"
-  tar_command = shlex.join([
+  tar_arguments = [
       "tar",
       "-czf",
       str(remote_archive),
+  ]
+  if not args.include_signals:
+    tar_arguments.extend((
+        "--exclude=*/signals.npz",
+        "--exclude=*/rollout.mp4",
+    ))
+  tar_arguments.extend([
       "-C",
       str(args.remote_output_root),
       environment,
   ])
+  tar_command = shlex.join(tar_arguments)
   _ssh(args.host, f"mkdir -p {shlex.quote(str(remote_transfer))}")
   try:
     if _ssh(
@@ -134,7 +183,8 @@ def fetch(args: argparse.Namespace) -> None:
       with tarfile.open(local_archive, "r:gz") as archive:
         archive.extractall(args.local_output_root, filter="data")
     print(
-        "Results downloaded to: "
+        f"{'Full results' if args.include_signals else 'Metric reports'} "
+        "downloaded to: "
         f"{(args.local_output_root / environment).resolve()}"
     )
   finally:
@@ -184,6 +234,41 @@ def _build_parser() -> argparse.ArgumentParser:
   )
   submit_parser.set_defaults(handler=submit)
 
+  metrics_parser = subparsers.add_parser(
+      "metrics",
+      help="Recompute metrics from full trajectory archives on Eagle.",
+  )
+  metrics_parser.add_argument("environment")
+  metrics_parser.add_argument(
+      "--metric",
+      action="append",
+      default=[],
+      choices=(
+          "joint_velocity_mssd",
+          "joint_velocity_msgfd",
+          "smoothness/joint_velocity/"
+          "mssd_mean_squared_second_difference_per_dof",
+          "smoothness/joint_velocity/"
+          "msgfd_mean_absolute_savgol_filter_deviation_per_dof",
+      ),
+      help="Metric to compute; repeat as needed. Defaults to both.",
+  )
+  metrics_parser.add_argument(
+      "--remote-project-root",
+      type=PurePosixPath,
+      default=DEFAULT_PROJECT_ROOT,
+  )
+  metrics_parser.add_argument(
+      "--remote-output-root",
+      type=PurePosixPath,
+      default=DEFAULT_REMOTE_OUTPUT_ROOT,
+  )
+  metrics_parser.add_argument("--partition", default="standard")
+  metrics_parser.add_argument("--cpus", type=int, default=8)
+  metrics_parser.add_argument("--memory", default="64G")
+  metrics_parser.add_argument("--time", default="04:00:00")
+  metrics_parser.set_defaults(handler=metrics)
+
   fetch_parser = subparsers.add_parser("fetch")
   fetch_parser.add_argument("environment")
   fetch_parser.add_argument(
@@ -197,12 +282,20 @@ def _build_parser() -> argparse.ArgumentParser:
       default=DEFAULT_LOCAL_OUTPUT_ROOT,
   )
   fetch_parser.add_argument("--archive-partition", default="standard")
+  fetch_parser.add_argument(
+      "--include-signals",
+      action="store_true",
+      help="Also download large signals.npz trajectory archives and videos.",
+  )
   fetch_parser.set_defaults(handler=fetch)
   return parser
 
 
 def main(argv: Sequence[str] | None = None) -> None:
   args = _build_parser().parse_args(argv)
+  if args.command == "metrics" and not args.metric:
+    from learning import recompute_evaluation_metrics
+    args.metric = list(recompute_evaluation_metrics.DEFAULT_METRICS)
   args.handler(args)
 
 

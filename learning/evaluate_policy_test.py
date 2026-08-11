@@ -460,6 +460,45 @@ class EvaluatePolicyTest(absltest.TestCase):
     self.assertEqual(rows[0]["tracking/linear_velocity_vector_rmse"], 0.0)
     self.assertEqual(rows[0]["tracking/yaw_rate_rmse"], 0.0)
 
+  def test_episode_rows_include_joint_velocity_smoothness(self):
+    time_steps = 5
+    qvel = np.zeros((time_steps, 1, 8))
+    qvel[:, 0, 6] = [0.0, 1.0, 0.0, 1.0, 0.0]
+    signals = {
+        "active": np.ones((time_steps, 1), dtype=bool),
+        "done": np.zeros((time_steps, 1), dtype=bool),
+        "reward": np.zeros((time_steps, 1)),
+        "command": np.zeros((time_steps, 1, 3)),
+        "action": np.zeros((time_steps, 1, 2)),
+        "motor_target": np.zeros((time_steps, 1, 2)),
+        "actuator_force": np.zeros((time_steps, 1, 2)),
+        "local_linear_velocity": np.zeros((time_steps, 1, 3)),
+        "gyro": np.zeros((time_steps, 1, 3)),
+        "upvector": np.broadcast_to(
+            [0.0, 0.0, 1.0], (time_steps, 1, 3)
+        ),
+        "qvel": qvel,
+    }
+
+    row = evaluate_policy._episode_rows(
+        signals, command=None, sample_period=0.02, cutoffs_hz=(1.0,)
+    )[0]
+
+    self.assertAlmostEqual(
+        row[
+            "smoothness/joint_velocity/"
+            "mssd_mean_squared_second_difference_per_dof"
+        ],
+        2.0,
+    )
+    self.assertGreater(
+        row[
+            "smoothness/joint_velocity/"
+            "msgfd_mean_absolute_savgol_filter_deviation_per_dof"
+        ],
+        0.0,
+    )
+
   def test_parse_commands(self):
     commands = evaluate_policy._parse_commands(
         '{"forward": [1, 0, 0], "turn": [0, 0, -0.5]}'

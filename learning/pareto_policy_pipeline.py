@@ -29,20 +29,19 @@ from __future__ import annotations
 
 import argparse
 import copy
-from dataclasses import asdict, dataclass
 import json
-from pathlib import Path, PurePosixPath
 import re
 import shlex
 import shutil
 import subprocess
 import tarfile
 import tempfile
-from typing import Sequence
 import uuid
+from dataclasses import asdict, dataclass
+from pathlib import Path, PurePosixPath
+from typing import Sequence
 
 from learning import download_models_to_evaluate as downloader
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ENVIRONMENT = "Go1JoystickFlatTerrain"
@@ -53,20 +52,24 @@ EVALUATION_COVERAGE_NAME = "pareto_seed_coverage.json"
 DEFAULT_ARCHIVE_PARTITION = "standard"
 
 # The date prefix is captured so repeated sweeps can be deduplicated in favor
-# of the newest run.  The high-pass family fixes f=5 Hz, order=1, and
-# difference order=0 ("m10"); only its hp penalty scale varies.
+# of the newest run.  High-pass cutoff/difference-order combinations are
+# treated as separate methods; the historical f=5 Hz, m=1 combination keeps
+# the plain ``high_pass`` name for manifest and plotting compatibility.
 RUN_PATTERNS = {
     "baseline": re.compile(
-        r"(?P<date>\d{6})-baseline-400M-ar(?P<scale>[0-9]+e[mp][0-9]+)"
+        r"(?P<date>\d{6})-baseline-\d+M-ar(?P<scale>[0-9]+e[mp][0-9]+)"
         r"-seed(?P<seed>\d+)"
     ),
     "torque_rate": re.compile(
-        r"(?P<date>\d{6})-torquerate-400M-tr(?P<scale>[0-9]+e[mp][0-9]+)"
+        r"(?P<date>\d{6})-torquerate-\d+M-tr(?P<scale>[0-9]+e[mp][0-9]+)"
         r"-seed(?P<seed>\d+)"
     ),
     "high_pass": re.compile(
-        r"(?P<date>\d{6})-highpass-400M-hp(?P<scale>[0-9]+e[mp][0-9]+)"
-        r"-f5o1m10-seed(?P<seed>\d+)"
+        r"(?P<date>\d{6})-highpass-\d+M-hp(?P<scale>[0-9]+e[mp][0-9]+)"
+        r"-f(?P<cutoff>[0-9]+(?:p[0-9]+)?)"
+        r"o(?P<filter_order>[0-9]+)"
+        r"m(?P<difference_order>[0-9]+(?:p[0-9]+)?)"
+        r"-seed(?P<seed>\d+)"
     ),
 }
 
@@ -80,6 +83,38 @@ class PolicyRun:
   date: int
   run_name: str
   checkpoint: str | None = None
+  cutoff_hz: float | None = None
+  filter_order: int | None = None
+  difference_order: float | None = None
+
+
+def _decode_decimal_tag(tag: str) -> float:
+  """Decodes an unambiguous decimal tag such as ``2p5``."""
+  return float(tag.replace("p", "."))
+
+
+def _decode_legacy_difference_order(tag: str) -> float:
+  """Decodes the launcher's historical m tags (m10=1.0, m15=1.5)."""
+  if "p" in tag:
+    return _decode_decimal_tag(tag)
+  return int(tag) / 10
+
+
+def high_pass_method(
+    cutoff_hz: float, difference_order: float, filter_order: int = 1
+) -> str:
+  """Returns the stable series name for one high-pass configuration."""
+  if cutoff_hz == 5.0 and difference_order == 1.0:
+    return "high_pass"
+  cutoff = format(cutoff_hz, "g").replace(".", "p")
+  difference = format(difference_order, "g").replace(".", "p")
+  order = "" if filter_order == 1 else f"_o{filter_order}"
+  return f"high_pass_f{cutoff}{order}_m{difference}"
+
+
+def base_method(method: str) -> str:
+  """Returns the reward family for a possibly configured method name."""
+  return "high_pass" if method.startswith("high_pass_f") else method
 
 
 def decode_scale(tag: str) -> float:
@@ -104,13 +139,29 @@ def select_runs(
       date = int(match.group("date"))
       if run_date is not None and date != run_date:
         break
+      cutoff_hz = None
+      filter_order = None
+      difference_order = None
+      configured_method = method
+      if method == "high_pass":
+        cutoff_hz = _decode_decimal_tag(match.group("cutoff"))
+        filter_order = int(match.group("filter_order"))
+        difference_order = _decode_legacy_difference_order(
+            match.group("difference_order")
+        )
+        configured_method = high_pass_method(
+            cutoff_hz, difference_order, filter_order
+        )
       run = PolicyRun(
-          method=method,
+          method=configured_method,
           scale_tag=match.group("scale"),
           scale=decode_scale(match.group("scale")),
           seed=int(match.group("seed")),
           date=date,
           run_name=run_name,
+          cutoff_hz=cutoff_hz,
+          filter_order=filter_order,
+          difference_order=difference_order,
       )
       key = (run.method, run.scale_tag, run.seed)
       if key not in selected or run.date > selected[key].date:
@@ -133,9 +184,9 @@ def _write_manifest(
   payload = {
       "environment": environment,
       "selection": {
-          "baseline": "*baseline-400M-ar*-seed*",
-          "torque_rate": "*torquerate-400M-tr*-seed*",
-          "high_pass": "*highpass-400M-hp*-f5o1m10-seed*",
+          "baseline": "*baseline-*M-ar*-seed*",
+          "torque_rate": "*torquerate-*M-tr*-seed*",
+          "high_pass": "*highpass-*M-hp*-f*o*m*-seed*",
           "duplicate_policy": (
               "newest date for each method, scale, and seed"
           ),
@@ -244,7 +295,7 @@ def _comparable_run_config(
       "baseline": "action_rate",
       "torque_rate": "torque_rate",
       "high_pass": "torque_high_freq",
-  }[method]
+  }[base_method(method)]
   result["environment_config"]["reward_config"]["scales"][reward_name] = (
       "<swept>"
   )

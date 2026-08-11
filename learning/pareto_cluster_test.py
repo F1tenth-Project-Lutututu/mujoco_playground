@@ -50,6 +50,21 @@ class ParetoClusterTest(unittest.TestCase):
         arguments.local_output_root,
         pareto_cluster.DEFAULT_LOCAL_OUTPUT_ROOT,
     )
+    self.assertFalse(arguments.include_signals)
+
+  def test_metrics_accepts_repeatable_metric_selection(self):
+    metric = (
+        "smoothness/joint_velocity/"
+        "mssd_mean_squared_second_difference_per_dof"
+    )
+    arguments = pareto_cluster._build_parser().parse_args([
+        "metrics",
+        "Go1JoystickFlatTerrain",
+        "--metric",
+        metric,
+    ])
+
+    self.assertEqual(arguments.metric, [metric])
 
 
 if __name__ == "__main__":

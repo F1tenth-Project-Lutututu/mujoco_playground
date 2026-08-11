@@ -1,8 +1,8 @@
 """Tests for the policy Pareto pipeline."""
 
 import copy
-from pathlib import Path
 import tempfile
+from pathlib import Path
 from unittest import mock
 
 from absl.testing import absltest
@@ -31,9 +31,33 @@ class ParetoPolicyPipelineTest(absltest.TestCase):
         [
             "260727-baseline-400M-ar1em2-seed0",
             "260727-highpass-400M-hp4em3-f5o1m10-seed2",
+            "260727-highpass-400M-hp4em3-f7o1m10-seed2",
             "260727-torquerate-400M-tr2em4-seed1",
         ],
     )
+
+  def test_select_runs_separates_high_pass_cutoff_and_m_sweeps(self):
+    runs = pareto_policy_pipeline.select_runs([
+        "260729-highpass-400M-hp1em4-f5o1m10-seed0",
+        "260729-highpass-400M-hp1em4-f10o1m10-seed0",
+        "260729-highpass-400M-hp1em4-f5o1m20-seed0",
+        "260729-highpass-400M-hp1em4-f2p5o1m0p5-seed0",
+    ])
+
+    self.assertEqual(
+        {run.method for run in runs},
+        {
+            "high_pass",
+            "high_pass_f10_m1",
+            "high_pass_f5_m2",
+            "high_pass_f2p5_m0p5",
+        },
+    )
+    configured = next(
+        run for run in runs if run.method == "high_pass_f2p5_m0p5"
+    )
+    self.assertEqual(configured.cutoff_hz, 2.5)
+    self.assertEqual(configured.difference_order, 0.5)
 
   def test_select_runs_can_restrict_experiment_date(self):
     runs = pareto_policy_pipeline.select_runs(
@@ -51,6 +75,16 @@ class ParetoPolicyPipelineTest(absltest.TestCase):
             "260729-baseline-400M-ar1em5-seed0",
             "260729-highpass-400M-hp1em5-f5o1m10-seed0",
         ],
+    )
+
+  def test_select_runs_accepts_non_400m_training_duration(self):
+    runs = pareto_policy_pipeline.select_runs([
+        "260730-baseline-1000M-ar1em1-seed0",
+    ])
+
+    self.assertEqual(
+        [run.run_name for run in runs],
+        ["260730-baseline-1000M-ar1em1-seed0"],
     )
 
   def test_checkpoint_complete_requires_network_config(self):

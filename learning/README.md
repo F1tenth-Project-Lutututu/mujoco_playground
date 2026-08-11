@@ -144,6 +144,67 @@ a template. The tool reports missing run directories; it intentionally does
 not duplicate a seed merely because its checkpoint is incomplete or it may
 still be running.
 
+### Recovering incomplete cluster runs
+
+Use `recover_incomplete_cluster_runs.py` when a run directory exists but
+training stopped before producing a usable checkpoint. This is different from
+missing-seed recovery: the seed exists on Eagle, but its latest numeric
+checkpoint is below the required training step.
+
+Run the controller from the local repository, not from an Eagle shell. It
+inspects and modifies the remote log directory over SSH and submits the
+replacement training jobs through Slurm on Eagle. Inspection is read-only by
+default:
+
+```bash
+python -m learning.recover_incomplete_cluster_runs \
+  Go1JoystickRoughTerrainPushesAndDomainRandomization \
+  --run-pattern '260728-*'
+```
+
+The default minimum usable checkpoint is 400,000,000 steps. Override it when
+the original experiment used a different training length:
+
+```bash
+python -m learning.recover_incomplete_cluster_runs \
+  Go1JoystickRoughTerrainPushesAndDomainRandomization \
+  --run-pattern '260728-*' \
+  --min-checkpoint-step 800000000
+```
+
+The dry-run report shows every selected run, its latest checkpoint, the saved
+configuration used as a template, and the exact seed-specific `sbatch`
+command. A completed sibling from the same experiment family is preferred as
+the configuration template. If every seed in a family stopped early, each
+run's own `checkpoints/run_config.json` is used instead.
+
+After reviewing the report, add `--execute` to recover and resubmit the runs:
+
+```bash
+python -m learning.recover_incomplete_cluster_runs \
+  Go1JoystickRoughTerrainPushesAndDomainRandomization \
+  --run-pattern '260728-*' \
+  --execute
+```
+
+Execution does not delete the incomplete checkpoints. Before submitting each
+replacement, it moves the old run directory to:
+
+```text
+logs/<ENVIRONMENT>/.incomplete-runs/<RUN-NAME>
+```
+
+This frees the original run name while retaining the failed run for inspection
+or manual restoration. The destination must not already exist; if it does, the
+script stops rather than overwriting the earlier archive. Keep
+`--run-pattern` narrow enough to select only the intended experiment cohort.
+The local and Eagle checkouts should use compatible versions of `slurm.sh`.
+
+This command recovers training runs only. It does not repair malformed
+evaluation reports or resubmit evaluation jobs. Use
+`diagnose_cluster_evaluations.py` first to distinguish `NOT_EVALUATED` runs
+with low checkpoints from invalid reports and transient storage errors.
+
 ### Reproducible policy evaluation
 
 Use the constant-command evaluator to compare policies with matched reset
@@ -232,15 +293,41 @@ high-pass torque penalty. The default environment is
 The remote run names must match these forms:
 
 ```text
-YYMMDD-baseline-400M-ar<SCALE>-seed<SEED>
-YYMMDD-torquerate-400M-tr<SCALE>-seed<SEED>
-YYMMDD-highpass-400M-hp<SCALE>-f5o1m10-seed<SEED>
+YYMMDD-baseline-<STEPS>M-ar<SCALE>-seed<SEED>
+YYMMDD-torquerate-<STEPS>M-tr<SCALE>-seed<SEED>
+YYMMDD-highpass-<STEPS>M-hp<SCALE>-f<CUTOFF>o1m<M>-seed<SEED>
 ```
 
 `<SCALE>` uses filename-safe scientific notation, such as `2em3` for `2e-3`
-or `1ep2` for `1e+2`. If several dates exist for the same method, scale, and
-seed, the pipeline selects the newest one. By default it skips runs whose
-latest checkpoint is below 400 million environment steps.
+or `1ep2` for `1e+2`. Historical decimal tags use `m10` for `m=1.0` and
+`m15` for `m=1.5`; unambiguous decimal tags with `p` (for example `f2p5` or
+`m0p5`) are also accepted. Each `(cutoff, m)` combination is evaluated and
+plotted as a separate Pareto series. The historical `f5o1m10` series retains
+the `high_pass` method name, so existing manifests and plots stay compatible.
+If several dates exist for the same configured method, scale, and seed, the
+pipeline selects the newest one. By default it skips runs whose latest
+checkpoint is below 400 million environment steps.
+
+To train a grid, submit one Slurm array per penalty scale and `(cutoff, m)`
+pair. `slurm.sh` currently supplies seeds 0 through 4:
+
+```bash
+for cutoff in 2 5 10; do
+  for m in 0.0 1.0 2.0; do
+    for scale in 1e-5 3e-5 1e-4 3e-4; do
+      sbatch slurm.sh hp "$scale" Go1JoystickFlatTerrain "$cutoff" "$m"
+    done
+  done
+done
+```
+
+After training, the usual command discovers these variants alongside the
+existing action-rate, torque-rate, and 5 Hz / `m=1` runs:
+
+```bash
+python -m learning.pareto_cluster submit Go1JoystickFlatTerrain \
+  --run-date YYMMDD
+```
 
 To perform the complete download-and-evaluate workflow:
 
@@ -263,9 +350,9 @@ Downloaded checkpoints are stored under
 `eagle/pareto/<environment>/<run>/checkpoints/`. The pipeline writes
 `pareto_manifest.json` alongside them, containing the selected run,
 method, scale, seed, and checkpoint for every policy. It also verifies that
-runs within each method differ only in penalty scale, seed, and provenance;
-configuration mismatches stop the pipeline instead of silently producing an
-invalid comparison.
+runs within each configured method (including each high-pass cutoff/`m` pair)
+differ only in penalty scale, seed, and provenance; configuration mismatches
+stop the pipeline instead of silently producing an invalid comparison.
 
 Download and evaluation may be run separately. This is useful when downloading
 on a login node and evaluating on a GPU node:
@@ -346,7 +433,8 @@ scale. The default x-axis is
 default panels minimize torque MSSD, torque MSGFD, total torque spectral
 energy, and absolute mechanical energy. Points with reward below 31 are
 excluded. Solid lines connect the nondominated points separately for each
-method, and point labels show the decoded penalty scale.
+method and each high-pass cutoff/`m` configuration, and point labels show the
+decoded penalty scale.
 
 Use a custom reward metric or repeat `--y-metric` to select plot panels:
 
@@ -426,6 +514,35 @@ checkpoint does not waste the remaining allocation. Evaluation caching is
 unchanged, so resubmitting skips reports whose checkpoint, settings, code, and
 dependencies have not changed.
 
+Cluster evaluations retain compressed, batched `signals.npz` archives on
+Eagle. These include joint positions, velocities and accelerations; controls,
+actuator forces and velocities; generalized actuator and constraint forces;
+body/site poses; sensors, observations, contacts, commands, and perturbations.
+This full experiment record allows new trajectory-derived metrics to be
+computed without replaying policies.
+
+Recompute the currently supported joint-velocity metrics across every run in
+an environment on an Eagle CPU worker:
+
+```bash
+python -m learning.pareto_cluster metrics Go1JoystickFlatTerrain
+```
+
+Select individual metrics with repeatable short names:
+
+```bash
+python -m learning.pareto_cluster metrics Go1JoystickFlatTerrain \
+  --metric joint_velocity_mssd \
+  --metric joint_velocity_msgfd
+```
+
+The worker obtains exact archive paths from `pareto_manifest.json`, loads each
+archive once, and computes all rollouts in vectorized batches. Archives are
+streamed one policy at a time to bound host memory; it does not recursively
+scan the evaluation tree or read one file per rollout. The command updates
+`rollouts.csv`, scenario and top-level `summary.json`, and `summary.csv`
+in place. Its Slurm job ID and status command are printed on submission.
+
 After the Slurm job finishes, package the environment's result directory on an
 Eagle CPU worker and download it as one compressed tar archive:
 
@@ -435,8 +552,11 @@ python -m learning.pareto_cluster fetch Go1JoystickFlatTerrain
 
 Results are safely extracted by default under
 `evaluations/pareto_cluster/<environment>/`. The temporary remote archive is
-deleted after either success or failure. Custom roots must match those used at
-submission:
+deleted after either success or failure. By default, fetch excludes the large
+trajectory archives and videos, transferring only the manifest and metric
+reports needed for local plotting. Add `--include-signals` only when a local
+copy of the full experiment record is required. Custom roots must match those
+used at submission:
 
 ```bash
 python -m learning.pareto_cluster fetch Go1JoystickFlatTerrain \

@@ -73,14 +73,14 @@ def main(argv: Sequence[str] | None = None) -> None:
         "remote repository to the same revision as localhost before "
         "submitting."
     )
-  required_evaluator_version = 2
+  required_evaluator_version = 3
   evaluator_version = getattr(
       evaluate_policy, "EVALUATOR_COMPATIBILITY_VERSION", 0
   )
   if evaluator_version < required_evaluator_version:
     raise RuntimeError(
         "The Eagle checkout is older than the cluster Pareto worker: "
-        "evaluate_policy.py lacks quadruped API compatibility "
+        "evaluate_policy.py lacks full trajectory archive support "
         f"(version {evaluator_version}, required "
         f"{required_evaluator_version}). Update the remote repository to "
         "the same revision as localhost before submitting."
@@ -167,7 +167,9 @@ def main(argv: Sequence[str] | None = None) -> None:
   evaluate_all_models.EPISODE_LENGTH = args.episode_length
   evaluate_all_models.REQUIRE_CUDA = True
   evaluate_all_models.RENDER_VIDEO = False
-  evaluate_all_models.SAVE_SIGNALS = False
+  # Keep a complete batched experiment record on cluster storage so new
+  # trajectory-derived metrics can be computed without replaying policies.
+  evaluate_all_models.SAVE_SIGNALS = True
   evaluate_all_models.USE_SAVED_ENVIRONMENT_CONFIG = True
   evaluate_all_models.TORQUE_NORMALIZATION_MODES = {"raw_torque": False}
   evaluate_all_models.CONTINUE_ON_ERROR = args.continue_on_error
@@ -185,6 +187,7 @@ def main(argv: Sequence[str] | None = None) -> None:
       "num_random_tasks": args.num_random_tasks,
       "task_seed": args.task_seed,
       "episode_length": args.episode_length,
+      "save_signals": True,
       "continue_on_error": args.continue_on_error,
       "xla_python_client_preallocate": os.environ[
           "XLA_PYTHON_CLIENT_PREALLOCATE"
