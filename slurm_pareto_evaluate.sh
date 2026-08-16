@@ -12,7 +12,7 @@
 #SBATCH --mem=64G
 #SBATCH --time=1-00:00:00
 
-set -euo pipefail
+#set -euo pipefail
 
 if (( $# < 3 )); then
   echo "Usage: sbatch $0 <environment-or-manifest> <models-root> <output-root> [num-random-tasks] [task-seed] [run-date]" >&2

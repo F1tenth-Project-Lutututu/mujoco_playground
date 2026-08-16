@@ -13,7 +13,7 @@
 #SBATCH --array=0-4
 #SBATCH --gres=gpu:1
 
-set -euo pipefail
+#set -euo pipefail
 
 # Trains five seeds for one linear/angular velocity reward-weight pair.
 #
@@ -35,9 +35,11 @@ fi
 LINEAR_WEIGHT=$1
 ANGULAR_WEIGHT=$2
 TERMINATION_WEIGHT=${3:--1.0}
-ENV_NAME=${4:-SilverBadgerJoystickFlatTerrain}
+#ENV_NAME=${4:-SilverBadgerJoystickFlatTerrain}
+ENV_NAME=${4:-SilverBadgerJoystickRoughTerrain}
+#ENV_NAME=${4:-Go1JoystickRoughTerrain}
 NUM_TIMESTEPS=${5:-400000000}
-WANDB_PROJECT=${6:-spectral_playground_silver_badger_factor_search}
+WANDB_PROJECT=${6:-spectral_playground_silver_badger_rough_factor_search}
 ENTROPY_COST=${7:-1e-2}
 ACTION_SCALE=${8:-1.0}
 SEED=${SLURM_ARRAY_TASK_ID:-0}
@@ -72,7 +74,7 @@ ANGULAR_TAG=$(sed 's/[^[:alnum:]]/p/g' <<< "$ANGULAR_WEIGHT")
 TERMINATION_TAG=$(sed 's/[^[:alnum:]]/p/g' <<< "$TERMINATION_WEIGHT")
 ENTROPY_TAG=$(sed 's/[^[:alnum:]]/p/g' <<< "$ENTROPY_COST")
 ACTION_SCALE_TAG=$(sed 's/[^[:alnum:]]/p/g' <<< "$ACTION_SCALE")
-EXPERIMENT="silver-badger-tracking-lin${LINEAR_TAG}-ang${ANGULAR_TAG}-term${TERMINATION_TAG}-ent${ENTROPY_TAG}-act${ACTION_SCALE_TAG}"
+EXPERIMENT="sb-tracking-lin${LINEAR_TAG}-ang${ANGULAR_TAG}-term${TERMINATION_TAG}-ent${ENTROPY_TAG}-act${ACTION_SCALE_TAG}"
 
 eval "$(/mnt/storage_6/project_data/pl0467-01/soft/miniconda3/bin/conda shell.bash hook)"
 conda activate spectral_fixed
