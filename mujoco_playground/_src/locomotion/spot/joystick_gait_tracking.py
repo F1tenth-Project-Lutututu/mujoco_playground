@@ -69,6 +69,7 @@ def default_config() -> config_dict.ConfigDict:
               hip_splay=-0.5,
           ),
           tracking_sigma=0.25,
+          action_rate_use_second_difference=False,
       ),
       command_config=config_dict.create(
           lin_vel_x=[-1.0, 1.0],
@@ -482,7 +483,9 @@ class JoystickGaitTracking(spot_base.SpotEnv):
             self.get_global_linvel(data), info["gait"]
         ),
         "hip_splay": self._cost_hip_splay(data.qpos[7:]),
-        "action_rate": self._cost_action_rate(action, info["last_act"]),
+        "action_rate": self._cost_action_rate(
+            action, info["last_act"], info["last_last_act"]
+        ),
         "torque_high_freq": torque_high_freq,
         "torque_rate": torque_rate,
     }
@@ -522,9 +525,17 @@ class JoystickGaitTracking(spot_base.SpotEnv):
     return jp.sum(jp.square(current - self._hx_default_pose))
 
   def _cost_action_rate(
-      self, action: jax.Array, last_action: jax.Array
+      self,
+      action: jax.Array,
+      last_action: jax.Array,
+      last_last_action: jax.Array,
   ) -> jax.Array:
-    return jp.sum(jp.square(action - last_action))
+    cost = jp.sum(jp.square(action - last_action))
+    if self._config.reward_config.action_rate_use_second_difference:
+      cost += jp.sum(
+          jp.square(action - 2 * last_action + last_last_action)
+      )
+    return cost
 
   def _cost_lin_vel_z(self, global_linvel, gait: jax.Array) -> jax.Array:  # pylint: disable=redefined-outer-name
     # Penalize z axis base linear velocity unless pronk or bound.

@@ -65,6 +65,7 @@ def default_config() -> config_dict.ConfigDict:
               energy=0.0,
               dof_acc=0.0,
           ),
+          action_rate_use_second_difference=False,
       ),
       impl="warp",
       naconmax=30 * 8192,
@@ -187,6 +188,7 @@ class Handstand(go1_base.Go1Env):
         "step": 0,
         "rng": rng,
         "last_act": jp.zeros(self.mjx_model.nu),
+        "last_last_act": jp.zeros(self.mjx_model.nu),
     }
     metrics = {}
     for k in self._config.reward_config.scales.keys():
@@ -220,6 +222,7 @@ class Handstand(go1_base.Go1Env):
     reward = jp.clip(sum(rewards.values()) * self.dt, 0.0, 10000.0)
 
     state.info["step"] += 1
+    state.info["last_last_act"] = state.info["last_act"]
     state.info["last_act"] = action
     for k, v in rewards.items():
       state.metrics[f"reward/{k}"] = v
@@ -381,7 +384,12 @@ class Handstand(go1_base.Go1Env):
   def _cost_action_rate(
       self, act: jax.Array, info: dict[str, Any]
   ) -> jax.Array:
-    return jp.sum(jp.square(act - info["last_act"]))
+    cost = jp.sum(jp.square(act - info["last_act"]))
+    if self._config.reward_config.action_rate_use_second_difference:
+      cost += jp.sum(
+          jp.square(act - 2 * info["last_act"] + info["last_last_act"])
+      )
+    return cost
 
   def _cost_joint_pos_limits(self, qpos: jax.Array) -> jax.Array:
     out_of_limits = -jp.clip(qpos - self._soft_lowers, None, 0.0)

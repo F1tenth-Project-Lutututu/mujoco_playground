@@ -256,6 +256,7 @@ def default_config() -> config_dict.ConfigDict:
               feet_air_time=0.1,
           ),
           tracking_sigma=0.25,
+          action_rate_use_second_difference=False,
           max_foot_height=0.1,
           torque_highpass_cutoff_hz=5.0,
           torque_highpass_order=1,
@@ -905,8 +906,10 @@ class Joystick(go1_base.Go1Env):
   def _cost_action_rate(
       self, act: jax.Array, last_act: jax.Array, last_last_act: jax.Array
   ) -> jax.Array:
-    del last_last_act  # Unused.
-    return jp.sum(jp.square(act - last_act))
+    cost = jp.sum(jp.square(act - last_act))
+    if self._config.reward_config.action_rate_use_second_difference:
+      cost += jp.sum(jp.square(act - 2 * last_act + last_last_act))
+    return cost
 
   def _cost_torque_rate(
       self, torque: jax.Array, last_torque: jax.Array

@@ -56,6 +56,7 @@ def default_config() -> config_dict.ConfigDict:
               torques=0.0,
               action_rate=0.0,
           ),
+          action_rate_use_second_difference=False,
       ),
       impl="warp",
       naconmax=30 * 8192,
@@ -315,5 +316,8 @@ class Getup(spot_base.SpotEnv):
       self, act: jax.Array, info: dict[str, Any]
   ) -> jax.Array:
     c1 = jp.sum(jp.square(act - info["last_act"]))
-    c2 = jp.sum(jp.square(act - 2 * info["last_act"] + info["last_last_act"]))
-    return c1 + c2
+    if self._config.reward_config.action_rate_use_second_difference:
+      c1 += jp.sum(
+          jp.square(act - 2 * info["last_act"] + info["last_last_act"])
+      )
+    return c1

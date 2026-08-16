@@ -31,12 +31,32 @@ class JoystickGaitTrackingTest(absltest.TestCase):
 
   def test_action_rate_is_squared_action_difference(self):
     env = object.__new__(joystick_gait_tracking.JoystickGaitTracking)
+    env._config = (  # pylint: disable=protected-access
+        joystick_gait_tracking.default_config()
+    )
 
     cost = env._cost_action_rate(  # pylint: disable=protected-access
-        jp.array([1.0, -1.0]), jp.array([0.5, 0.0])
+        jp.array([1.0, -1.0]),
+        jp.array([0.5, 0.0]),
+        jp.array([0.25, 0.5]),
     )
 
     self.assertAlmostEqual(float(cost), 1.25)
+
+  def test_action_smoothness_adds_squared_second_difference(self):
+    env = object.__new__(joystick_gait_tracking.JoystickGaitTracking)
+    env._config = (  # pylint: disable=protected-access
+        joystick_gait_tracking.default_config()
+    )
+    env._config.reward_config.action_rate_use_second_difference = True  # pylint: disable=protected-access
+
+    cost = env._cost_action_rate(  # pylint: disable=protected-access
+        jp.array([1.0, -1.0]),
+        jp.array([0.5, 0.0]),
+        jp.array([0.25, 0.5]),
+    )
+
+    self.assertAlmostEqual(float(cost), 1.5625)
 
   def test_reward_path_uses_action_for_action_rate(self):
     env = object.__new__(joystick_gait_tracking.JoystickGaitTracking)
@@ -60,6 +80,7 @@ class JoystickGaitTrackingTest(absltest.TestCase):
         "foot_height": jp.asarray(0.1),
         "gait": jp.asarray(0),
         "last_act": jp.zeros(2),
+        "last_last_act": jp.zeros(2),
     }
 
     _, penalties = env._get_reward(  # pylint: disable=protected-access

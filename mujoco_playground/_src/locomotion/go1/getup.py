@@ -61,6 +61,7 @@ def default_config() -> config_dict.ConfigDict:
               dof_acc=-2.5e-7,
               dof_vel=-0.1,
           ),
+          action_rate_use_second_difference=False,
       ),
       impl="warp",
       naconmax=30 * 8192,
@@ -364,8 +365,11 @@ class Getup(go1_base.Go1Env):
       self, act: jax.Array, info: dict[str, Any]
   ) -> jax.Array:
     c1 = jp.sum(jp.square(act - info["last_act"]))
-    c2 = jp.sum(jp.square(act - 2 * info["last_act"] + info["last_last_act"]))
-    return c1 + c2
+    if self._config.reward_config.action_rate_use_second_difference:
+      c1 += jp.sum(
+          jp.square(act - 2 * info["last_act"] + info["last_last_act"])
+      )
+    return c1
 
   def _cost_joint_pos_limits(self, qpos: jax.Array) -> jax.Array:
     out_of_limits = -jp.clip(qpos - self._soft_lowers, None, 0.0)

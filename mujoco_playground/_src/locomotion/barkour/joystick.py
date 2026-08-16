@@ -93,6 +93,7 @@ def default_config() -> config_dict.ConfigDict:
           ),
           # Tracking reward = exp(-error^2/sigma).
           tracking_sigma=0.25,
+          action_rate_use_second_difference=False,
       ),
       # Velocity of perturbation kick applied to the base, in m/s.
       velocity_kick=[0.1, 1.0],
@@ -227,6 +228,7 @@ class Joystick(mjx_env.MjxEnv):
     info = {
         "rng": rng,
         "last_act": jp.zeros(self.mjx_model.nu),
+        "last_last_act": jp.zeros(self.mjx_model.nu),
         "last_vel": jp.zeros(self.mjx_model.nv - 6),
         "command": self.sample_command(cmd_rng),
         "last_contact": jp.zeros(len(_FEET_SITES), dtype=bool),
@@ -331,6 +333,7 @@ class Joystick(mjx_env.MjxEnv):
     )
 
     # Bookkeeping.
+    state.info["last_last_act"] = state.info["last_act"]
     state.info["last_act"] = action
     state.info["last_vel"] = joint_vel
     state.info["step"] += 1
@@ -439,7 +442,9 @@ class Joystick(mjx_env.MjxEnv):
         "torques": self._cost_torques(data.qfrc_actuator),
         "torque_high_freq": torque_high_freq,
         "torque_rate": torque_rate,
-        "action_rate": self._cost_action_rate(action, info["last_act"]),
+        "action_rate": self._cost_action_rate(
+            action, info["last_act"], info["last_last_act"]
+        ),
         "stand_still": self._cost_stand_still(info["command"], data.qpos[7:]),
         "termination": self._cost_termination(done, info["step"]),
         "feet_air_time": self._reward_feet_air_time(
@@ -481,9 +486,14 @@ class Joystick(mjx_env.MjxEnv):
     # Penalize torques.
     return jp.sqrt(jp.sum(jp.square(torques))) + jp.sum(jp.abs(torques))
 
-  def _cost_action_rate(self, act: jax.Array, last_act: jax.Array) -> jax.Array:
+  def _cost_action_rate(
+      self, act: jax.Array, last_act: jax.Array, last_last_act: jax.Array
+  ) -> jax.Array:
     # Penalize changes in actions.
-    return jp.sum(jp.square(act - last_act))
+    cost = jp.sum(jp.square(act - last_act))
+    if self._config.reward_config.action_rate_use_second_difference:
+      cost += jp.sum(jp.square(act - 2 * last_act + last_last_act))
+    return cost
 
   def _cost_stand_still(
       self,

@@ -21,11 +21,12 @@
 #set -euo pipefail
 
 # Usage:
-#   sbatch slurm.sh <ar|tr|hp> <penalty-strength> [environment] \
+#   sbatch slurm.sh <ar|as|tr|hp> <penalty-strength> [environment] \
 #     [cutoff-hz] [difference-order] [num-timesteps]
 #
 # Examples:
 #   sbatch slurm.sh ar 1e-1 BarkourJoystick
+#   sbatch slurm.sh as 1e-1 BarkourJoystick
 #   sbatch slurm.sh tr 8e-4 BerkeleyHumanoidJoystickFlatTerrain
 #   sbatch slurm.sh hp 8e-3 SpotFlatTerrainJoystick
 #   sbatch slurm.sh hp 8e-3 SpotFlatTerrainJoystick 10.0 2.0
@@ -222,6 +223,12 @@ case "$METHOD" in
       '{"reward_config.scales.action_rate": -%s}' \
       "$PENALTY_STRENGTH")
     ;;
+  as)
+    METHOD_NAME=actionsmoothness
+    PLAYGROUND_OVERRIDES=$(printf \
+      '{"reward_config.scales.action_rate": -%s, "reward_config.action_rate_use_second_difference": true}' \
+      "$PENALTY_STRENGTH")
+    ;;
   tr)
     METHOD_NAME=torquerate
     PLAYGROUND_OVERRIDES=$(printf \
@@ -244,7 +251,7 @@ case "$METHOD" in
       "$DIFFERENCE_ORDER")
     ;;
   *)
-    echo "Unknown method '$METHOD'. Choose one of: ar, tr, hp." >&2
+    echo "Unknown method '$METHOD'. Choose one of: ar, as, tr, hp." >&2
     exit 2
     ;;
 esac

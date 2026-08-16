@@ -1,5 +1,6 @@
 #sbatch slurm.sh <method> <strength> [environment] [cutoff-hz] [difference-order]
 #sbatch slurm.sh ar 1e-1 BarkourJoystick
+#sbatch slurm.sh as 1e-1 BarkourJoystick
 #sbatch slurm.sh tr 8e-4 BerkeleyHumanoidJoystickFlatTerrain
 #sbatch slurm.sh hp 8e-3 SpotFlatTerrainJoystick
 
@@ -162,4 +163,3 @@ for P in 2e-5 4e-5 6e-5 8e-5; do
   #sbatch slurm.sh tr $P Op3Joystick
   #sbatch slurm.sh hp $P Op3Joystick 5.0 1.0
 done
-
