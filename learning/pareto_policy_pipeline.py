@@ -56,6 +56,10 @@ DEFAULT_ARCHIVE_PARTITION = "standard"
 # treated as separate methods; the historical f=5 Hz, m=1 combination keeps
 # the plain ``high_pass`` name for manifest and plotting compatibility.
 RUN_PATTERNS = {
+    "action_smoothness": re.compile(
+        r"(?P<date>\d{6})-actionsmoothness-\d+M-"
+        r"as(?P<scale>[0-9]+e[mp][0-9]+)-seed(?P<seed>\d+)"
+    ),
     "baseline": re.compile(
         r"(?P<date>\d{6})-baseline-\d+M-ar(?P<scale>[0-9]+e[mp][0-9]+)"
         r"-seed(?P<seed>\d+)"
@@ -184,6 +188,7 @@ def _write_manifest(
   payload = {
       "environment": environment,
       "selection": {
+          "action_smoothness": "*actionsmoothness-*M-as*-seed*",
           "baseline": "*baseline-*M-ar*-seed*",
           "torque_rate": "*torquerate-*M-tr*-seed*",
           "high_pass": "*highpass-*M-hp*-f*o*m*-seed*",
@@ -292,6 +297,7 @@ def _comparable_run_config(
   result.pop("command", None)
   result.get("ppo_config", {}).pop("seed", None)
   reward_name = {
+      "action_smoothness": "action_rate",
       "baseline": "action_rate",
       "torque_rate": "torque_rate",
       "high_pass": "torque_high_freq",

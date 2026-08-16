@@ -20,47 +20,94 @@ Example:
 
 Each point pools all random-task rollouts and seeds for one method/penalty
 scale.  Reward is maximized and every configured y-axis metric is minimized.
+Local evaluations are preferred when complete; downloaded cluster evaluations
+are used automatically otherwise.  Plots from either source share one results
+directory.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
-from dataclasses import dataclass
 import json
 import math
+import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib import cm
+from matplotlib import colors as matplotlib_colors
 
 from learning import pareto_policy_pipeline
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_CLUSTER_ROOT = PROJECT_ROOT / "evaluations" / "pareto_cluster"
+DEFAULT_RESULTS_ROOT = PROJECT_ROOT / "evaluations" / "pareto_results"
 DEFAULT_ENVIRONMENT = "Go1JoystickFlatTerrain"
 DEFAULT_X_METRIC = "eval_reward_means/total_without_regularization"
 MIN_X = 31.0
 AGGREGATE_CACHE_NAME = "pareto_aggregates.csv"
 AGGREGATE_CACHE_MANIFEST_NAME = "pareto_aggregates_cache.json"
-AGGREGATE_CACHE_VERSION = 2
+AGGREGATE_CACHE_VERSION = 3
 DEFAULT_Y_METRICS = (
     "smoothness/torque/mssd_mean_squared_second_difference_per_dof",
     "smoothness/torque/msgfd_mean_absolute_savgol_filter_deviation_per_dof",
+    "smoothness/joint_velocity/mssd_mean_squared_second_difference_per_dof",
+    "smoothness/joint_velocity/msgfd_mean_absolute_savgol_filter_deviation_per_dof",
     "torque_spectrum/eval/total_energy_per_step",
     "tracking/absolute_mechanical_energy",
 )
 METHOD_LABELS = {
+    "action_smoothness": "Action smoothness",
     "baseline": "Action rate",
     "torque_rate": "Torque rate",
     "high_pass": "High-pass torque",
 }
 METHOD_COLORS = {
+    "action_smoothness": "#B279A2",
     "baseline": "#4C78A8",
     "torque_rate": "#F58518",
     "high_pass": "#54A24B",
 }
+
+
+def _method_label(method: str) -> str:
+  """Returns a readable label, including configured high-pass variants."""
+  if method in METHOD_LABELS:
+    return METHOD_LABELS[method]
+  # Configured method IDs use p as a filesystem-safe decimal point.
+  configured = re.fullmatch(
+      r"high_pass_f(?P<f>[0-9]+(?:p[0-9]+)?)"
+      r"(?:_o(?P<o>[0-9]+))?_m(?P<m>[0-9]+(?:p[0-9]+)?)",
+      method,
+  )
+  if configured is None:
+    return method.replace("_", " ").title()
+  cutoff = configured.group("f").replace("p", ".")
+  difference = configured.group("m").replace("p", ".")
+  order = configured.group("o")
+  order_text = "" if order is None else f", order={order}"
+  return f"High-pass torque (f={cutoff} Hz, m={difference}{order_text})"
+
+
+def _method_color(method: str) -> str:
+  """Returns stable colors while preserving colors of historical methods."""
+  if method in METHOD_COLORS:
+    return METHOD_COLORS[method]
+  palette = (
+      "#2E8B57", "#8E6C8A", "#B279A2", "#59A14F",
+      "#76B7B2", "#EDC948", "#AF7AA1", "#9C755F",
+  )
+  return palette[sum(map(ord, method)) % len(palette)]
+
+
+def _method_order(points: Sequence["Point"]) -> list[str]:
+  present = {point.method for point in points}
+  historical = [method for method in METHOD_LABELS if method in present]
+  return historical + sorted(present - set(historical))
 
 
 @dataclass(frozen=True)
@@ -74,6 +121,28 @@ class Point:
   seed_count: int
   expected_seed_count: int
   missing_seeds: str
+
+
+class MissingEvaluationMetricsError(ValueError):
+  """Raised when reports predate metrics requested by the plotter."""
+
+
+def _require_metrics(
+    aggregates: Sequence[dict[str, str]], metrics: Sequence[str]
+) -> None:
+  missing = sorted({
+      metric
+      for metric in metrics
+      if any(metric not in row or not row[metric] for row in aggregates)
+  })
+  if missing:
+    formatted = "\n".join(f"  {metric}" for metric in missing)
+    raise MissingEvaluationMetricsError(
+        "The evaluation reports do not contain these requested metrics:\n"
+        f"{formatted}\n"
+        "Regenerate the policy evaluations with the current evaluator before "
+        "plotting."
+    )
 
 
 def pareto_mask(x: np.ndarray, y: np.ndarray) -> np.ndarray:
@@ -90,6 +159,19 @@ def pareto_mask(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     dominates[index] = False
     result[index] = not np.any(dominates)
   return result
+
+
+def _normalized_log_scales(points: Sequence[Point]) -> np.ndarray:
+  """Maps positive penalty scales to [0, 1] within one method."""
+  scales = np.asarray([point.scale for point in points], dtype=float)
+  if np.any(scales <= 0):
+    values = scales
+  else:
+    values = np.log10(scales)
+  span = np.ptp(values)
+  if span == 0:
+    return np.full(values.shape, 0.5)
+  return (values - np.min(values)) / span
 
 
 def _float(row: dict[str, str], metric: str) -> float:
@@ -137,6 +219,45 @@ def _report_paths(
       raise FileNotFoundError(f"Evaluation report not found: {report}")
     reports.append((run, report))
   return reports
+
+
+def _source_is_available(manifest: Path, evaluation_root: Path) -> bool:
+  """Whether a source has a readable manifest and every referenced report."""
+  if not manifest.is_file():
+    return False
+  try:
+    _report_paths(manifest, evaluation_root)
+  except (OSError, KeyError, TypeError, ValueError):
+    return False
+  return True
+
+
+def _default_source(environment: str) -> tuple[Path, Path]:
+  """Selects complete local evaluations first, then downloaded cluster data."""
+  local_root = pareto_policy_pipeline.DEFAULT_OUTPUT_ROOT / environment
+  local_manifest = (
+      pareto_policy_pipeline.DEFAULT_LOCAL_ROOT
+      / environment
+      / pareto_policy_pipeline.MANIFEST_NAME
+  )
+  cluster_root = DEFAULT_CLUSTER_ROOT / environment
+  cluster_manifest = cluster_root / pareto_policy_pipeline.MANIFEST_NAME
+  candidates = (
+      ("local", local_manifest, local_root),
+      ("cluster", cluster_manifest, cluster_root),
+  )
+  for label, manifest, evaluation_root in candidates:
+    if _source_is_available(manifest, evaluation_root):
+      print(f"Using {label} Pareto evaluations: {evaluation_root}")
+      return manifest, evaluation_root
+  checked = "\n".join(
+      f"  {label}: manifest={manifest}, reports={evaluation_root / 'raw_torque'}"
+      for label, manifest, evaluation_root in candidates
+  )
+  raise FileNotFoundError(
+      f"No complete Pareto evaluations found for {environment!r}. Checked:\n"
+      f"{checked}"
+  )
 
 
 def _input_signature(
@@ -334,14 +455,20 @@ def plot(
     x_metric: str,
     y_metrics: Sequence[str],
     xlim: tuple[float, float | None] | None = None,
+    scale_encoding: str = "labels",
 ) -> Path:
+  """Plots Pareto fronts with one of several penalty-scale encodings."""
+  if scale_encoding not in {"labels", "size", "opacity", "arrows"}:
+    raise ValueError(f"Unknown scale encoding: {scale_encoding!r}")
   columns = 2
   rows = math.ceil(len(y_metrics) / columns)
   figure, axes = plt.subplots(
       rows, columns, figsize=(7.0 * columns, 5.2 * rows), squeeze=False
   )
   aggregates = load_aggregates(manifest, evaluation_root)
+  _require_metrics(aggregates, (x_metric, *y_metrics))
   csv_rows = []
+  method_scale_ranges: dict[str, tuple[float, float]] = {}
   for axis, y_metric in zip(axes.flat, y_metrics):
     points = list(
         _points_from_aggregates(aggregates, x_metric, y_metric)
@@ -368,16 +495,38 @@ def plot(
       raise ValueError(
           f"No points for {y_metric!r} have {x_metric!r} {selected_range}."
       )
-    for method in METHOD_LABELS:
+    for method in _method_order(points):
       method_points = [point for point in points if point.method == method]
       if not method_points:
         continue
       x = np.asarray([point.x for point in method_points])
       y = np.asarray([point.y for point in method_points])
+      normalized_scales = _normalized_log_scales(method_points)
+      method_scale_ranges[method] = (
+          min(point.scale for point in method_points),
+          max(point.scale for point in method_points),
+      )
       front = pareto_mask(x, y)
-      color = METHOD_COLORS[method]
+      color = _method_color(method)
+      sizes = (
+          42.0 + 120.0 * normalized_scales
+          if scale_encoding == "size"
+          else np.full(x.shape, 54.0)
+      )
+      colors = color
+      if scale_encoding == "opacity":
+        rgb = matplotlib_colors.to_rgb(color)
+        colors = [
+            (*rgb, 0.25 + 0.75 * normalized)
+            for normalized in normalized_scales
+        ]
       axis.scatter(
-          x, y, color=color, s=54, alpha=0.85, label=METHOD_LABELS[method]
+          x,
+          y,
+          color=colors,
+          s=sizes,
+          alpha=None if scale_encoding == "opacity" else 0.85,
+          label=_method_label(method),
       )
       front_order = np.argsort(x[front])
       axis.plot(
@@ -385,21 +534,52 @@ def plot(
           y[front][front_order],
           color=color,
           linewidth=2.2,
-          marker="o",
       )
+      if scale_encoding == "arrows" and len(method_points) > 1:
+        scale_order = np.argsort(
+            [point.scale for point in method_points]
+        )
+        ordered_x = x[scale_order]
+        ordered_y = y[scale_order]
+        axis.plot(
+            ordered_x,
+            ordered_y,
+            color=color,
+            linewidth=1.0,
+            linestyle=":",
+            alpha=0.55,
+        )
+        for start, end in zip(
+            zip(ordered_x[:-1], ordered_y[:-1]),
+            zip(ordered_x[1:], ordered_y[1:]),
+        ):
+          axis.annotate(
+              "",
+              xy=end,
+              xytext=start,
+              arrowprops={
+                  "arrowstyle": "->",
+                  "color": color,
+                  "alpha": 0.65,
+                  "linewidth": 1.2,
+                  "shrinkA": 7,
+                  "shrinkB": 7,
+              },
+          )
       for point, is_front in zip(method_points, front):
         coverage_suffix = (
             ""
             if point.seed_count == point.expected_seed_count
             else f"\n{point.seed_count}/{point.expected_seed_count} seeds"
         )
-        axis.annotate(
-            f"{point.scale:g}{coverage_suffix}",
-            (point.x, point.y),
-            xytext=(4, 4),
-            textcoords="offset points",
-            fontsize=8,
-        )
+        if scale_encoding == "labels":
+          axis.annotate(
+              f"{point.scale:g}{coverage_suffix}",
+              (point.x, point.y),
+              xytext=(4, 4),
+              textcoords="offset points",
+              fontsize=8,
+          )
         csv_rows.append({
             "method": method,
             "scale": point.scale,
@@ -425,9 +605,78 @@ def plot(
   for axis in axes.flat[len(y_metrics):]:
     axis.set_visible(False)
   handles, labels = axes.flat[0].get_legend_handles_labels()
-  figure.legend(handles, labels, loc="upper center", ncol=len(labels))
+  figure.legend(
+      handles,
+      labels,
+      loc="upper center",
+      bbox_to_anchor=(0.5, 0.975),
+      ncol=len(labels),
+  )
   figure.suptitle("Penalty-scale Pareto fronts", y=0.995)
-  figure.tight_layout(rect=(0, 0, 1, 0.96))
+  encoding_notes = {
+      "size": "Marker size increases with penalty scale within each method.",
+      "opacity": "Marker darkness increases with penalty scale within each method.",
+      "arrows": "Dotted arrows point toward increasing penalty scale.",
+  }
+  if scale_encoding in encoding_notes and scale_encoding != "opacity":
+    figure.text(
+        0.5,
+        0.005,
+        encoding_notes[scale_encoding],
+        ha="center",
+        fontsize=9,
+    )
+  figure.tight_layout(
+      rect=(
+          0,
+          (
+              0.13
+              if scale_encoding == "opacity"
+              else 0.025
+              if scale_encoding in encoding_notes
+              else 0
+          ),
+          1,
+          0.925,
+      )
+  )
+  if scale_encoding == "opacity":
+    methods = [
+        method
+        for method in _method_order(points)
+        if method in method_scale_ranges
+    ]
+    bar_width = 0.24
+    gap = 0.055
+    total_width = len(methods) * bar_width + (len(methods) - 1) * gap
+    left = (1.0 - total_width) / 2.0
+    for index, method in enumerate(methods):
+      minimum, maximum = method_scale_ranges[method]
+      rgb = matplotlib_colors.to_rgb(_method_color(method))
+      opacity_map = matplotlib_colors.LinearSegmentedColormap.from_list(
+          f"{method}_penalty_opacity",
+          [(*rgb, 0.25), (*rgb, 1.0)],
+      )
+      if minimum > 0 and minimum != maximum:
+        norm = matplotlib_colors.LogNorm(vmin=minimum, vmax=maximum)
+        midpoint = math.sqrt(minimum * maximum)
+      else:
+        norm = matplotlib_colors.Normalize(vmin=minimum, vmax=maximum)
+        midpoint = (minimum + maximum) / 2.0
+      scalar_mappable = cm.ScalarMappable(norm=norm, cmap=opacity_map)
+      scalar_mappable.set_array([])
+      colorbar_axis = figure.add_axes(
+          [left + index * (bar_width + gap), 0.035, bar_width, 0.012]
+      )
+      colorbar = figure.colorbar(
+          scalar_mappable, cax=colorbar_axis, orientation="horizontal"
+      )
+      ticks = sorted(set((minimum, midpoint, maximum)))
+      colorbar.set_ticks(ticks)
+      colorbar.set_ticklabels([f"{tick:.2g}" for tick in ticks])
+      colorbar.ax.set_title(
+          f"{_method_label(method)} penalty scale", fontsize=9, pad=5
+      )
   output.parent.mkdir(parents=True, exist_ok=True)
   figure.savefig(output, dpi=180, bbox_inches="tight")
   plt.close(figure)
@@ -460,21 +709,25 @@ def _build_parser() -> argparse.ArgumentParser:
   parser.add_argument(
       "--evaluation-root",
       type=Path,
-      help="Defaults to evaluations/pareto/<environment>.",
+      help=(
+          "Evaluation report root. By default complete local evaluations are "
+          "preferred, with downloaded cluster evaluations as fallback."
+      ),
   )
   parser.add_argument(
       "--cluster",
       action="store_true",
       help=(
-          "Read the manifest and reports from "
-          "evaluations/pareto_cluster/<environment>."
+          "Force downloaded cluster evaluations instead of automatic "
+          "local-first discovery."
       ),
   )
   parser.add_argument(
       "--output",
       type=Path,
       help=(
-          "Defaults to evaluations/pareto/<environment>/policy_pareto.png."
+          "Defaults to "
+          "evaluations/pareto_results/<environment>/policy_pareto.png."
       ),
   )
   parser.add_argument("--x-metric", default=DEFAULT_X_METRIC)
@@ -510,24 +763,39 @@ def main(argv: Sequence[str] | None = None) -> None:
   environment = (
       args.environment or args.environment_option or DEFAULT_ENVIRONMENT
   )
-  if args.cluster:
-    default_evaluation_root = (
-        PROJECT_ROOT / "evaluations" / "pareto_cluster" / environment
-    )
-    default_manifest = (
-        default_evaluation_root / pareto_policy_pipeline.MANIFEST_NAME
-    )
+  if args.manifest is not None or args.evaluation_root is not None:
+    if args.cluster:
+      raise ValueError(
+          "--cluster cannot be combined with --manifest or --evaluation-root."
+      )
+    if args.manifest is not None and args.evaluation_root is not None:
+      manifest = args.manifest
+      evaluation_root = args.evaluation_root
+    elif args.evaluation_root is not None:
+      evaluation_root = args.evaluation_root
+      colocated_manifest = (
+          evaluation_root / pareto_policy_pipeline.MANIFEST_NAME
+      )
+      manifest = (
+          colocated_manifest
+          if colocated_manifest.is_file()
+          else pareto_policy_pipeline.DEFAULT_LOCAL_ROOT
+          / environment
+          / pareto_policy_pipeline.MANIFEST_NAME
+      )
+    else:
+      assert args.manifest is not None
+      manifest = args.manifest
+      evaluation_root = (
+          manifest.parent
+          if (manifest.parent / "raw_torque").is_dir()
+          else pareto_policy_pipeline.DEFAULT_OUTPUT_ROOT / environment
+      )
+  elif args.cluster:
+    evaluation_root = DEFAULT_CLUSTER_ROOT / environment
+    manifest = evaluation_root / pareto_policy_pipeline.MANIFEST_NAME
   else:
-    default_evaluation_root = (
-        pareto_policy_pipeline.DEFAULT_OUTPUT_ROOT / environment
-    )
-    default_manifest = (
-        pareto_policy_pipeline.DEFAULT_LOCAL_ROOT
-        / environment
-        / pareto_policy_pipeline.MANIFEST_NAME
-    )
-  manifest = args.manifest or default_manifest
-  evaluation_root = args.evaluation_root or default_evaluation_root
+    manifest, evaluation_root = _default_source(environment)
   if args.xlim is not None and len(args.xlim) not in (1, 2):
     raise ValueError("--xlim accepts either MIN or MIN MAX.")
   xlim = (
@@ -538,17 +806,43 @@ def main(argv: Sequence[str] | None = None) -> None:
   if xlim is not None and xlim[1] is not None and xlim[0] >= xlim[1]:
     raise ValueError("--xlim MIN must be smaller than MAX.")
   output_path = args.output or (
-      evaluation_root / "policy_pareto.png"
+      DEFAULT_RESULTS_ROOT / environment / "policy_pareto.png"
   )
-  output = plot(
-      manifest,
-      evaluation_root,
-      output_path,
-      args.x_metric,
-      tuple(args.y_metrics or DEFAULT_Y_METRICS),
-      xlim,
-  )
-  print(f"Pareto plot: {output.resolve()}")
+  try:
+    output = plot(
+        manifest,
+        evaluation_root,
+        output_path,
+        args.x_metric,
+        tuple(args.y_metrics or DEFAULT_Y_METRICS),
+        xlim,
+    )
+    outputs = [output]
+    for scale_encoding in ("size", "opacity", "arrows"):
+      variant_output = output_path.with_name(
+          f"{output_path.stem}_{scale_encoding}{output_path.suffix}"
+      )
+      outputs.append(
+          plot(
+              manifest,
+              evaluation_root,
+              variant_output,
+              args.x_metric,
+              tuple(args.y_metrics or DEFAULT_Y_METRICS),
+              xlim,
+              scale_encoding=scale_encoding,
+          )
+        )
+  except MissingEvaluationMetricsError as error:
+    cluster_hint = (
+        "\nFor cluster results, update the Eagle checkout, then run:\n"
+        f"  python -m learning.pareto_cluster submit {environment}\n"
+        "After the Slurm job completes, fetch the refreshed reports:\n"
+        f"  python -m learning.pareto_cluster fetch {environment}"
+    )
+    raise SystemExit(f"{error}{cluster_hint}") from None
+  for generated_output in outputs:
+    print(f"Pareto plot: {generated_output.resolve()}")
   print(f"Pareto table: {output.with_suffix('.csv').resolve()}")
 
 

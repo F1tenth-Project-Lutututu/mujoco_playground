@@ -18,6 +18,7 @@ class ParetoPolicyPipelineTest(absltest.TestCase):
 
   def test_select_runs_keeps_latest_duplicate(self):
     runs = pareto_policy_pipeline.select_runs([
+        "260727-actionsmoothness-400M-as1em3-seed3",
         "260722-baseline-400M-ar1em2-seed0",
         "260727-baseline-400M-ar1em2-seed0",
         "260727-torquerate-400M-tr2em4-seed1",
@@ -29,12 +30,25 @@ class ParetoPolicyPipelineTest(absltest.TestCase):
     self.assertEqual(
         [run.run_name for run in runs],
         [
+            "260727-actionsmoothness-400M-as1em3-seed3",
             "260727-baseline-400M-ar1em2-seed0",
             "260727-highpass-400M-hp4em3-f5o1m10-seed2",
             "260727-highpass-400M-hp4em3-f7o1m10-seed2",
             "260727-torquerate-400M-tr2em4-seed1",
         ],
     )
+
+  def test_select_runs_recognizes_action_smoothness_sweep(self):
+    runs = pareto_policy_pipeline.select_runs([
+        "260817-actionsmoothness-1000M-as1em1-seed0",
+        "260817-actionsmoothness-1000M-as1ep1-seed4",
+    ])
+
+    self.assertEqual([run.method for run in runs], [
+        "action_smoothness",
+        "action_smoothness",
+    ])
+    self.assertEqual([run.scale for run in runs], [0.1, 10.0])
 
   def test_select_runs_separates_high_pass_cutoff_and_m_sweeps(self):
     runs = pareto_policy_pipeline.select_runs([
@@ -201,6 +215,36 @@ class ParetoPolicyPipelineTest(absltest.TestCase):
         ),
         pareto_policy_pipeline._comparable_run_config(
             newer, "high_pass", defaults
+        ),
+    )
+
+  def test_action_smoothness_comparison_sweeps_action_rate_scale(self):
+    config = {
+        "environment_config": {
+            "reward_config": {
+                "action_rate_use_second_difference": True,
+                "scales": {"action_rate": -0.001},
+            }
+        },
+        "environment_config_overrides": {
+            "reward_config.action_rate_use_second_difference": True,
+            "reward_config.scales.action_rate": -0.001,
+        },
+    }
+    other = copy.deepcopy(config)
+    other["environment_config"]["reward_config"]["scales"][
+        "action_rate"
+    ] = -0.1
+    other["environment_config_overrides"][
+        "reward_config.scales.action_rate"
+    ] = -0.1
+
+    self.assertEqual(
+        pareto_policy_pipeline._comparable_run_config(
+            config, "action_smoothness"
+        ),
+        pareto_policy_pipeline._comparable_run_config(
+            other, "action_smoothness"
         ),
     )
 

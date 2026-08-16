@@ -286,7 +286,7 @@ complete reevaluation.
 ### Pareto-front pipeline
 
 Use `pareto_policy_pipeline.py` to download and evaluate complete
-penalty-scale sweeps for the action-rate baseline, torque-rate penalty, and
+penalty-scale sweeps for action rate, action smoothness, torque rate, and
 high-pass torque penalty. The default environment is
 `Go1JoystickFlatTerrain`.
 
@@ -294,6 +294,7 @@ The remote run names must match these forms:
 
 ```text
 YYMMDD-baseline-<STEPS>M-ar<SCALE>-seed<SEED>
+YYMMDD-actionsmoothness-<STEPS>M-as<SCALE>-seed<SEED>
 YYMMDD-torquerate-<STEPS>M-tr<SCALE>-seed<SEED>
 YYMMDD-highpass-<STEPS>M-hp<SCALE>-f<CUTOFF>o1m<M>-seed<SEED>
 ```

@@ -13,31 +13,68 @@ from learning import plot_policy_pareto
 
 class PlotPolicyParetoTest(absltest.TestCase):
 
+  def test_default_metrics_include_joint_velocity_mssd_and_msgfd(self):
+    self.assertIn(
+        "smoothness/joint_velocity/"
+        "mssd_mean_squared_second_difference_per_dof",
+        plot_policy_pareto.DEFAULT_Y_METRICS,
+    )
+    self.assertIn(
+        "smoothness/joint_velocity/"
+        "msgfd_mean_absolute_savgol_filter_deviation_per_dof",
+        plot_policy_pareto.DEFAULT_Y_METRICS,
+    )
+
+  def test_require_metrics_explains_that_evaluation_must_be_regenerated(self):
+    with self.assertRaisesRegex(
+        plot_policy_pareto.MissingEvaluationMetricsError,
+        "Regenerate the policy evaluations",
+    ):
+      plot_policy_pareto._require_metrics(
+          [{"existing": "1.0"}], ("existing", "new_metric")
+      )
+
   def test_environment_only_sets_default_input_and_output_paths(self):
+    expected_manifest = Path("local-manifest.json")
+    expected_evaluation_root = Path("local-evaluations")
     with mock.patch.object(
         plot_policy_pareto, "plot", return_value=Path("result.png")
-    ) as plot:
+    ) as plot, mock.patch.object(
+        plot_policy_pareto,
+        "_default_source",
+        return_value=(expected_manifest, expected_evaluation_root),
+    ):
       plot_policy_pareto.main(["Go1JoystickRoughTerrain"])
 
     self.assertEqual(
-        plot.call_args.args[:3],
+        plot.call_args_list[0].args[:3],
         (
-            plot_policy_pareto.pareto_policy_pipeline.DEFAULT_LOCAL_ROOT
-            / "Go1JoystickRoughTerrain"
-            / plot_policy_pareto.pareto_policy_pipeline.MANIFEST_NAME,
-            plot_policy_pareto.pareto_policy_pipeline.DEFAULT_OUTPUT_ROOT
-            / "Go1JoystickRoughTerrain",
-            plot_policy_pareto.pareto_policy_pipeline.DEFAULT_OUTPUT_ROOT
+            expected_manifest,
+            expected_evaluation_root,
+            plot_policy_pareto.DEFAULT_RESULTS_ROOT
             / "Go1JoystickRoughTerrain"
             / "policy_pareto.png",
         ),
     )
-    self.assertIsNone(plot.call_args.args[5])
+    self.assertIsNone(plot.call_args_list[0].args[5])
+    self.assertEqual(
+        [call.args[2].name for call in plot.call_args_list],
+        [
+            "policy_pareto.png",
+            "policy_pareto_size.png",
+            "policy_pareto_opacity.png",
+            "policy_pareto_arrows.png",
+        ],
+    )
 
   def test_xlim_is_forwarded_to_plot(self):
     with mock.patch.object(
         plot_policy_pareto, "plot", return_value=Path("result.png")
-    ) as plot:
+    ) as plot, mock.patch.object(
+        plot_policy_pareto,
+        "_default_source",
+        return_value=(Path("manifest"), Path("evaluations")),
+    ):
       plot_policy_pareto.main([
           "Go1JoystickRoughTerrain",
           "--xlim",
@@ -45,19 +82,23 @@ class PlotPolicyParetoTest(absltest.TestCase):
           "40",
       ])
 
-    self.assertEqual(plot.call_args.args[5], (25.0, 40.0))
+    self.assertEqual(plot.call_args_list[0].args[5], (25.0, 40.0))
 
   def test_single_xlim_sets_only_lower_bound(self):
     with mock.patch.object(
         plot_policy_pareto, "plot", return_value=Path("result.png")
-    ) as plot:
+    ) as plot, mock.patch.object(
+        plot_policy_pareto,
+        "_default_source",
+        return_value=(Path("manifest"), Path("evaluations")),
+    ):
       plot_policy_pareto.main([
           "Go1JoystickRoughTerrain",
           "--xlim",
           "25",
       ])
 
-    self.assertEqual(plot.call_args.args[5], (25.0, None))
+    self.assertEqual(plot.call_args_list[0].args[5], (25.0, None))
 
   def test_pareto_mask_maximizes_x_and_minimizes_y(self):
     actual = plot_policy_pareto.pareto_mask(
@@ -75,6 +116,52 @@ class PlotPolicyParetoTest(absltest.TestCase):
 
     self.assertEqual(arguments.environment, "Go1JoystickFlatTerrain")
     self.assertTrue(arguments.cluster)
+
+  def test_default_source_prefers_complete_local_evaluations(self):
+    local = (Path("local-manifest"), Path("local-root"))
+    cluster = (Path("cluster-manifest"), Path("cluster-root"))
+    with mock.patch.object(
+        plot_policy_pareto, "_source_is_available", side_effect=[True, True]
+    ) as available, mock.patch.object(
+        plot_policy_pareto.pareto_policy_pipeline,
+        "DEFAULT_LOCAL_ROOT",
+        local[0].parent,
+    ), mock.patch.object(
+        plot_policy_pareto.pareto_policy_pipeline,
+        "DEFAULT_OUTPUT_ROOT",
+        local[1].parent,
+    ), mock.patch.object(
+        plot_policy_pareto, "DEFAULT_CLUSTER_ROOT", cluster[1].parent
+    ):
+      actual = plot_policy_pareto._default_source("environment")
+
+    self.assertEqual(
+        actual,
+        (
+            local[0].parent
+            / "environment"
+            / plot_policy_pareto.pareto_policy_pipeline.MANIFEST_NAME,
+            local[1].parent / "environment",
+        ),
+    )
+    available.assert_called_once()
+
+  def test_default_source_falls_back_to_complete_cluster_evaluations(self):
+    with mock.patch.object(
+        plot_policy_pareto, "_source_is_available", side_effect=[False, True]
+    ):
+      manifest, evaluation_root = plot_policy_pareto._default_source(
+          "environment"
+      )
+
+    self.assertEqual(
+        evaluation_root,
+        plot_policy_pareto.DEFAULT_CLUSTER_ROOT / "environment",
+    )
+    self.assertEqual(
+        manifest,
+        evaluation_root / plot_policy_pareto.pareto_policy_pipeline.MANIFEST_NAME,
+    )
 
   def _evaluation_fixture(self) -> tuple[Path, Path, Path]:
     temporary = tempfile.TemporaryDirectory()
