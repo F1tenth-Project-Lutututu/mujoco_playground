@@ -3070,7 +3070,7 @@ wheels = [
 
 [[package]]
 name = "playground"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "absl-py" },
@@ -3084,6 +3084,7 @@ dependencies = [
     { name = "mujoco" },
     { name = "mujoco-mjx" },
     { name = "orbax-checkpoint" },
+    { name = "scipy" },
     { name = "tqdm" },
     { name = "warp-lang" },
 ]
@@ -3169,6 +3170,7 @@ requires-dist = [
     { name = "pytype", marker = "extra == 'dev'" },
     { name = "rsl-rl-lib", marker = "extra == 'learning'", specifier = ">=3.0.0" },
     { name = "ruff", marker = "extra == 'dev'" },
+    { name = "scipy" },
     { name = "tqdm" },
     { name = "wandb", marker = "extra == 'learning'" },
     { name = "warp-lang", specifier = ">=1.11" },
