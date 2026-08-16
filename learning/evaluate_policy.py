@@ -129,6 +129,21 @@ def _masked_episode_values(
   return [values[active[:, i], i] for i in range(values.shape[1])]
 
 
+def _flatten_signal_tree(prefix: str, value) -> dict[str, jax.Array]:
+  """Flattens an observation pytree into stable names for ``signals.npz``."""
+  if isinstance(value, Mapping):
+    result = {}
+    for name, child in value.items():
+      result.update(_flatten_signal_tree(f"{prefix}/{name}", child))
+    return result
+  if isinstance(value, (tuple, list)):
+    result = {}
+    for index, child in enumerate(value):
+      result.update(_flatten_signal_tree(f"{prefix}/{index}", child))
+    return result
+  return {prefix: value}
+
+
 def _fft_energy_metrics(
     signal: np.ndarray,
     sample_period: float,
@@ -464,7 +479,7 @@ def _episode_rows(
         f"smoothness/joint_velocity/{key}": value
         for key, value in _smoothness_metrics(
             # Exclude the floating-base linear and angular velocities.
-            episodes["qvel"][rollout_index, :, 6:],
+            episodes["qvel"][rollout_index][:, 6:],
             sample_period,
             cutoffs_hz,
             savgol_window_length,
@@ -652,51 +667,28 @@ def _rollout(
     if "foot_height" in next_state.info:
       signals["feet_height_target"] = next_state.info["foot_height"]
     if record_full_signals:
-      signals.update({
+      full_signals = {
           "accelerometer": jax.vmap(
               lambda data: _get_accelerometer(env, data)
           )(next_state.data),
-          "qpos": next_state.data.qpos,
-          "qacc": next_state.data.qacc,
-          "ctrl": next_state.data.ctrl,
-          "time": next_state.data.time,
-          "act": next_state.data.act,
-          "act_dot": next_state.data.act_dot,
-          "qacc_warmstart": next_state.data.qacc_warmstart,
-          "qfrc_applied": next_state.data.qfrc_applied,
-          "qfrc_actuator": next_state.data.qfrc_actuator,
-          "qfrc_bias": next_state.data.qfrc_bias,
-          "qfrc_gravcomp": next_state.data.qfrc_gravcomp,
-          "qfrc_fluid": next_state.data.qfrc_fluid,
-          "qfrc_passive": next_state.data.qfrc_passive,
-          "qfrc_smooth": next_state.data.qfrc_smooth,
-          "qfrc_constraint": next_state.data.qfrc_constraint,
-          "qfrc_inverse": next_state.data.qfrc_inverse,
-          "qacc_smooth": next_state.data.qacc_smooth,
-          "xpos": next_state.data.xpos,
-          "xquat": next_state.data.xquat,
-          "xmat": next_state.data.xmat,
-          "xipos": next_state.data.xipos,
-          "ximat": next_state.data.ximat,
-          "xanchor": next_state.data.xanchor,
-          "xaxis": next_state.data.xaxis,
-          "geom_xpos": next_state.data.geom_xpos,
-          "geom_xmat": next_state.data.geom_xmat,
-          "site_xpos": next_state.data.site_xpos,
-          "site_xmat": next_state.data.site_xmat,
-          "cam_xpos": next_state.data.cam_xpos,
-          "cam_xmat": next_state.data.cam_xmat,
-          "subtree_com": next_state.data.subtree_com,
-          "cvel": next_state.data.cvel,
-          "mocap_pos": next_state.data.mocap_pos,
-          "mocap_quat": next_state.data.mocap_quat,
-          "xfrc_applied": next_state.data.xfrc_applied,
-          "eq_active": next_state.data.eq_active,
-          "userdata": next_state.data.userdata,
-          "sensordata": next_state.data.sensordata,
-          "obs/state": next_state.obs["state"],
-          "obs/privileged_state": next_state.obs["privileged_state"],
-      })
+      }
+      # MJX data schemas vary with the MuJoCo model and version.  Preserve all
+      # supported fields that this environment actually exposes instead of
+      # making signal recording fail on an absent optional field.
+      for name in (
+          "qpos", "qacc", "ctrl", "time", "act", "act_dot",
+          "qacc_warmstart", "qfrc_applied", "qfrc_actuator", "qfrc_bias",
+          "qfrc_gravcomp", "qfrc_fluid", "qfrc_passive", "qfrc_smooth",
+          "qfrc_constraint", "qfrc_inverse", "qacc_smooth", "xpos",
+          "xquat", "xmat", "xipos", "ximat", "xanchor", "xaxis",
+          "geom_xpos", "geom_xmat", "site_xpos", "site_xmat", "cam_xpos",
+          "cam_xmat", "subtree_com", "cvel", "mocap_pos", "mocap_quat",
+          "xfrc_applied", "eq_active", "userdata", "sensordata",
+      ):
+        if hasattr(next_state.data, name):
+          full_signals[name] = getattr(next_state.data, name)
+      full_signals.update(_flatten_signal_tree("obs", next_state.obs))
+      signals.update(full_signals)
     if record_render_signals:
       signals.update({
           "render/qpos": next_state.data.qpos,

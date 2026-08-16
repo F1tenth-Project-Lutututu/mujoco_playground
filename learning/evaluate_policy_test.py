@@ -404,6 +404,17 @@ class EvaluatePolicyTest(absltest.TestCase):
     self.assertIn("obs/state", signals)
     self.assertIn("render/qpos", signals)
 
+  def test_flatten_signal_tree_accepts_array_and_sequence_observations(self):
+    array = jp.zeros((2, 3))
+    self.assertEqual(
+        set(evaluate_policy._flatten_signal_tree("obs", array)), {"obs"}
+    )
+    sequence = [array, {"critic": jp.ones((2, 4))}]
+    self.assertEqual(
+        set(evaluate_policy._flatten_signal_tree("obs", sequence)),
+        {"obs/0", "obs/1/critic"},
+    )
+
   def test_random_tasks_are_parallel_and_reproducible(self):
     env = _RandomTaskFakeEnv()
 
