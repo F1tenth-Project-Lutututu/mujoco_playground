@@ -210,6 +210,24 @@ def select_checkpoint_name(
   return min(numeric, key=lambda name: (abs(int(name) - target_step), -int(name)))
 
 
+def mixed_horizon_evaluation_target(
+    runs: Sequence[PolicyRun],
+    checkpoint_steps: dict[str, Sequence[int]],
+    default_target: int,
+) -> int:
+  """Aligns mixed 400M/1000M runs at the 400M cohort's terminal progress."""
+  horizons = {run.training_steps_millions for run in runs}
+  if not {400, 1000}.issubset(horizons):
+    return default_target
+  terminal_steps = [
+      max(checkpoint_steps.get(run.run_name, ()), default=0)
+      for run in runs
+      if run.training_steps_millions == 400
+  ]
+  eligible = [step for step in terminal_steps if step >= default_target]
+  return min(eligible) if eligible else default_target
+
+
 def _write_manifest(
     path: Path,
     environment: str,
@@ -317,6 +335,7 @@ def _comparable_run_config(
     config: dict,
     method: str,
     environment_defaults: dict | None = None,
+    ignore_training_horizon: bool = False,
 ) -> dict:
   """Removes seed/provenance and the swept scale from a run config."""
   result = copy.deepcopy(config)
@@ -329,6 +348,9 @@ def _comparable_run_config(
   result.pop("seed", None)
   result.pop("command", None)
   result.get("ppo_config", {}).pop("seed", None)
+  if ignore_training_horizon:
+    result.get("ppo_config", {}).pop("num_timesteps", None)
+    result.get("ppo_config", {}).pop("num_evals", None)
   reward_name = {
       "action_smoothness": "action_rate",
       "baseline": "action_rate",
@@ -353,6 +375,16 @@ def validate_sweeps(
   from mujoco_playground._src import registry  # pylint: disable=g-import-not-at-top
 
   environment_defaults = registry.get_default_config(environment).to_dict()
+  horizons_by_method: dict[str, set[int | None]] = {}
+  for run in runs:
+    horizons_by_method.setdefault(run.method, set()).add(
+        run.training_steps_millions
+    )
+  mixed_horizon_methods = {
+      method
+      for method, horizons in horizons_by_method.items()
+      if horizons == {400, 1000}
+  }
   references: dict[str, tuple[dict, str]] = {}
   for run in runs:
     config_path = (
@@ -362,7 +394,10 @@ def validate_sweeps(
       raise FileNotFoundError(f"Downloaded run config not found: {config_path}")
     config = json.loads(config_path.read_text(encoding="utf-8"))
     comparable = _comparable_run_config(
-        config, run.method, environment_defaults
+        config,
+        run.method,
+        environment_defaults,
+        ignore_training_horizon=run.method in mixed_horizon_methods,
     )
     if run.method not in references:
       references[run.method] = (comparable, run.run_name)

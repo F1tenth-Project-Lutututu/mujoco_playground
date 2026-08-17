@@ -115,9 +115,11 @@ def main(argv: Sequence[str] | None = None) -> None:
             else None
         ),
     )
-    target_step = pareto_policy_pipeline.evaluation_target_step(environment)
-    completed = []
-    skipped = []
+    default_target_step = pareto_policy_pipeline.evaluation_target_step(
+        environment
+    )
+    checkpoint_paths = {}
+    checkpoint_steps = {}
     for run in selected:
       checkpoints = model_environment / run.run_name / "checkpoints"
       numeric = (
@@ -129,6 +131,20 @@ def main(argv: Sequence[str] | None = None) -> None:
           if checkpoints.is_dir()
           else []
       )
+      checkpoint_paths[run.run_name] = numeric
+      checkpoint_steps[run.run_name] = [int(path.name) for path in numeric]
+    target_step = pareto_policy_pipeline.mixed_horizon_evaluation_target(
+        selected, checkpoint_steps, default_target_step
+    )
+    if target_step != default_target_step:
+      print(
+          "Mixed 400M/1000M cohort: selecting checkpoints nearest "
+          f"the common 400M terminal step {target_step:012d}."
+      )
+    completed = []
+    skipped = []
+    for run in selected:
+      numeric = checkpoint_paths[run.run_name]
       if not numeric:
         skipped.append({
             **asdict(run),

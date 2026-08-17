@@ -138,6 +138,49 @@ class ParetoPolicyPipelineTest(absltest.TestCase):
         ),
         "410000000",
     )
+
+  def test_mixed_horizon_target_uses_common_400m_terminal_step(self):
+    runs = [
+        pareto_policy_pipeline.PolicyRun(
+            "action_smoothness",
+            "1em5",
+            1e-5,
+            0,
+            260817,
+            "short-a",
+            training_steps_millions=400,
+        ),
+        pareto_policy_pipeline.PolicyRun(
+            "action_smoothness",
+            "2em2",
+            2e-2,
+            0,
+            260817,
+            "long-a",
+            training_steps_millions=1000,
+        ),
+        pareto_policy_pipeline.PolicyRun(
+            "action_smoothness",
+            "1em5",
+            1e-5,
+            1,
+            260817,
+            "short-b",
+            training_steps_millions=400,
+        ),
+    ]
+
+    target = pareto_policy_pipeline.mixed_horizon_evaluation_target(
+        runs,
+        {
+            "short-a": [392_000_000, 417_792_000],
+            "short-b": [390_000_000, 410_000_000],
+            "long-a": [400_000_000, 425_000_000, 1_000_000_000],
+        },
+        400_000_000,
+    )
+
+    self.assertEqual(target, 410_000_000)
     self.assertEqual(
         pareto_policy_pipeline.select_checkpoint_name(
             ["390000000", "410000000"], 400_000_000
@@ -237,6 +280,40 @@ class ParetoPolicyPipelineTest(absltest.TestCase):
     self.assertEqual(
         pareto_policy_pipeline._comparable_run_config(config, "baseline"),
         pareto_policy_pipeline._comparable_run_config(other, "baseline"),
+    )
+
+  def test_comparable_config_can_ignore_mixed_training_horizon(self):
+    short = {
+        "ppo_config": {
+            "seed": 0,
+            "num_timesteps": 400_000_000,
+            "num_evals": 16,
+            "learning_rate": 3e-4,
+        },
+        "environment_config": {
+            "reward_config": {"scales": {"action_rate": -1e-5}}
+        },
+        "environment_config_overrides": {
+            "reward_config.scales.action_rate": -1e-5
+        },
+    }
+    long = copy.deepcopy(short)
+    long["ppo_config"]["num_timesteps"] = 1_000_000_000
+    long["ppo_config"]["num_evals"] = 40
+    long["environment_config"]["reward_config"]["scales"][
+        "action_rate"
+    ] = -0.02
+    long["environment_config_overrides"][
+        "reward_config.scales.action_rate"
+    ] = -0.02
+
+    self.assertEqual(
+        pareto_policy_pipeline._comparable_run_config(
+            short, "action_smoothness", ignore_training_horizon=True
+        ),
+        pareto_policy_pipeline._comparable_run_config(
+            long, "action_smoothness", ignore_training_horizon=True
+        ),
     )
 
   def test_comparable_config_fills_missing_environment_defaults(self):
