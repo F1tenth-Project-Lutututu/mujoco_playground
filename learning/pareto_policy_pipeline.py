@@ -73,6 +73,11 @@ RUN_PATTERNS = {
         r"tr(?P<scale>[0-9]+e[mp][0-9]+)"
         r"-seed(?P<seed>\d+)"
     ),
+    "torque_smoothness": re.compile(
+        r"(?P<date>\d{6})-torquesmoothness-(?P<steps>\d+)M-"
+        r"ts(?P<scale>[0-9]+e[mp][0-9]+)"
+        r"-seed(?P<seed>\d+)"
+    ),
     "high_pass": re.compile(
         r"(?P<date>\d{6})-highpass-(?P<steps>\d+)M-"
         r"hp(?P<scale>[0-9]+e[mp][0-9]+)"
@@ -242,6 +247,7 @@ def _write_manifest(
           "action_smoothness": "*actionsmoothness-*M-as*-seed*",
           "baseline": "*baseline-*M-ar*-seed*",
           "torque_rate": "*torquerate-*M-tr*-seed*",
+          "torque_smoothness": "*torquesmoothness-*M-ts*-seed*",
           "high_pass": "*highpass-*M-hp*-f*o*m*-seed*",
           "duplicate_policy": (
               "newest date for each method, scale, and seed"
@@ -355,6 +361,7 @@ def _comparable_run_config(
       "action_smoothness": "action_rate",
       "baseline": "action_rate",
       "torque_rate": "torque_rate",
+      "torque_smoothness": "torque_rate",
       "high_pass": "torque_high_freq",
   }[base_method(method)]
   result["environment_config"]["reward_config"]["scales"][reward_name] = (

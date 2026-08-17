@@ -46,6 +46,7 @@ def add_config(config: Any) -> None:
   config.torque_highpass_normalize_by_capacity = True
   config.torque_highpass_observe_state = False
   config.torque_rate_observe_state = False
+  config.torque_rate_use_second_difference = False
   config.torque_highpass_adaptive_weight = False
   config.torque_highpass_adaptive_min_weight = 0.1
   config.torque_highpass_adaptive_max_weight = 1.0
@@ -99,6 +100,12 @@ class TorquePenalty:
         raise ValueError(f"reward_config.scales.{name} must be non-positive.")
       if reward_config.scales[name] < 0:
         reward_config.scales.action_rate = 0.0
+    if not isinstance(
+        reward_config.torque_rate_use_second_difference, (bool, np.bool_)
+    ):
+      raise ValueError(
+          "reward_config.torque_rate_use_second_difference must be a boolean."
+      )
     self.adaptive_enabled = reward_config.torque_highpass_adaptive_weight
     self.adaptive_min_weight = (
         reward_config.torque_highpass_adaptive_min_weight
@@ -182,6 +189,7 @@ class TorquePenalty:
     action = jp.zeros_like(torque)
     signal = self._signal(torque, action)
     info["last_torque"] = torque
+    info["last_last_torque"] = torque
     info["torque_for_spectrum"] = torque
     info["torque_highpass_state"] = self.initial_filter_state(signal)
     info["torque_difference_inputs"] = jp.zeros(
@@ -226,7 +234,13 @@ class TorquePenalty:
     )
     high_freq /= self.frequency_normalizer
     last_torque = jp.where(reset, torque, info["last_torque"])
+    last_last_torque = jp.where(reset, torque, info["last_last_torque"])
     torque_rate = jp.sum(jp.square(torque - last_torque))
+    if self.config.torque_rate_use_second_difference:
+      torque_rate += jp.sum(
+          jp.square(torque - 2.0 * last_torque + last_last_torque)
+      )
+    info["last_last_torque"] = last_torque
     info["last_torque"] = torque
     info["torque_for_spectrum"] = torque
     return high_freq, torque_rate
@@ -240,6 +254,8 @@ class TorquePenalty:
       ))
     if self.config.torque_rate_observe_state:
       values.append(torque)
+      if self.config.torque_rate_use_second_difference:
+        values.append(info["last_last_torque"])
     return jp.concatenate(values) if values else jp.zeros((0,))
 
   def apply_adaptive_weight(

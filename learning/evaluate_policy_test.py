@@ -237,6 +237,7 @@ class EvaluatePolicyTest(absltest.TestCase):
                 "torque_highpass_signal": "action",
                 "torque_highpass_normalize_by_capacity": True,
                 "torque_rate_observe_state": False,
+                "torque_rate_use_second_difference": False,
             }
         }
     )
@@ -250,6 +251,7 @@ class EvaluatePolicyTest(absltest.TestCase):
                 "torque_highpass_signal": "torque",
                 "torque_highpass_normalize_by_capacity": False,
                 "torque_rate_observe_state": True,
+                "torque_rate_use_second_difference": True,
             }
         }
     }
@@ -267,6 +269,9 @@ class EvaluatePolicyTest(absltest.TestCase):
         env_config.reward_config.torque_highpass_normalize_by_capacity
     )
     self.assertTrue(env_config.reward_config.torque_rate_observe_state)
+    self.assertTrue(
+        env_config.reward_config.torque_rate_use_second_difference
+    )
 
   def test_observed_filter_state_preserves_training_normalization(self):
     env_config = config_dict.ConfigDict(

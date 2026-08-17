@@ -21,13 +21,14 @@
 #set -euo pipefail
 
 # Usage:
-#   sbatch slurm.sh <ar|as|tr|hp> <penalty-strength> [environment] \
+#   sbatch slurm.sh <ar|as|tr|ts|hp> <penalty-strength> [environment] \
 #     [cutoff-hz] [difference-order] [num-timesteps]
 #
 # Examples:
 #   sbatch slurm.sh ar 1e-1 BarkourJoystick
 #   sbatch slurm.sh as 1e-1 BarkourJoystick
 #   sbatch slurm.sh tr 8e-4 BerkeleyHumanoidJoystickFlatTerrain
+#   sbatch slurm.sh ts 8e-4 Go1JoystickFlatTerrain
 #   sbatch slurm.sh hp 8e-3 SpotFlatTerrainJoystick
 #   sbatch slurm.sh hp 8e-3 SpotFlatTerrainJoystick 10.0 2.0
 #   sbatch slurm.sh hp 8e-3 SpotFlatTerrainJoystick 10.0 2.0 800M
@@ -235,6 +236,12 @@ case "$METHOD" in
       '{"reward_config.scales.torque_rate": -%s, "reward_config.torque_rate_observe_state": true}' \
       "$PENALTY_STRENGTH")
     ;;
+  ts)
+    METHOD_NAME=torquesmoothness
+    PLAYGROUND_OVERRIDES=$(printf \
+      '{"reward_config.scales.torque_rate": -%s, "reward_config.torque_rate_use_second_difference": true, "reward_config.torque_rate_observe_state": true}' \
+      "$PENALTY_STRENGTH")
+    ;;
   hp)
     METHOD_NAME=highpass
     CUTOFF_TAG=$(sed -E \
@@ -251,7 +258,7 @@ case "$METHOD" in
       "$DIFFERENCE_ORDER")
     ;;
   *)
-    echo "Unknown method '$METHOD'. Choose one of: ar, as, tr, hp." >&2
+    echo "Unknown method '$METHOD'. Choose one of: ar, as, tr, ts, hp." >&2
     exit 2
     ;;
 esac

@@ -64,12 +64,14 @@ METHOD_LABELS = {
     "action_smoothness": "Action smoothness",
     "baseline": "Action rate",
     "torque_rate": "Torque rate",
+    "torque_smoothness": "Torque smoothness",
     "high_pass": "High-pass torque",
 }
 METHOD_COLORS = {
     "action_smoothness": "#B279A2",
     "baseline": "#4C78A8",
     "torque_rate": "#F58518",
+    "torque_smoothness": "#E45756",
     "high_pass": "#54A24B",
 }
 

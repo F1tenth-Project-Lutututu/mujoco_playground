@@ -91,6 +91,20 @@ class RecoverMissingClusterSeedsTest(unittest.TestCase):
     }
     self.assertEqual(recovery._launcher_arguments(config)[1], "6e-4")
 
+  def test_launcher_arguments_identify_torque_smoothness(self):
+    config = {
+        "command": [
+            "train-jax-ppo",
+            "--num_timesteps=400000000",
+            "--env_name=Go1JoystickRoughTerrain",
+            "--playground_config_overrides="
+            '{"reward_config.scales.torque_rate": -0.0006, '
+            '"reward_config.torque_rate_use_second_difference": true}',
+        ]
+    }
+
+    self.assertEqual(recovery._launcher_arguments(config)[0], "ts")
+
   def test_launcher_arguments_preserve_m10_default_convention(self):
     config = {
         "command": [
@@ -117,6 +131,10 @@ class RecoverMissingClusterSeedsTest(unittest.TestCase):
         (
             ["tr", "6e-4", "Env", "5", "1.0", "400M"],
             "260729-torquerate-400M-tr6em4",
+        ),
+        (
+            ["ts", "6e-4", "Env", "5", "1.0", "400M"],
+            "260818-torquesmoothness-400M-ts6em4",
         ),
         (
             ["hp", "1e-5", "Env", "7", "2.0", "400000000"],

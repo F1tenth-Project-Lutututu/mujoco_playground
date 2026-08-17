@@ -95,6 +95,7 @@ def default_config() -> config_dict.ConfigDict:
           torque_highpass_normalize_by_capacity=True,
           torque_highpass_observe_state=False,
           torque_rate_observe_state=False,
+          torque_rate_use_second_difference=False,
           torque_highpass_adaptive_weight=False,
           torque_highpass_adaptive_min_weight=0.1,
           torque_highpass_adaptive_max_weight=1.0,
@@ -258,6 +259,15 @@ class Joystick(berkeley_humanoid_base.BerkeleyHumanoidEnv):
             self._config.reward_config.torque_rate_observe_state
         )
     )
+    self._torque_rate_use_second_difference = (
+        self._config.reward_config.torque_rate_use_second_difference
+    )
+    if not isinstance(
+        self._torque_rate_use_second_difference, (bool, np.bool_)
+    ):
+      raise ValueError(
+          "reward_config.torque_rate_use_second_difference must be a boolean."
+      )
     actuator_joint_ids = self._mj_model.actuator_trnid[:, 0]
     self._torque_capacities = (
         go1_joystick._actuator_force_capacities(  # pylint: disable=protected-access
@@ -390,6 +400,7 @@ class Joystick(berkeley_humanoid_base.BerkeleyHumanoidEnv):
         "last_act": jp.zeros(self.mjx_model.nu),
         "last_last_act": jp.zeros(self.mjx_model.nu),
         "last_torque": data.actuator_force,
+        "last_last_torque": data.actuator_force,
         "torque_highpass_state": self._initial_highpass_state(
             (
                 data.actuator_force / self._torque_capacities
@@ -549,7 +560,9 @@ class Joystick(berkeley_humanoid_base.BerkeleyHumanoidEnv):
       )
     torque_high_freq_cost *= highpass_adaptive_weight
     torque_rate_cost = self._cost_torque_rate(
-        data.actuator_force, state.info["last_torque"]
+        data.actuator_force,
+        state.info["last_torque"],
+        state.info["last_last_torque"],
     )
     state.info["torque_highpass_state"] = torque_highpass_state
     state.info["torque_difference_inputs"] = torque_difference_inputs
@@ -593,6 +606,7 @@ class Joystick(berkeley_humanoid_base.BerkeleyHumanoidEnv):
     state.info["phase"] = jp.fmod(phase_tp1 + jp.pi, 2 * jp.pi) - jp.pi
     state.info["last_last_act"] = state.info["last_act"]
     state.info["last_act"] = action
+    state.info["last_last_torque"] = state.info["last_torque"]
     state.info["last_torque"] = data.actuator_force
     state.info["torque_spectrum_filter_state"] = torque_spectrum_filter_state
     state.info["torque_for_spectrum"] = data.actuator_force
@@ -711,6 +725,8 @@ class Joystick(berkeley_humanoid_base.BerkeleyHumanoidEnv):
       ])
     if self._torque_rate_observe_state:
       state = jp.hstack([state, data.actuator_force])
+      if self._torque_rate_use_second_difference:
+        state = jp.hstack([state, info["last_last_torque"]])
 
     accelerometer = self.get_accelerometer(data)
     global_angvel = self.get_global_angvel(data)
@@ -852,9 +868,17 @@ class Joystick(berkeley_humanoid_base.BerkeleyHumanoidEnv):
     return c1
 
   def _cost_torque_rate(
-      self, torque: jax.Array, last_torque: jax.Array
+      self,
+      torque: jax.Array,
+      last_torque: jax.Array,
+      last_last_torque: jax.Array,
   ) -> jax.Array:
-    return jp.sum(jp.square(torque - last_torque))
+    cost = jp.sum(jp.square(torque - last_torque))
+    if self._torque_rate_use_second_difference:
+      cost += jp.sum(
+          jp.square(torque - 2.0 * last_torque + last_last_torque)
+      )
+    return cost
 
   # Other rewards.
 

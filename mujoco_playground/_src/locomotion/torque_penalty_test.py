@@ -48,6 +48,38 @@ class TorquePenaltyTest(absltest.TestCase):
     self.assertGreater(float(high_freq), 0.0)
     self.assertEqual(float(torque_rate), 5.0)
 
+  def test_torque_smoothness_uses_squared_second_difference(self):
+    self.config.torque_rate_use_second_difference = True
+    model = SimpleNamespace(
+        actuator_forcerange=np.array([[-10.0, 10.0], [-20.0, 20.0]])
+    )
+    penalty = torque_penalty.TorquePenalty(self.config, model, 0.02)
+    info = {}
+    penalty.reset(info, jp.array([1.0, 2.0]))
+    penalty.compute(info, jp.array([2.0, 4.0]), jp.zeros(2))
+
+    _, smoothness = penalty.compute(
+        info, jp.array([4.0, 7.0]), jp.zeros(2)
+    )
+
+    # Rate: ||[2, 3]||^2 = 13; second difference: ||[1, 1]||^2 = 2.
+    self.assertEqual(float(smoothness), 15.0)
+
+  def test_torque_smoothness_observes_two_torque_samples(self):
+    self.config.torque_rate_observe_state = True
+    self.config.torque_rate_use_second_difference = True
+    model = SimpleNamespace(
+        actuator_forcerange=np.array([[-10.0, 10.0], [-20.0, 20.0]])
+    )
+    penalty = torque_penalty.TorquePenalty(self.config, model, 0.02)
+    info = {}
+    penalty.reset(info, jp.array([1.0, 2.0]))
+    penalty.compute(info, jp.array([2.0, 4.0]), jp.zeros(2))
+
+    observation = penalty.observation(info, jp.array([2.0, 4.0]))
+
+    np.testing.assert_array_equal(observation, [2.0, 4.0, 1.0, 2.0])
+
   def test_enabled_regularizer_disables_action_rate(self):
     self.config.scales.torque_rate = -1e-5
     model = SimpleNamespace(

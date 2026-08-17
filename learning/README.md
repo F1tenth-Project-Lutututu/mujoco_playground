@@ -296,6 +296,7 @@ The remote run names must match these forms:
 YYMMDD-baseline-<STEPS>M-ar<SCALE>-seed<SEED>
 YYMMDD-actionsmoothness-<STEPS>M-as<SCALE>-seed<SEED>
 YYMMDD-torquerate-<STEPS>M-tr<SCALE>-seed<SEED>
+YYMMDD-torquesmoothness-<STEPS>M-ts<SCALE>-seed<SEED>
 YYMMDD-highpass-<STEPS>M-hp<SCALE>-f<CUTOFF>o1m<M>-seed<SEED>
 ```
 
@@ -769,6 +770,18 @@ does. Make this reward observable to the actor by appending the current
 
 This is a training-time structural option and cannot be enabled only during
 evaluation of an existing checkpoint.
+
+Torque smoothness uses the same construction as action smoothness: the
+squared first and second torque differences are added and multiplied by one
+shared scale. Launch a sweep with `ts`; for example:
+
+```sh
+sbatch slurm.sh ts 8e-4 Go1JoystickFlatTerrain
+```
+
+This sets `torque_rate_use_second_difference=true`, observes both torque
+history samples needed by the policy, and names runs as
+`YYMMDD-torquesmoothness-<STEPS>M-ts<SCALE>-seed<SEED>`.
 
 Unscaled high-pass torque energies are always logged at 1, 2, 5, 10, 15, and
 20 Hz, together with total torque energy, under the `torque_spectrum` W&B

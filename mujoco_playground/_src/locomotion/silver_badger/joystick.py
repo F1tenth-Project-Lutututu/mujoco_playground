@@ -299,6 +299,7 @@ def default_config() -> config_dict.ConfigDict:
           torque_highpass_normalize_by_capacity=True,
           torque_highpass_observe_state=False,
           torque_rate_observe_state=False,
+          torque_rate_use_second_difference=False,
           torque_highpass_adaptive_weight=False,
           torque_highpass_adaptive_min_weight=0.1,
           torque_highpass_adaptive_max_weight=1.0,

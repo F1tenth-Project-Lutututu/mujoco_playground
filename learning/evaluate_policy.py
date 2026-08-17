@@ -837,6 +837,7 @@ def _restore_checkpoint_observation_structure(
       "torque_highpass_signal",
       "torque_highpass_normalize_by_capacity",
       "torque_rate_observe_state",
+      "torque_rate_use_second_difference",
   )
   for option in options:
     if option in saved_reward_config and option in env_config.reward_config:

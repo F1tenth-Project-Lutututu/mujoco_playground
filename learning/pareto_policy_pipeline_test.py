@@ -50,6 +50,20 @@ class ParetoPolicyPipelineTest(absltest.TestCase):
     ])
     self.assertEqual([run.scale for run in runs], [0.1, 10.0])
 
+  def test_select_runs_recognizes_optional_torque_smoothness_sweep(self):
+    runs = pareto_policy_pipeline.select_runs([
+        "260817-baseline-400M-ar1em2-seed0",
+        "260818-torquesmoothness-400M-ts4em4-seed2",
+    ])
+
+    self.assertEqual(
+        [(run.method, run.scale, run.seed) for run in runs],
+        [
+            ("baseline", 0.01, 0),
+            ("torque_smoothness", 0.0004, 2),
+        ],
+    )
+
   def test_select_runs_separates_high_pass_cutoff_and_m_sweeps(self):
     runs = pareto_policy_pipeline.select_runs([
         "260729-highpass-400M-hp1em4-f5o1m10-seed0",
@@ -366,6 +380,36 @@ class ParetoPolicyPipelineTest(absltest.TestCase):
         ),
         pareto_policy_pipeline._comparable_run_config(
             other, "action_smoothness"
+        ),
+    )
+
+  def test_torque_smoothness_comparison_sweeps_torque_rate_scale(self):
+    config = {
+        "environment_config": {
+            "reward_config": {
+                "torque_rate_use_second_difference": True,
+                "scales": {"torque_rate": -0.001},
+            }
+        },
+        "environment_config_overrides": {
+            "reward_config.torque_rate_use_second_difference": True,
+            "reward_config.scales.torque_rate": -0.001,
+        },
+    }
+    other = copy.deepcopy(config)
+    other["environment_config"]["reward_config"]["scales"][
+        "torque_rate"
+    ] = -0.1
+    other["environment_config_overrides"][
+        "reward_config.scales.torque_rate"
+    ] = -0.1
+
+    self.assertEqual(
+        pareto_policy_pipeline._comparable_run_config(
+            config, "torque_smoothness"
+        ),
+        pareto_policy_pipeline._comparable_run_config(
+            other, "torque_smoothness"
         ),
     )
 

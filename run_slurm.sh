@@ -2,6 +2,7 @@
 #sbatch slurm.sh ar 1e-1 BarkourJoystick
 #sbatch slurm.sh as 1e-1 BarkourJoystick
 #sbatch slurm.sh tr 8e-4 BerkeleyHumanoidJoystickFlatTerrain
+#sbatch slurm.sh ts 8e-4 Go1JoystickFlatTerrain
 #sbatch slurm.sh hp 8e-3 SpotFlatTerrainJoystick
 
 
@@ -58,6 +59,7 @@ for P in 2e-5 4e-5 6e-5 8e-5; do
   #export NUM_TIMESTEPS=1000M
   #sbatch slurm.sh ar $P Go1JoystickFlatTerrain25 
   #sbatch slurm.sh tr $P Go1JoystickFlatTerrain25 
+  #sbatch slurm.sh ts $P Go1JoystickFlatTerrain25
   #sbatch slurm.sh hp $P Go1JoystickFlatTerrain25 7.0 1.0
   #sbatch slurm.sh hp 8e-4 Go1JoystickFlatTerrain25 $P 1.0
   #sbatch slurm.sh hp 8e-4 Go1JoystickFlatTerrain25 7.0 $P
@@ -65,47 +67,58 @@ for P in 2e-5 4e-5 6e-5 8e-5; do
   #export NUM_TIMESTEPS=1000M
   #sbatch slurm.sh ar $P Go1JoystickFlatTerrain35
   #sbatch slurm.sh tr $P Go1JoystickFlatTerrain35
+  #sbatch slurm.sh ts $P Go1JoystickFlatTerrain35
   #sbatch slurm.sh hp $P Go1JoystickFlatTerrain35 7.0 1.0
 
   #sbatch slurm.sh ar $P Go1JoystickFlatTerrain
   #sbatch slurm.sh tr $P Go1JoystickFlatTerrain 
+  #sbatch slurm.sh ts $P Go1JoystickFlatTerrain
   #sbatch slurm.sh hp $P Go1JoystickFlatTerrain 5.0 1.0
 
   #sbatch slurm.sh ar $P Go1JoystickRoughTerrain
   #sbatch slurm.sh tr $P Go1JoystickRoughTerrain 
+  #sbatch slurm.sh ts $P Go1JoystickRoughTerrain
   #sbatch slurm.sh hp $P Go1JoystickRoughTerrain 5.0 1.0
 
   #sbatch slurm.sh ar $P Go1JoystickRoughTerrainPushesAndDomainRandomization
   #sbatch slurm.sh tr $P Go1JoystickRoughTerrainPushesAndDomainRandomization 
+  #sbatch slurm.sh ts $P Go1JoystickRoughTerrainPushesAndDomainRandomization
   #sbatch slurm.sh hp $P Go1JoystickRoughTerrainPushesAndDomainRandomization 5.0 1.0
 
   #sbatch slurm.sh ar $P SpotFlatTerrainJoystick
   #sbatch slurm.sh tr $P SpotFlatTerrainJoystick
+  #sbatch slurm.sh ts $P SpotFlatTerrainJoystick
   #sbatch slurm.sh hp $P SpotFlatTerrainJoystick 5.0 1.0
 
   #sbatch slurm.sh ar $P SpotFlatTerrainJoystickPushesAndDomainRandomization
   #sbatch slurm.sh tr $P SpotFlatTerrainJoystickPushesAndDomainRandomization
+  #sbatch slurm.sh ts $P SpotFlatTerrainJoystickPushesAndDomainRandomization
   #sbatch slurm.sh hp $P SpotFlatTerrainJoystickPushesAndDomainRandomization 5.0 1.0
 
   #sbatch slurm.sh ar $P SpotJoystickGaitTracking
   sbatch slurm.sh tr $P SpotJoystickGaitTracking
+  #sbatch slurm.sh ts $P SpotJoystickGaitTracking
   sbatch slurm.sh hp $P SpotJoystickGaitTracking 5.0 1.0
 
   #sbatch slurm.sh ar $P SpotJoystickGaitTrackingDomainRandomization
   #sbatch slurm.sh tr $P SpotJoystickGaitTrackingDomainRandomization
+  #sbatch slurm.sh ts $P SpotJoystickGaitTrackingDomainRandomization
   #sbatch slurm.sh hp $P SpotJoystickGaitTrackingDomainRandomization 5.0 1.0
 
   #sbatch slurm.sh ar $P BarkourJoystick
   #sbatch slurm.sh tr $P BarkourJoystick
+  #sbatch slurm.sh ts $P BarkourJoystick
   #sbatch slurm.sh hp $P BarkourJoystick 5.0 1.0
   #sbatch slurm.sh hp 3e-3 BarkourJoystick 5.0 $P 
 
   #sbatch slurm.sh ar $P SilverBadgerJoystickFlatTerrain
   #sbatch slurm.sh tr $P SilverBadgerJoystickFlatTerrain
+  #sbatch slurm.sh ts $P SilverBadgerJoystickFlatTerrain
   #sbatch slurm.sh hp $P SilverBadgerJoystickFlatTerrain 5.0 1.0
 
   #sbatch slurm.sh ar $P SilverBadgerJoystickRoughTerrain
   #sbatch slurm.sh tr $P SilverBadgerJoystickRoughTerrain
+  #sbatch slurm.sh ts $P SilverBadgerJoystickRoughTerrain
   #sbatch slurm.sh hp $P SilverBadgerJoystickRoughTerrain 5.0 1.0
 
   #sbatch slurm.sh ar $P SilverBadgerJoystickFlatTerrainNoLinearVelocity
@@ -122,6 +135,7 @@ for P in 2e-5 4e-5 6e-5 8e-5; do
 
   #sbatch slurm.sh ar $P SilverBadgerJoystickRoughTerrainNoLinearVelocityPushesAndDomainRandomization
   #sbatch slurm.sh tr $P SilverBadgerJoystickRoughTerrainNoLinearVelocityPushesAndDomainRandomization
+  #sbatch slurm.sh ts $P SilverBadgerJoystickRoughTerrainNoLinearVelocityPushesAndDomainRandomization
   #sbatch slurm.sh hp $P SilverBadgerJoystickRoughTerrainNoLinearVelocityPushesAndDomainRandomization 5.0 1.0
 
   #sbatch slurm.sh ar $P BerkeleyHumanoidJoystickRoughTerrain
