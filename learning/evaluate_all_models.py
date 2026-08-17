@@ -22,8 +22,10 @@ high-pass torque normalization modes, which are saved separately for plotting:
 """
 
 import argparse
+import datetime
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -91,6 +93,7 @@ CACHE_DEPENDENCY_PATHS = (
     Path("uv.lock"),
 )
 CACHE_MANIFEST_NAME = "evaluation_cache.json"
+IN_PROGRESS_MARKER_NAME = ".evaluation_in_progress.json"
 CACHE_FORMAT_VERSION = 1
 
 # If False, the first failed evaluation stops the batch immediately.
@@ -372,6 +375,19 @@ def main(environment: str | None = None) -> None:
           output_directory,
           torque_normalization,
       )
+      output_directory.mkdir(parents=True, exist_ok=True)
+      in_progress_marker = output_directory / IN_PROGRESS_MARKER_NAME
+      in_progress_marker.write_text(
+          json.dumps({
+              "checkpoint": str(checkpoint),
+              "pid": os.getpid(),
+              "started_at": datetime.datetime.now(
+                  datetime.timezone.utc
+              ).isoformat(),
+          }, indent=2, sort_keys=True)
+          + "\n",
+          encoding="utf-8",
+      )
       try:
         evaluate_policy.main(arguments, rollout_cache=rollout_cache)
       except Exception as error:  # pylint: disable=broad-exception-caught
@@ -382,6 +398,8 @@ def main(environment: str | None = None) -> None:
       else:
         _write_cache_manifest(manifest_path, signature)
         tqdm.write(f"{prefix}: complete -> {output_directory}")
+      finally:
+        in_progress_marker.unlink(missing_ok=True)
 
   if failures:
     details = ", ".join(f"{name} ({error})" for name, error in failures)

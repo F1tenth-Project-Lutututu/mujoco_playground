@@ -32,7 +32,7 @@ QUADRUPED_PREFIXES = (
     "SilverBadger",
     "Spot",
 )
-CACHE_FORMAT_VERSION = 4
+CACHE_FORMAT_VERSION = 5
 
 
 def _default_cache_file() -> Path:
@@ -85,54 +85,84 @@ def _environment_names(
   )
 
 
-def _evaluated_run_names(
+def _evaluation_artifact_run_names(
     host: str,
     evaluation_root: PurePosixPath,
     environment: str,
-) -> set[str]:
+) -> tuple[set[str], set[str]]:
+  """Returns configuration-valid completed runs and explicitly active runs."""
   raw_torque = evaluation_root / environment / "raw_torque"
-  quoted_root = shlex.quote(str(raw_torque))
-  paths = downloader._ssh_lines(
-      host,
-      f"if test -d {quoted_root}; then "
-      f"find {quoted_root} -mindepth 3 -maxdepth 3 -type f "
-      "-name rollouts.csv -printf '%p\\n'; fi",
-  )
-  result = set()
-  for value in paths:
-    path = PurePosixPath(value)
-    try:
-      relative = path.relative_to(raw_torque)
-    except ValueError:
-      continue
-    if len(relative.parts) == 3:
-      result.add(relative.parts[0])
-  return result
+  environment_root = evaluation_root / environment
+  script = r'''
+import json
+from pathlib import Path
+import sys
 
+environment_root = Path(sys.argv[1])
+raw_torque = environment_root / "raw_torque"
+config_path = environment_root / "cluster_evaluation_config.json"
+try:
+  config = json.loads(config_path.read_text())
+except (OSError, ValueError):
+  config = None
 
-def _started_run_names(
-    host: str,
-    evaluation_root: PurePosixPath,
-    environment: str,
-) -> set[str]:
-  """Returns runs for which an evaluator created a checkpoint output dir."""
-  raw_torque = evaluation_root / environment / "raw_torque"
-  quoted_root = shlex.quote(str(raw_torque))
-  paths = downloader._ssh_lines(
+def read_json(path):
+  try:
+    return json.loads(path.read_text())
+  except (OSError, ValueError):
+    return None
+
+for rollouts in raw_torque.glob("*/*/rollouts.csv"):
+  output = rollouts.parent
+  valid = True
+  if config is not None:
+    cache = read_json(output / "evaluation_cache.json")
+    summary = read_json(output / "summary.json")
+    if not isinstance(cache, dict) or not isinstance(summary, dict):
+      valid = False
+    else:
+      settings = cache.get("evaluation_settings", {})
+      metadata = summary.get("metadata", {})
+      expected = {
+          "env_name": config.get("environment"),
+          "num_random_tasks": config.get("num_random_tasks"),
+          "task_seed": config.get("task_seed"),
+          "episode_length": config.get("episode_length"),
+          "save_signals": config.get("save_signals"),
+          "torque_highpass_normalize_by_capacity": False,
+      }
+      valid = all(settings.get(key) == value for key, value in expected.items())
+      valid &= metadata.get("schema_version") == config.get(
+          "evaluation_schema_version"
+      )
+      valid &= metadata.get("num_random_tasks") == config.get(
+          "num_random_tasks"
+      )
+      valid &= metadata.get("signals_saved") == config.get("save_signals")
+      valid &= cache.get("checkpoint") == output.name
+      valid &= bool(cache.get("checkpoint_sha256"))
+      valid &= bool(cache.get("evaluation_code_sha256"))
+  if valid:
+    print("C\t" + output.parent.name)
+
+for marker in raw_torque.glob("*/*/.evaluation_in_progress.json"):
+  print("A\t" + marker.parent.parent.name)
+'''
+  lines = downloader._ssh_lines(
       host,
-      f"if test -d {quoted_root}; then "
-      f"find {quoted_root} -mindepth 2 -maxdepth 2 -type d "
-      "-printf '%p\\n'; fi",
+      shlex.join(["python", "-c", script, str(environment_root)]),
   )
-  result = set()
-  for value in paths:
-    try:
-      relative = PurePosixPath(value).relative_to(raw_torque)
-    except ValueError:
+  completed = set()
+  active = set()
+  for line in lines:
+    kind, separator, run_name = line.partition("\t")
+    if not separator:
       continue
-    if len(relative.parts) == 2:
-      result.add(relative.parts[0])
-  return result
+    if kind == "C":
+      completed.add(run_name)
+    elif kind == "A":
+      active.add(run_name)
+  return completed, active
 
 
 def _evaluation_manifest(
@@ -166,7 +196,8 @@ def _changed_environment_names(
       host,
       f"if test -d {quoted_root}; then "
       f"find {quoted_root} -type f "
-      "\\( -name rollouts.csv -o -name pareto_manifest.json \\) "
+      "\\( -name rollouts.csv -o -name pareto_manifest.json "
+      "-o -name cluster_evaluation_config.json \\) "
       f"-newermt {shlex.quote(f'@{since}')} -printf '%p\\n' "
       "2>/dev/null || true; fi",
   )
@@ -176,7 +207,10 @@ def _changed_environment_names(
       relative = PurePosixPath(value).relative_to(evaluation_root)
     except ValueError:
       continue
-    if len(relative.parts) == 2 and relative.name == "pareto_manifest.json":
+    if len(relative.parts) == 2 and relative.name in (
+        "pareto_manifest.json",
+        "cluster_evaluation_config.json",
+    ):
       changed.add(relative.parts[0])
     elif len(relative.parts) >= 3 and relative.parts[1] == "raw_torque":
       changed.add(relative.parts[0])
@@ -210,13 +244,14 @@ def _collect_environment_coverage(
     }
     skipped_count = len(manifest.get("skipped_runs", []))
     manifest_available = True
-  evaluated = _evaluated_run_names(host, evaluation_root, environment)
-  started = _started_run_names(host, evaluation_root, environment)
+  evaluated, active = _evaluation_artifact_run_names(
+      host, evaluation_root, environment
+  )
   return Coverage(
       environment=environment,
       evaluated_runs=len(planned & evaluated),
       planned_runs=len(planned),
-      active_runs=len((planned & started) - evaluated),
+      active_runs=len((planned & active) - evaluated),
       skipped_runs=skipped_count,
       manifest_available=manifest_available,
   )

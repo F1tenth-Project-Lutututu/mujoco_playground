@@ -226,6 +226,10 @@ def main(argv: Sequence[str] | None = None) -> None:
       "num_random_tasks": args.num_random_tasks,
       "task_seed": args.task_seed,
       "episode_length": args.episode_length,
+      "evaluation_schema_version": (
+          evaluate_policy.EVALUATION_SCHEMA_VERSION
+      ),
+      "evaluator_compatibility_version": evaluator_version,
       "save_signals": SAVE_FULL_SIGNALS,
       "continue_on_error": args.continue_on_error,
       "xla_python_client_preallocate": os.environ[

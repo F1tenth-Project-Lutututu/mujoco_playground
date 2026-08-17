@@ -52,10 +52,11 @@ class ReportClusterEvaluationsTest(absltest.TestCase):
         },
     ), mock.patch.object(
         report,
-        "_evaluated_run_names",
-        return_value={"run-a", "run-b", "stale-run"},
-    ), mock.patch.object(
-        report, "_started_run_names", return_value={"run-c"}
+        "_evaluation_artifact_run_names",
+        return_value=(
+            {"run-a", "run-b", "stale-run"},
+            {"run-c"},
+        ),
     ):
       rows = report.collect_coverage(
           "eagle", PurePosixPath("/logs"), PurePosixPath("/evaluations")
@@ -78,10 +79,8 @@ class ReportClusterEvaluationsTest(absltest.TestCase):
         return_value=None,
     ), mock.patch.object(
         report,
-        "_evaluated_run_names",
-        return_value={"run-a"},
-    ), mock.patch.object(
-        report, "_started_run_names", return_value=set()
+        "_evaluation_artifact_run_names",
+        return_value=({"run-a"}, set()),
     ):
       row = report._collect_environment_coverage(
           "eagle",

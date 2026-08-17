@@ -44,6 +44,7 @@ from learning import train_jax_ppo as train_utils
 
 
 EVALUATOR_COMPATIBILITY_VERSION = 3
+EVALUATION_SCHEMA_VERSION = 5
 
 
 DEFAULT_COMMANDS = {
@@ -1177,7 +1178,7 @@ def evaluate(args, rollout_cache: dict[str, Any] | None = None) -> Path:
   _write_rows(output_dir / "rollouts.csv", all_rows)
   summary = {
       "metadata": {
-          "schema_version": 5,
+          "schema_version": EVALUATION_SCHEMA_VERSION,
           "created_at": (
               datetime.datetime.now(datetime.timezone.utc).isoformat()
           ),
