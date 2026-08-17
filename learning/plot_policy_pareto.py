@@ -46,9 +46,9 @@ from learning import pareto_policy_pipeline
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CLUSTER_ROOT = PROJECT_ROOT / "evaluations" / "pareto_cluster"
 DEFAULT_RESULTS_ROOT = PROJECT_ROOT / "evaluations" / "pareto_results"
+DEFAULT_XLIM_CONFIG = Path(__file__).with_name("pareto_xlim.json")
 DEFAULT_ENVIRONMENT = "Go1JoystickFlatTerrain"
 DEFAULT_X_METRIC = "eval_reward_means/total_without_regularization"
-MIN_X = 31.0
 AGGREGATE_CACHE_NAME = "pareto_aggregates.csv"
 AGGREGATE_CACHE_MANIFEST_NAME = "pareto_aggregates_cache.json"
 AGGREGATE_CACHE_VERSION = 3
@@ -182,6 +182,44 @@ def _float(row: dict[str, str], metric: str) -> float:
   if not math.isfinite(value):
     raise ValueError(f"Metric {metric!r} is not finite: {value}")
   return value
+
+
+def _filter_points(
+    points: Sequence[Point],
+    xlim: tuple[float, float | None] | None,
+) -> list[Point]:
+  """Applies an x range, or returns every point when none is configured."""
+  if xlim is None:
+    return list(points)
+  return [
+      point
+      for point in points
+      if point.x >= xlim[0]
+      and (xlim[1] is None or point.x <= xlim[1])
+  ]
+
+
+def _configured_xlim(environment: str, path: Path) -> tuple[float, None] | None:
+  """Loads an optional environment-specific lower x bound."""
+  try:
+    value = json.loads(path.read_text(encoding="utf-8"))
+  except (OSError, json.JSONDecodeError) as error:
+    raise ValueError(f"Cannot read Pareto x-limit config {path}: {error}") from error
+  if not isinstance(value, dict):
+    raise ValueError(f"Pareto x-limit config must be a JSON object: {path}")
+  lower = value.get(environment)
+  if lower is None:
+    return None
+  if isinstance(lower, bool) or not isinstance(lower, (int, float)):
+    raise ValueError(
+        f"Pareto x-limit for {environment!r} must be a number, got {lower!r}"
+    )
+  lower = float(lower)
+  if not math.isfinite(lower):
+    raise ValueError(
+        f"Pareto x-limit for {environment!r} must be finite, got {lower!r}"
+    )
+  return (lower, None)
 
 
 def _manifest_runs(path: Path) -> list[dict]:
@@ -493,18 +531,10 @@ def plot(
     points = list(
         _points_from_aggregates(aggregates, x_metric, y_metric)
     )
-    if xlim is None:
-      points = [point for point in points if point.x >= MIN_X]
-    else:
-      points = [
-          point
-          for point in points
-          if point.x >= xlim[0]
-          and (xlim[1] is None or point.x <= xlim[1])
-      ]
+    points = _filter_points(points, xlim)
     if not points:
       selected_range = (
-          f">= {MIN_X:g}"
+          "in the available reports"
           if xlim is None
           else (
               f">= {xlim[0]:g}"
@@ -758,7 +788,7 @@ def _build_parser() -> argparse.ArgumentParser:
       metavar="LIMIT",
       help=(
           "Set MIN, or MIN MAX, for the included and displayed x range. "
-          f"By default points below {MIN_X:g} are excluded."
+          "Overrides the environment entry in learning/pareto_xlim.json."
       ),
   )
   parser.add_argument(
@@ -823,6 +853,8 @@ def main(argv: Sequence[str] | None = None) -> None:
       if args.xlim is not None
       else None
   )
+  if args.xlim is None:
+    xlim = _configured_xlim(environment, DEFAULT_XLIM_CONFIG)
   if xlim is not None and xlim[1] is not None and xlim[0] >= xlim[1]:
     raise ValueError("--xlim MIN must be smaller than MAX.")
   output_path = args.output or (

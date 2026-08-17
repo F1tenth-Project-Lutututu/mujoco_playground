@@ -425,8 +425,9 @@ python -m learning.plot_policy_pareto Go1JoystickFlatTerrain \
   --xlim 25 40
 ```
 
-Without `--xlim`, points below reward 31 are excluded and Matplotlib chooses
-the upper limit automatically.
+Without `--xlim`, the lower bound is read from `learning/pareto_xlim.json`.
+Environments without an entry use the full available x range. Matplotlib
+chooses the upper limit automatically.
 
 Each point pools all random-task rollouts and seeds for one method and penalty
 scale. The default x-axis is

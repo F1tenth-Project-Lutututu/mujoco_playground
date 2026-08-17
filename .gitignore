@@ -8,8 +8,10 @@ checkpoints/
 logs
 .mujoco_playground_asset_cache/
 *.png
+!mujoco_playground/_src/locomotion/silver_badger/xmls/assets/hfield.png
 *.csv
 *.json
+!learning/pareto_xlim.json
 *.mp4
 *.npz
 *.wandb

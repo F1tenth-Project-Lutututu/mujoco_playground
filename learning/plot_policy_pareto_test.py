@@ -56,7 +56,7 @@ class PlotPolicyParetoTest(absltest.TestCase):
             / "policy_pareto.png",
         ),
     )
-    self.assertIsNone(plot.call_args_list[0].args[5])
+    self.assertEqual(plot.call_args_list[0].args[5], (31.0, None))
     self.assertEqual(
         [call.args[2].name for call in plot.call_args_list],
         [
@@ -223,6 +223,30 @@ class PlotPolicyParetoTest(absltest.TestCase):
     self.assertEqual(int(second[0]["seed_count"]), 1)
     self.assertEqual(int(second[0]["expected_seed_count"]), 2)
     self.assertEqual(second[0]["missing_seeds"], "1")
+
+  def test_no_xlim_keeps_all_points(self):
+    points = [
+        plot_policy_pareto.Point(
+            "baseline", 0.01, "1em2", 28.0, 1.0, 100, 5, 5, ""
+        )
+    ]
+
+    self.assertEqual(plot_policy_pareto._filter_points(points, None), points)
+    self.assertEqual(
+        plot_policy_pareto._filter_points(points, (31.0, None)), []
+    )
+
+  def test_environment_xlim_config_and_unlisted_fallback(self):
+    with tempfile.TemporaryDirectory() as temporary_directory:
+      path = Path(temporary_directory) / "xlim.json"
+      path.write_text('{"Known": 12.5}', encoding="utf-8")
+
+      self.assertEqual(
+          plot_policy_pareto._configured_xlim("Known", path), (12.5, None)
+      )
+      self.assertIsNone(
+          plot_policy_pareto._configured_xlim("Unlisted", path)
+      )
 
   def test_report_paths_use_sole_evaluated_checkpoint_as_fallback(self):
     manifest, evaluation_root, report = self._evaluation_fixture()

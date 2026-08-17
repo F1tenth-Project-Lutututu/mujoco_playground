@@ -1,0 +1,15 @@
+{
+  "BarkourJoystick": 31.0,
+  "Go1JoystickFlatTerrain": 31.0,
+  "Go1JoystickFlatTerrain25": 27.0,
+  "Go1JoystickFlatTerrain35": 0.0,
+  "Go1JoystickRoughTerrain": 31.0,
+  "Go1JoystickRoughTerrainPushesAndDomainRandomization": 31.0,
+  "SilverBadgerJoystickFlatTerrain": 31.0,
+  "SilverBadgerJoystickRoughTerrain": 31.0,
+  "SilverBadgerJoystickRoughTerrainNoLinearVelocityPushesAndDomainRandomization": 31.0,
+  "SpotFlatTerrainJoystick": 31.0,
+  "SpotFlatTerrainJoystickPushesAndDomainRandomization": 31.0,
+  "SpotJoystickGaitTracking": 31.0,
+  "SpotJoystickGaitTrackingDomainRandomization": 31.0
+}
