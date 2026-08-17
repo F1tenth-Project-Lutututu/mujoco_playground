@@ -1,12 +1,12 @@
 """Tests for Pareto-front plotting helpers."""
 
 import json
-from pathlib import Path
 import tempfile
+from pathlib import Path
 from unittest import mock
 
-from absl.testing import absltest
 import numpy as np
+from absl.testing import absltest
 
 from learning import plot_policy_pareto
 
@@ -223,6 +223,27 @@ class PlotPolicyParetoTest(absltest.TestCase):
     self.assertEqual(int(second[0]["seed_count"]), 1)
     self.assertEqual(int(second[0]["expected_seed_count"]), 2)
     self.assertEqual(second[0]["missing_seeds"], "1")
+
+  def test_report_paths_use_sole_evaluated_checkpoint_as_fallback(self):
+    manifest, evaluation_root, report = self._evaluation_fixture()
+    expected = report.parent.parent / "000419430400" / "rollouts.csv"
+    report.parent.rename(expected.parent)
+
+    reports = plot_policy_pareto._report_paths(manifest, evaluation_root)
+
+    self.assertEqual(reports[0][1], expected)
+
+  def test_report_paths_reject_ambiguous_checkpoint_fallback(self):
+    manifest, evaluation_root, report = self._evaluation_fixture()
+    second = report.parent.parent / "000419430400" / "rollouts.csv"
+    second.parent.mkdir()
+    second.write_text(report.read_text(encoding="utf-8"), encoding="utf-8")
+    value = json.loads(manifest.read_text(encoding="utf-8"))
+    value["runs"][0]["checkpoint"] = "000410000000"
+    manifest.write_text(json.dumps(value), encoding="utf-8")
+
+    with self.assertRaisesRegex(FileNotFoundError, "ambiguous"):
+      plot_policy_pareto._report_paths(manifest, evaluation_root)
 
   def test_aggregate_cache_is_invalidated_when_rollout_changes(self):
     manifest, evaluation_root, report = self._evaluation_fixture()

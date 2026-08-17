@@ -10,16 +10,17 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path, PurePosixPath
+import os
 import shlex
 import subprocess
 import tarfile
 import tempfile
-from typing import Sequence
+import time
 import uuid
+from pathlib import Path, PurePosixPath
+from typing import Sequence
 
 from learning import download_models_to_evaluate as downloader
-
 
 DEFAULT_PROJECT_ROOT = downloader.DEFAULT_REMOTE_LOGS.parent
 DEFAULT_REMOTE_OUTPUT_ROOT = DEFAULT_PROJECT_ROOT / "evaluations" / "pareto_cluster"
@@ -33,6 +34,130 @@ def _ssh(host: str, command: str) -> str:
       text=True,
       capture_output=True,
   ).stdout.strip()
+
+
+def _format_bytes(size: int) -> str:
+  value = float(size)
+  for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+    if value < 1024.0 or unit == "TiB":
+      return f"{value:.1f} {unit}" if unit != "B" else f"{size} B"
+    value /= 1024.0
+  raise AssertionError("unreachable")
+
+
+def _positive_int(value: str) -> int:
+  parsed = int(value)
+  if parsed <= 0:
+    raise argparse.ArgumentTypeError("must be a positive integer")
+  return parsed
+
+
+def _pack_command(
+    *,
+    remote_archive: PurePosixPath,
+    remote_output_root: PurePosixPath,
+    environment: str,
+    include_signals: bool,
+    cpus: int,
+) -> str:
+  """Builds a parallel gzip command with a portable single-core fallback."""
+  tar_arguments = ["tar", "-cf", "-"]
+  if not include_signals:
+    tar_arguments.extend((
+        "--exclude=*/signals.npz",
+        "--exclude=*/rollout.mp4",
+    ))
+  tar_arguments.extend([
+      "-C",
+      str(remote_output_root),
+      environment,
+  ])
+  compressor = (
+      f"if command -v pigz >/dev/null 2>&1; then "
+      f"pigz -1 -p {cpus}; else gzip -1; fi"
+  )
+  pipeline = (
+      "set -o pipefail; "
+      f"{shlex.join(tar_arguments)} | {{ {compressor}; }} > "
+      f"{shlex.quote(str(remote_archive))}"
+  )
+  return shlex.join(("bash", "-lc", pipeline))
+
+
+def _run_with_progress(arguments: Sequence[str], description: str) -> str:
+  """Runs a command and periodically reports elapsed time while it is quiet."""
+  process = subprocess.Popen(
+      arguments,
+      text=True,
+      stdout=subprocess.PIPE,
+      stderr=subprocess.PIPE,
+  )
+  started = time.monotonic()
+  while process.poll() is None:
+    elapsed = int(time.monotonic() - started)
+    print(f"  {description}: {elapsed}s elapsed...", flush=True)
+    try:
+      process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+      pass
+  stdout, stderr = process.communicate()
+  if process.returncode:
+    raise subprocess.CalledProcessError(
+        process.returncode, arguments, output=stdout, stderr=stderr
+    )
+  return stdout.strip()
+
+
+def _download_with_progress(
+    host: str,
+    remote_archive: PurePosixPath,
+    local_archive: Path,
+    total_size: int,
+) -> None:
+  """Streams one remote file over SSH and prints deterministic progress."""
+  command = f"cat -- {shlex.quote(str(remote_archive))}"
+  staging = local_archive.with_name(f".{local_archive.name}.partial")
+  process = subprocess.Popen(
+      ("ssh", host, command),
+      stdout=subprocess.PIPE,
+      stderr=subprocess.PIPE,
+  )
+  downloaded = 0
+  last_percent = -1
+  started = time.monotonic()
+  assert process.stdout is not None
+  try:
+    with staging.open("wb") as output:
+      while chunk := process.stdout.read(1024 * 1024):
+        output.write(chunk)
+        downloaded += len(chunk)
+        percent = min(100, downloaded * 100 // max(total_size, 1))
+        if percent >= last_percent + 2 or downloaded == total_size:
+          elapsed = max(time.monotonic() - started, 1e-6)
+          print(
+              f"  {percent:3d}%  {_format_bytes(downloaded)} / "
+              f"{_format_bytes(total_size)}  "
+              f"({_format_bytes(int(downloaded / elapsed))}/s)",
+              flush=True,
+          )
+          last_percent = percent
+    stderr = process.stderr.read() if process.stderr is not None else b""
+    return_code = process.wait()
+    if return_code:
+      raise subprocess.CalledProcessError(
+          return_code, process.args, stderr=stderr
+      )
+    if downloaded != total_size:
+      raise IOError(
+          f"Downloaded {_format_bytes(downloaded)}, expected "
+          f"{_format_bytes(total_size)}."
+      )
+    os.replace(staging, local_archive)
+  finally:
+    if process.poll() is None:
+      process.terminate()
+      process.wait()
+    staging.unlink(missing_ok=True)
 
 
 def submit(args: argparse.Namespace) -> None:
@@ -132,22 +257,13 @@ def fetch(args: argparse.Namespace) -> None:
   remote_transfer = args.remote_output_root / f".pareto-results-{transfer_id}"
   remote_archive = remote_transfer / f"{environment}.tar.gz"
   remote_log = remote_transfer / "tar.log"
-  tar_arguments = [
-      "tar",
-      "-czf",
-      str(remote_archive),
-  ]
-  if not args.include_signals:
-    tar_arguments.extend((
-        "--exclude=*/signals.npz",
-        "--exclude=*/rollout.mp4",
-    ))
-  tar_arguments.extend([
-      "-C",
-      str(args.remote_output_root),
-      environment,
-  ])
-  tar_command = shlex.join(tar_arguments)
+  tar_command = _pack_command(
+      remote_archive=remote_archive,
+      remote_output_root=args.remote_output_root,
+      environment=environment,
+      include_signals=args.include_signals,
+      cpus=args.archive_cpus,
+  )
   _ssh(args.host, f"mkdir -p {shlex.quote(str(remote_transfer))}")
   try:
     if _ssh(
@@ -157,6 +273,11 @@ def fetch(args: argparse.Namespace) -> None:
       raise FileNotFoundError(
           f"Remote evaluation directory does not exist: {remote_environment}"
       )
+    print(
+        "[1/3] Compressing results on Eagle "
+        f"({args.archive_cpus} requested CPU cores)...",
+        flush=True,
+    )
     submission = shlex.join([
         "sbatch",
         "--wait",
@@ -164,23 +285,44 @@ def fetch(args: argparse.Namespace) -> None:
         f"--partition={args.archive_partition}",
         "--nodes=1",
         "--ntasks=1",
-        "--cpus-per-task=4",
+        f"--cpus-per-task={args.archive_cpus}",
         "--mem=16G",
         "--time=01:00:00",
         "--job-name=pareto_results",
         f"--output={remote_log}",
         f"--wrap={tar_command}",
     ])
-    job_id = _ssh(args.host, submission)
-    print(f"Packaged results in Eagle Slurm job {job_id}.")
+    job_id = _run_with_progress(
+        ("ssh", args.host, submission), "waiting for archive job"
+    )
+    remote_size_text = _ssh(
+        args.host,
+        f"stat -c %s -- {shlex.quote(str(remote_archive))}",
+    )
+    remote_size = int(remote_size_text)
+    print(
+        f"  Packaged {_format_bytes(remote_size)} in Slurm job {job_id}.",
+        flush=True,
+    )
     args.local_output_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
         prefix=".pareto-results-", dir=args.local_output_root
     ) as temporary_directory:
       temporary = Path(temporary_directory)
-      downloader._copy_remote(args.host, remote_archive, temporary)
       local_archive = temporary / remote_archive.name
+      print(
+          f"[2/3] Downloading compressed archive ({_format_bytes(remote_size)})...",
+          flush=True,
+      )
+      _download_with_progress(
+          args.host, remote_archive, local_archive, remote_size
+      )
       with tarfile.open(local_archive, "r:gz") as archive:
+        members = archive.getmembers()
+        print(
+            f"[3/3] Decompressing {len(members)} entries locally...",
+            flush=True,
+        )
         archive.extractall(args.local_output_root, filter="data")
     print(
         f"{'Full results' if args.include_signals else 'Metric reports'} "
@@ -283,6 +425,12 @@ def _build_parser() -> argparse.ArgumentParser:
   )
   fetch_parser.add_argument("--archive-partition", default="standard")
   fetch_parser.add_argument(
+      "--archive-cpus",
+      type=_positive_int,
+      default=8,
+      help="CPU cores requested for parallel cluster compression (default: 8).",
+  )
+  fetch_parser.add_argument(
       "--include-signals",
       action="store_true",
       help="Also download large signals.npz trajectory archives and videos.",
@@ -294,7 +442,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> None:
   args = _build_parser().parse_args(argv)
   if args.command == "metrics" and not args.metric:
-    from learning import recompute_evaluation_metrics
+    from learning import recompute_evaluation_metrics  # noqa: PLC0415
     args.metric = list(recompute_evaluation_metrics.DEFAULT_METRICS)
   args.handler(args)
 

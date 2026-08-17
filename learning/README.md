@@ -554,6 +554,12 @@ Eagle CPU worker and download it as one compressed tar archive:
 python -m learning.pareto_cluster fetch Go1JoystickFlatTerrain
 ```
 
+Fetch uses parallel `pigz` compression on the cluster when it is installed,
+falling back to standard gzip while keeping the same `.tar.gz` format. It
+prints progress for remote packaging, the byte-level SSH download, and local
+decompression. Eight compression cores are requested by default; adjust that
+without changing the result format with `--archive-cpus N`.
+
 Results are safely extracted by default under
 `evaluations/pareto_cluster/<environment>/`. The temporary remote archive is
 deleted after either success or failure. By default, fetch excludes the large

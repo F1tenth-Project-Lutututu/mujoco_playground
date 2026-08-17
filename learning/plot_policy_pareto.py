@@ -207,17 +207,37 @@ def _report_paths(
     manifest: Path, evaluation_root: Path
 ) -> list[tuple[dict, Path]]:
   reports = []
+  substituted = []
   for run in _manifest_runs(manifest):
-    report = (
+    run_root = (
         evaluation_root
         / "raw_torque"
         / str(run["run_name"])
-        / str(run["checkpoint"])
-        / "rollouts.csv"
     )
+    report = run_root / str(run["checkpoint"]) / "rollouts.csv"
     if not report.is_file():
-      raise FileNotFoundError(f"Evaluation report not found: {report}")
+      alternatives = sorted(
+          candidate
+          for candidate in run_root.glob("*/rollouts.csv")
+          if candidate.parent.name.isdigit()
+      )
+      if len(alternatives) != 1:
+        detail = (
+            "no alternative report exists"
+            if not alternatives
+            else f"{len(alternatives)} alternative reports are ambiguous"
+        )
+        raise FileNotFoundError(
+            f"Evaluation report not found: {report}; {detail}"
+        )
+      substituted.append((report, alternatives[0]))
+      report = alternatives[0]
     reports.append((run, report))
+  if substituted:
+    print(
+        f"Using the sole completed checkpoint for {len(substituted)} runs "
+        "whose manifest checkpoint was not evaluated."
+    )
   return reports
 
 

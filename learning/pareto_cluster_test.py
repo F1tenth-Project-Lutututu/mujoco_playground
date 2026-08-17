@@ -1,11 +1,10 @@
 """Tests for the localhost Pareto cluster controller."""
 
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
-from learning import evaluate_pareto_on_cluster
-from learning import pareto_cluster
+from learning import evaluate_pareto_on_cluster, pareto_cluster
 
 
 class ParetoClusterTest(unittest.TestCase):
@@ -55,6 +54,33 @@ class ParetoClusterTest(unittest.TestCase):
         pareto_cluster.DEFAULT_LOCAL_OUTPUT_ROOT,
     )
     self.assertFalse(arguments.include_signals)
+    self.assertEqual(arguments.archive_cpus, 8)
+
+  def test_fetch_pack_command_uses_parallel_gzip_and_excludes_signals(self):
+    command = pareto_cluster._pack_command(
+        remote_archive=pareto_cluster.PurePosixPath("/tmp/results.tar.gz"),
+        remote_output_root=pareto_cluster.PurePosixPath("/remote/results"),
+        environment="Go1JoystickFlatTerrain",
+        include_signals=False,
+        cpus=8,
+    )
+
+    self.assertIn("pigz -1 -p 8", command)
+    self.assertIn("gzip -1", command)
+    self.assertIn("--exclude=*/signals.npz", command)
+    self.assertIn("--exclude=*/rollout.mp4", command)
+
+  def test_fetch_pack_command_can_include_signals(self):
+    command = pareto_cluster._pack_command(
+        remote_archive=pareto_cluster.PurePosixPath("/tmp/results.tar.gz"),
+        remote_output_root=pareto_cluster.PurePosixPath("/remote/results"),
+        environment="Go1JoystickFlatTerrain",
+        include_signals=True,
+        cpus=4,
+    )
+
+    self.assertNotIn("signals.npz", command)
+    self.assertNotIn("rollout.mp4", command)
 
   def test_metrics_accepts_repeatable_metric_selection(self):
     metric = (
