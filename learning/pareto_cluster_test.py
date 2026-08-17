@@ -4,12 +4,16 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from learning import evaluate_pareto_on_cluster
 from learning import pareto_cluster
 
 
 class ParetoClusterTest(unittest.TestCase):
 
-  def test_submit_defaults_to_large_h100_rollout_batch(self):
+  def test_cluster_evaluation_does_not_save_full_signals(self):
+    self.assertFalse(evaluate_pareto_on_cluster.SAVE_FULL_SIGNALS)
+
+  def test_submit_defaults_to_1024_parallel_environments(self):
     with tempfile.TemporaryDirectory() as temporary_directory:
       manifest = Path(temporary_directory) / "manifest.json"
       arguments = pareto_cluster._build_parser().parse_args([
@@ -18,7 +22,7 @@ class ParetoClusterTest(unittest.TestCase):
           str(manifest),
       ])
 
-    self.assertEqual(arguments.num_random_tasks, 2048)
+    self.assertEqual(arguments.num_random_tasks, 1024)
     self.assertEqual(
         arguments.remote_models_root,
         pareto_cluster.downloader.DEFAULT_REMOTE_LOGS,

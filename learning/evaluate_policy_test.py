@@ -377,7 +377,8 @@ class EvaluatePolicyTest(absltest.TestCase):
         np.tile([0.5, 0.0, 0.2], (4, 1)),
     )
     self.assertEqual(signals["action"].shape, (4, 2, 12))
-    self.assertNotIn("qpos", signals)
+    self.assertIn("qpos", signals)
+    self.assertIn("qacc", signals)
     self.assertNotIn("obs/state", signals)
     self.assertNotIn("render/qpos", signals)
 
@@ -471,10 +472,19 @@ class EvaluatePolicyTest(absltest.TestCase):
     self.assertEqual(rows[0]["tracking/linear_velocity_vector_rmse"], 0.0)
     self.assertEqual(rows[0]["tracking/yaw_rate_rmse"], 0.0)
 
-  def test_episode_rows_include_joint_velocity_smoothness(self):
+  def test_episode_rows_include_joint_state_smoothness(self):
     time_steps = 5
+    qpos = np.zeros((time_steps, 1, 9))
+    qpos[:, 0, 0] = np.arange(time_steps, dtype=float) ** 2
+    qpos[:, 0, 7] = np.arange(time_steps, dtype=float) ** 2
     qvel = np.zeros((time_steps, 1, 8))
+    qvel[:, 0, 0] = [0.0, 1.0, 0.0, 1.0, 0.0]
+    qvel[:, 0, 3] = [0.0, 2.0, 0.0, 2.0, 0.0]
     qvel[:, 0, 6] = [0.0, 1.0, 0.0, 1.0, 0.0]
+    qacc = np.zeros((time_steps, 1, 8))
+    qacc[:, 0, 0] = [0.0, 3.0, 0.0, 3.0, 0.0]
+    qacc[:, 0, 3] = [0.0, 4.0, 0.0, 4.0, 0.0]
+    qacc[:, 0, 6] = [0.0, 2.0, 0.0, 2.0, 0.0]
     signals = {
         "active": np.ones((time_steps, 1), dtype=bool),
         "done": np.zeros((time_steps, 1), dtype=bool),
@@ -488,7 +498,9 @@ class EvaluatePolicyTest(absltest.TestCase):
         "upvector": np.broadcast_to(
             [0.0, 0.0, 1.0], (time_steps, 1, 3)
         ),
+        "qpos": qpos,
         "qvel": qvel,
+        "qacc": qacc,
     }
 
     row = evaluate_policy._episode_rows(
@@ -509,6 +521,35 @@ class EvaluatePolicyTest(absltest.TestCase):
         ],
         0.0,
     )
+    self.assertGreater(
+        row[
+            "smoothness/joint_position/"
+            "mssd_mean_squared_second_difference_per_dof"
+        ],
+        0.0,
+    )
+    self.assertGreater(
+        row[
+            "smoothness/joint_acceleration/"
+            "mssd_mean_squared_second_difference_per_dof"
+        ],
+        0.0,
+    )
+    for family in (
+        "base_position",
+        "base_linear_velocity",
+        "base_angular_velocity",
+        "base_linear_acceleration",
+        "base_angular_acceleration",
+    ):
+      with self.subTest(family=family):
+        self.assertGreater(
+            row[
+                f"smoothness/{family}/"
+                "mssd_mean_squared_second_difference_per_dof"
+            ],
+            0.0,
+        )
 
   def test_parse_commands(self):
     commands = evaluate_policy._parse_commands(
@@ -543,6 +584,12 @@ class EvaluatePolicyTest(absltest.TestCase):
         metrics["fft_above_15hz_energy_per_step"], 0.0, places=6
     )
     self.assertAlmostEqual(metrics["spectral_centroid_hz"], 10.0, places=6)
+    self.assertAlmostEqual(
+        metrics["fft_above_5hz_ac_energy_fraction"], 1.0, places=6
+    )
+    self.assertAlmostEqual(
+        metrics["fft_above_15hz_ac_energy_fraction"], 0.0, places=6
+    )
 
   def test_smoothness_matches_mean_action_rate_definition(self):
     signal = np.array([[0.0, 0.0], [1.0, 2.0], [2.0, 4.0]])
@@ -551,6 +598,22 @@ class EvaluatePolicyTest(absltest.TestCase):
     )
     self.assertAlmostEqual(metrics["mean_squared_delta_l2_per_step"], 5.0)
     self.assertAlmostEqual(metrics["delta_rms_per_dof"], np.sqrt(2.5))
+    self.assertAlmostEqual(metrics["rate_abs_p95_per_second"], 4.0)
+    self.assertAlmostEqual(metrics["peak_rate_abs_per_second"], 4.0)
+
+  def test_smoothness_reports_tail_and_peak_second_derivatives(self):
+    signal = np.asarray([[0.0], [0.0], [1.0], [3.0]])
+    metrics = evaluate_policy._smoothness_metrics(
+        signal, sample_period=0.5, cutoffs_hz=(0.5,)
+    )
+
+    # Discrete second differences are 1 and 1, or 4 units/s^2.
+    self.assertAlmostEqual(
+        metrics["acceleration_abs_p95_per_second2"], 4.0
+    )
+    self.assertAlmostEqual(
+        metrics["peak_acceleration_abs_per_second2"], 4.0
+    )
 
   def test_mssd_and_msgfd_for_quadratic_signal(self):
     time = np.arange(9, dtype=np.float64)

@@ -16,6 +16,9 @@ import shutil
 from typing import Sequence
 
 
+SAVE_FULL_SIGNALS = False
+
+
 def _build_parser() -> argparse.ArgumentParser:
   parser = argparse.ArgumentParser(description=__doc__)
   source = parser.add_mutually_exclusive_group(required=True)
@@ -33,7 +36,7 @@ def _build_parser() -> argparse.ArgumentParser:
           "targets 400M, or 1B for Go1JoystickFlatTerrain25."
       ),
   )
-  parser.add_argument("--num-random-tasks", type=int, default=2048)
+  parser.add_argument("--num-random-tasks", type=int, default=1024)
   parser.add_argument("--task-seed", type=int, default=0)
   parser.add_argument("--episode-length", type=int, default=1000)
   parser.add_argument(
@@ -202,9 +205,10 @@ def main(argv: Sequence[str] | None = None) -> None:
   evaluate_all_models.EPISODE_LENGTH = args.episode_length
   evaluate_all_models.REQUIRE_CUDA = True
   evaluate_all_models.RENDER_VIDEO = False
-  # Keep a complete batched experiment record on cluster storage so new
-  # trajectory-derived metrics can be computed without replaying policies.
-  evaluate_all_models.SAVE_SIGNALS = True
+  # Metrics are computed from the in-memory rollout tensors. Persisting the
+  # full batched trajectories produces multi-gigabyte archives per policy
+  # and makes large sweeps storage- and compression-bound.
+  evaluate_all_models.SAVE_SIGNALS = SAVE_FULL_SIGNALS
   evaluate_all_models.USE_SAVED_ENVIRONMENT_CONFIG = True
   evaluate_all_models.TORQUE_NORMALIZATION_MODES = {"raw_torque": False}
   evaluate_all_models.CONTINUE_ON_ERROR = args.continue_on_error
@@ -222,7 +226,7 @@ def main(argv: Sequence[str] | None = None) -> None:
       "num_random_tasks": args.num_random_tasks,
       "task_seed": args.task_seed,
       "episode_length": args.episode_length,
-      "save_signals": True,
+      "save_signals": SAVE_FULL_SIGNALS,
       "continue_on_error": args.continue_on_error,
       "xla_python_client_preallocate": os.environ[
           "XLA_PYTHON_CLIENT_PREALLOCATE"

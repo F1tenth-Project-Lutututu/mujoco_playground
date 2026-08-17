@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Report cluster evaluation coverage for quadruped locomotion environments.
+"""Report live cluster evaluation progress for quadruped environments.
 
-The report compares unique saved training-run directories below the Eagle logs
-root with unique runs having a completed top-level ``rollouts.csv`` below the
-cluster Pareto evaluation root.
+When available, each evaluation's ``pareto_manifest.json`` defines the exact
+deduplicated workload. Output directories and top-level ``rollouts.csv`` files
+then provide read-only started and completed counters, respectively.
 
 Example:
 
@@ -14,18 +14,17 @@ Example:
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
 import fnmatch
 import json
 import os
-from pathlib import Path, PurePosixPath
 import shlex
 import time
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 from typing import Sequence
 
 from learning import download_models_to_evaluate as downloader
 from learning import pareto_cluster
-
 
 QUADRUPED_PREFIXES = (
     "Barkour",
@@ -33,7 +32,7 @@ QUADRUPED_PREFIXES = (
     "SilverBadger",
     "Spot",
 )
-CACHE_FORMAT_VERSION = 3
+CACHE_FORMAT_VERSION = 4
 
 
 def _default_cache_file() -> Path:
@@ -47,11 +46,22 @@ def _default_cache_file() -> Path:
 class Coverage:
   environment: str
   evaluated_runs: int
-  saved_runs: int
+  planned_runs: int
+  active_runs: int = 0
+  skipped_runs: int = 0
+  manifest_available: bool = True
 
   @property
   def missing_runs(self) -> int:
-    return self.saved_runs - self.evaluated_runs
+    return self.planned_runs - self.evaluated_runs
+
+  @property
+  def progress_percent(self) -> float:
+    return (
+        100.0
+        if self.planned_runs == 0
+        else 100.0 * self.evaluated_runs / self.planned_runs
+    )
 
 
 def _is_quadruped_locomotion(environment: str, pattern: str) -> bool:
@@ -100,17 +110,63 @@ def _evaluated_run_names(
   return result
 
 
+def _started_run_names(
+    host: str,
+    evaluation_root: PurePosixPath,
+    environment: str,
+) -> set[str]:
+  """Returns runs for which an evaluator created a checkpoint output dir."""
+  raw_torque = evaluation_root / environment / "raw_torque"
+  quoted_root = shlex.quote(str(raw_torque))
+  paths = downloader._ssh_lines(
+      host,
+      f"if test -d {quoted_root}; then "
+      f"find {quoted_root} -mindepth 2 -maxdepth 2 -type d "
+      "-printf '%p\\n'; fi",
+  )
+  result = set()
+  for value in paths:
+    try:
+      relative = PurePosixPath(value).relative_to(raw_torque)
+    except ValueError:
+      continue
+    if len(relative.parts) == 2:
+      result.add(relative.parts[0])
+  return result
+
+
+def _evaluation_manifest(
+    host: str,
+    evaluation_root: PurePosixPath,
+    environment: str,
+) -> dict | None:
+  path = evaluation_root / environment / "pareto_manifest.json"
+  quoted_path = shlex.quote(str(path))
+  lines = downloader._ssh_lines(
+      host,
+      f"if test -f {quoted_path}; then cat -- {quoted_path}; fi",
+  )
+  if not lines:
+    return None
+  try:
+    value = json.loads("\n".join(lines))
+  except json.JSONDecodeError:
+    return None
+  return value if isinstance(value, dict) else None
+
+
 def _changed_environment_names(
     host: str,
     evaluation_root: PurePosixPath,
     since: float,
 ) -> set[str]:
-  """Returns environments with completed reports modified since `since`."""
+  """Returns environments with a changed plan or completed report."""
   quoted_root = shlex.quote(str(evaluation_root))
   paths = downloader._ssh_lines(
       host,
       f"if test -d {quoted_root}; then "
-      f"find {quoted_root} -type f -name rollouts.csv "
+      f"find {quoted_root} -type f "
+      "\\( -name rollouts.csv -o -name pareto_manifest.json \\) "
       f"-newermt {shlex.quote(f'@{since}')} -printf '%p\\n' "
       "2>/dev/null || true; fi",
   )
@@ -120,7 +176,9 @@ def _changed_environment_names(
       relative = PurePosixPath(value).relative_to(evaluation_root)
     except ValueError:
       continue
-    if len(relative.parts) >= 3 and relative.parts[1] == "raw_torque":
+    if len(relative.parts) == 2 and relative.name == "pareto_manifest.json":
+      changed.add(relative.parts[0])
+    elif len(relative.parts) >= 3 and relative.parts[1] == "raw_torque":
       changed.add(relative.parts[0])
   return changed
 
@@ -131,21 +189,36 @@ def _collect_environment_coverage(
     evaluation_root: PurePosixPath,
     environment: str,
 ) -> Coverage:
-  # Recovery tools keep failed runs below hidden administrative directories
-  # such as `.incomplete-runs`. Only immediate, non-hidden run directories
-  # belong in saved-run coverage.
-  saved = {
-      name
-      for name in downloader._remote_run_names(
-          host, remote_logs / environment
-      )
-      if not name.startswith(".")
-  }
+  manifest = _evaluation_manifest(host, evaluation_root, environment)
+  if manifest is None:
+    # Before submission, retain the legacy saved-run estimate while clearly
+    # marking that no exact evaluation plan exists yet.
+    planned = {
+        name
+        for name in downloader._remote_run_names(
+            host, remote_logs / environment
+        )
+        if not name.startswith(".")
+    }
+    skipped_count = 0
+    manifest_available = False
+  else:
+    planned = {
+        str(run["run_name"])
+        for run in manifest.get("runs", [])
+        if isinstance(run, dict) and "run_name" in run
+    }
+    skipped_count = len(manifest.get("skipped_runs", []))
+    manifest_available = True
   evaluated = _evaluated_run_names(host, evaluation_root, environment)
+  started = _started_run_names(host, evaluation_root, environment)
   return Coverage(
       environment=environment,
-      evaluated_runs=len(saved & evaluated),
-      saved_runs=len(saved),
+      evaluated_runs=len(planned & evaluated),
+      planned_runs=len(planned),
+      active_runs=len((planned & started) - evaluated),
+      skipped_runs=skipped_count,
+      manifest_available=manifest_available,
   )
 
 
@@ -219,7 +292,10 @@ def _write_cached_coverage(
           {
               "environment": row.environment,
               "evaluated_runs": row.evaluated_runs,
-              "saved_runs": row.saved_runs,
+            "planned_runs": row.planned_runs,
+            "active_runs": row.active_runs,
+            "skipped_runs": row.skipped_runs,
+            "manifest_available": row.manifest_available,
           }
           for row in rows
       ],
@@ -267,6 +343,9 @@ def collect_coverage_cached(
     refresh_environments = changed | (
         set(environments) - cached_by_environment.keys()
     )
+    refresh_environments |= {
+        row.environment for row in cached_rows if row.missing_runs > 0
+    }
     rows = [
         _collect_environment_coverage(
             host, remote_logs, evaluation_root, environment
@@ -281,14 +360,34 @@ def collect_coverage_cached(
 
 def format_table(rows: Sequence[Coverage]) -> str:
   """Formats coverage rows as a compact aligned text table."""
-  headers = ("Environment", "Reports", "Saved runs", "Missing", "Status")
+  headers = (
+      "Environment",
+      "Done",
+      "Active",
+      "Planned",
+      "Skipped",
+      "Remaining",
+      "Progress",
+      "Status",
+  )
   values = [
       (
           row.environment,
           str(row.evaluated_runs),
-          str(row.saved_runs),
+          str(row.active_runs),
+          str(row.planned_runs),
+          str(row.skipped_runs),
           str(row.missing_runs),
-          "COMPLETE" if row.missing_runs == 0 else "INCOMPLETE",
+          f"{row.progress_percent:5.1f}%",
+          (
+              "COMPLETE"
+              if row.missing_runs == 0
+              else "RUNNING"
+              if row.active_runs > 0 or row.evaluated_runs > 0
+              else "PLANNED"
+              if row.manifest_available
+              else "UNPLANNED"
+          ),
       )
       for row in rows
   ]
@@ -301,7 +400,7 @@ def format_table(rows: Sequence[Coverage]) -> str:
   lines = [
       "  ".join(
           value.ljust(widths[index])
-          if index in (0, 4)
+          if index in (0, len(headers) - 1)
           else value.rjust(widths[index])
           for index, value in enumerate(headers)
       ),
@@ -310,7 +409,7 @@ def format_table(rows: Sequence[Coverage]) -> str:
   lines.extend(
       "  ".join(
           value.ljust(widths[index])
-          if index in (0, 4)
+          if index in (0, len(headers) - 1)
           else value.rjust(widths[index])
           for index, value in enumerate(row)
       )
@@ -369,8 +468,10 @@ def main(argv: Sequence[str] | None = None) -> int:
   print(format_table(rows))
   print(
       f"\nTotal: {sum(row.evaluated_runs for row in rows)}/"
-      f"{sum(row.saved_runs for row in rows)} evaluated; "
-      f"{sum(row.missing_runs for row in rows)} missing."
+      f"{sum(row.planned_runs for row in rows)} planned evaluations complete; "
+      f"{sum(row.active_runs for row in rows)} active, "
+      f"{sum(row.skipped_runs for row in rows)} skipped before evaluation, "
+      f"{sum(row.missing_runs for row in rows)} remaining."
   )
   return 0
 

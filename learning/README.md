@@ -502,7 +502,7 @@ they differ.
 The cluster job uses `slurm_pareto_evaluate.sh`, requests one GPU on the
 `proxima` partition, and evaluates all policies in a single Python process.
 This allows compatible policies to reuse the same JAX-compiled rollout. Each
-policy evaluates 2048 random tasks in parallel by default, XLA preallocates
+policy evaluates 1024 random tasks in parallel by default, XLA preallocates
 90% of GPU memory, and videos and raw signal archives are disabled. These
 settings are intended for an 80 GB H100. Reduce the batch if an environment
 uses substantially more state:
@@ -518,12 +518,12 @@ checkpoint does not waste the remaining allocation. Evaluation caching is
 unchanged, so resubmitting skips reports whose checkpoint, settings, code, and
 dependencies have not changed.
 
-Cluster evaluations retain compressed, batched `signals.npz` archives on
-Eagle. These include joint positions, velocities and accelerations; controls,
-actuator forces and velocities; generalized actuator and constraint forces;
-body/site poses; sensors, observations, contacts, commands, and perturbations.
-This full experiment record allows new trajectory-derived metrics to be
-computed without replaying policies.
+Cluster Pareto evaluations do not retain batched `signals.npz` archives by
+default. Torque, joint-velocity, action, and motor-target smoothness metrics
+are computed directly from the in-memory rollout tensors before they are
+released. This avoids multi-gigabyte archives per policy. Run
+`evaluate_policy.py` explicitly with `--save_signals` only when a full
+trajectory record is required for later metric development.
 
 Recompute the currently supported joint-velocity metrics across every run in
 an environment on an Eagle CPU worker:

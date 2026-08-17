@@ -187,8 +187,16 @@ def _fft_energy_metrics(
   else:
     metrics["spectral_rolloff_95_hz"] = 0.0
   for cutoff in cutoffs_hz:
-    metrics[f"fft_above_{cutoff:g}hz_energy_per_step"] = float(
+    high_frequency_energy = float(
         np.sum(energy_by_frequency[frequencies >= cutoff])
+    )
+    metrics[f"fft_above_{cutoff:g}hz_energy_per_step"] = (
+        high_frequency_energy
+    )
+    # A scale-independent complement to absolute spectral energy. It is most
+    # useful when methods also change the overall signal magnitude.
+    metrics[f"fft_above_{cutoff:g}hz_ac_energy_fraction"] = (
+        high_frequency_energy / ac_total if ac_total > 0 else 0.0
     )
   return metrics
 
@@ -211,6 +219,7 @@ def _smoothness_metrics(
   }
   delta = np.diff(signal, axis=0)
   if len(delta):
+    absolute_rate = np.abs(delta / sample_period)
     metrics.update({
         # This is the unweighted quantity used by the PPO mean-action loss.
         "mean_squared_delta_l2_per_step": float(
@@ -224,6 +233,10 @@ def _smoothness_metrics(
             np.sum(np.abs(delta))
             / (max(signal.shape[0] - 1, 1) * sample_period * dofs)
         ),
+        "rate_abs_p95_per_second": float(
+            np.percentile(absolute_rate, 95.0)
+        ),
+        "peak_rate_abs_per_second": float(np.max(absolute_rate)),
     })
   else:
     metrics.update({
@@ -231,8 +244,11 @@ def _smoothness_metrics(
         "delta_rms_per_dof": 0.0,
         "rate_rms_per_dof_per_second": 0.0,
         "total_variation_per_second_per_dof": 0.0,
+        "rate_abs_p95_per_second": 0.0,
+        "peak_rate_abs_per_second": 0.0,
     })
   second_delta = np.diff(signal, n=2, axis=0)
+  absolute_acceleration = np.abs(second_delta / sample_period**2)
   # MSSD follows the control-smoothness convention: the mean square of the
   # discrete second difference, averaged over time and degrees of freedom.
   metrics["mssd_mean_squared_second_difference_per_dof"] = (
@@ -247,6 +263,14 @@ def _smoothness_metrics(
       float(np.sqrt(np.mean(np.square(second_delta / sample_period**2))))
       if len(second_delta)
       else 0.0
+  )
+  metrics["acceleration_abs_p95_per_second2"] = (
+      float(np.percentile(absolute_acceleration, 95.0))
+      if len(second_delta)
+      else 0.0
+  )
+  metrics["peak_acceleration_abs_per_second2"] = (
+      float(np.max(absolute_acceleration)) if len(second_delta) else 0.0
   )
   # Use the largest valid odd window for very short, terminated episodes.
   effective_window = min(savgol_window_length, signal.shape[0])
@@ -475,17 +499,49 @@ def _episode_rows(
             savgol_polyorder,
         ).items()
     })
-    row.update({
-        f"smoothness/joint_velocity/{key}": value
-        for key, value in _smoothness_metrics(
-            # Exclude the floating-base linear and angular velocities.
-            episodes["qvel"][rollout_index][:, 6:],
-            sample_period,
-            cutoffs_hz,
-            savgol_window_length,
-            savgol_polyorder,
-        ).items()
-    })
+    # qpos has seven floating-base coordinates (position + quaternion), while
+    # qvel and qacc have six (linear + angular). Older saved signal archives
+    # may not contain qpos/qacc, so retain compatibility when recomputing them.
+    for signal_name, metric_name, floating_base_dofs in (
+        ("qpos", "joint_position", 7),
+        ("qvel", "joint_velocity", 6),
+        ("qacc", "joint_acceleration", 6),
+    ):
+      if signal_name not in episodes:
+        continue
+      row.update({
+          f"smoothness/{metric_name}/{key}": value
+          for key, value in _smoothness_metrics(
+              episodes[signal_name][rollout_index][:, floating_base_dofs:],
+              sample_period,
+              cutoffs_hz,
+              savgol_window_length,
+              savgol_polyorder,
+          ).items()
+      })
+    # Keep translational and rotational base quantities separate so metrics
+    # never average values with incompatible physical units. Quaternion
+    # components are intentionally excluded: Euclidean differences between
+    # equivalent q and -q representations are not meaningful rotations.
+    for signal_name, metric_name, start, stop in (
+        ("qpos", "base_position", 0, 3),
+        ("qvel", "base_linear_velocity", 0, 3),
+        ("qvel", "base_angular_velocity", 3, 6),
+        ("qacc", "base_linear_acceleration", 0, 3),
+        ("qacc", "base_angular_acceleration", 3, 6),
+    ):
+      if signal_name not in episodes:
+        continue
+      row.update({
+          f"smoothness/{metric_name}/{key}": value
+          for key, value in _smoothness_metrics(
+              episodes[signal_name][rollout_index][:, start:stop],
+              sample_period,
+              cutoffs_hz,
+              savgol_window_length,
+              savgol_polyorder,
+          ).items()
+      })
     torque_metrics = _smoothness_metrics(
         episodes["actuator_force"][rollout_index],
         sample_period,
@@ -651,7 +707,9 @@ def _rollout(
         "command": current_state.info["command"],
         "motor_target": next_state.data.ctrl,
         "actuator_force": next_state.data.actuator_force,
+        "qpos": next_state.data.qpos,
         "qvel": next_state.data.qvel,
+        "qacc": next_state.data.qacc,
         "local_linear_velocity": local_linear_velocity,
         "gyro": gyro,
         "upvector": upvector,
@@ -1119,7 +1177,7 @@ def evaluate(args, rollout_cache: dict[str, Any] | None = None) -> Path:
   _write_rows(output_dir / "rollouts.csv", all_rows)
   summary = {
       "metadata": {
-          "schema_version": 4,
+          "schema_version": 5,
           "created_at": (
               datetime.datetime.now(datetime.timezone.utc).isoformat()
           ),
@@ -1160,8 +1218,22 @@ def evaluate(args, rollout_cache: dict[str, Any] | None = None) -> Path:
               "smoothness/torque/mean_squared_delta_l2_per_step",
               "smoothness/torque/mssd_mean_squared_second_difference_per_dof",
               "smoothness/torque/msgfd_mean_absolute_savgol_filter_deviation_per_dof",
+              "smoothness/torque/rate_abs_p95_per_second",
+              "smoothness/torque/fft_above_5hz_ac_energy_fraction",
+              "smoothness/joint_position/mssd_mean_squared_second_difference_per_dof",
+              "smoothness/joint_position/msgfd_mean_absolute_savgol_filter_deviation_per_dof",
+              "smoothness/joint_velocity/delta_rms_per_dof",
               "smoothness/joint_velocity/mssd_mean_squared_second_difference_per_dof",
               "smoothness/joint_velocity/msgfd_mean_absolute_savgol_filter_deviation_per_dof",
+              "smoothness/joint_velocity/rate_abs_p95_per_second",
+              "smoothness/joint_velocity/fft_above_5hz_ac_energy_fraction",
+              "smoothness/joint_acceleration/mssd_mean_squared_second_difference_per_dof",
+              "smoothness/joint_acceleration/msgfd_mean_absolute_savgol_filter_deviation_per_dof",
+              "smoothness/base_position/mssd_mean_squared_second_difference_per_dof",
+              "smoothness/base_linear_velocity/mssd_mean_squared_second_difference_per_dof",
+              "smoothness/base_angular_velocity/mssd_mean_squared_second_difference_per_dof",
+              "smoothness/base_linear_acceleration/mssd_mean_squared_second_difference_per_dof",
+              "smoothness/base_angular_acceleration/mssd_mean_squared_second_difference_per_dof",
               "torque_spectrum/eval/fft_above_5hz_energy_per_step",
               "tracking/absolute_mechanical_energy",
               "tracking/total_absolute_torque_impulse",

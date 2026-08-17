@@ -225,7 +225,7 @@ def _build_parser() -> argparse.ArgumentParser:
       type=PurePosixPath,
       default=DEFAULT_REMOTE_OUTPUT_ROOT,
   )
-  submit_parser.add_argument("--num-random-tasks", type=int, default=2048)
+  submit_parser.add_argument("--num-random-tasks", type=int, default=1024)
   submit_parser.add_argument("--task-seed", type=int, default=0)
   submit_parser.add_argument(
       "--run-date",

@@ -1,7 +1,7 @@
 """Tests for cluster evaluation coverage reporting."""
 
-from pathlib import Path, PurePosixPath
 import tempfile
+from pathlib import Path, PurePosixPath
 from unittest import mock
 
 from absl.testing import absltest
@@ -41,8 +41,21 @@ class ReportClusterEvaluationsTest(absltest.TestCase):
         return_value=["run-a", "run-b", "run-c"],
     ), mock.patch.object(
         report,
+        "_evaluation_manifest",
+        return_value={
+            "runs": [
+                {"run_name": "run-a"},
+                {"run_name": "run-b"},
+                {"run_name": "run-c"},
+            ],
+            "skipped_runs": [],
+        },
+    ), mock.patch.object(
+        report,
         "_evaluated_run_names",
         return_value={"run-a", "run-b", "stale-run"},
+    ), mock.patch.object(
+        report, "_started_run_names", return_value={"run-c"}
     ):
       rows = report.collect_coverage(
           "eagle", PurePosixPath("/logs"), PurePosixPath("/evaluations")
@@ -50,7 +63,7 @@ class ReportClusterEvaluationsTest(absltest.TestCase):
 
     self.assertEqual(
         rows,
-        [report.Coverage("Go1JoystickFlatTerrain", 2, 3)],
+        [report.Coverage("Go1JoystickFlatTerrain", 2, 3, 1)],
     )
     self.assertEqual(rows[0].missing_runs, 1)
 
@@ -61,8 +74,14 @@ class ReportClusterEvaluationsTest(absltest.TestCase):
         return_value=["run-a", ".incomplete-runs"],
     ), mock.patch.object(
         report,
+        "_evaluation_manifest",
+        return_value=None,
+    ), mock.patch.object(
+        report,
         "_evaluated_run_names",
         return_value={"run-a"},
+    ), mock.patch.object(
+        report, "_started_run_names", return_value=set()
     ):
       row = report._collect_environment_coverage(
           "eagle",
@@ -71,23 +90,28 @@ class ReportClusterEvaluationsTest(absltest.TestCase):
           "Go1JoystickFlatTerrain",
       )
 
-    self.assertEqual(row, report.Coverage("Go1JoystickFlatTerrain", 1, 1))
+    self.assertEqual(
+        row,
+        report.Coverage(
+            "Go1JoystickFlatTerrain", 1, 1, manifest_available=False
+        ),
+    )
 
   def test_formats_table_and_status(self):
     table = report.format_table([
         report.Coverage("Go1JoystickFlatTerrain", 3, 3),
-        report.Coverage("SpotJoystick", 2, 5),
+        report.Coverage("SpotJoystick", 2, 5, 1, 2),
     ])
 
     self.assertIn("Environment", table)
     self.assertIn("Go1JoystickFlatTerrain", table)
     self.assertIn("COMPLETE", table)
-    self.assertIn("INCOMPLETE", table)
+    self.assertIn("RUNNING", table)
 
   def test_reuses_cached_coverage(self):
     with tempfile.TemporaryDirectory() as temporary_directory:
       cache_file = Path(temporary_directory) / "coverage.json"
-      expected = [report.Coverage("Go1JoystickFlatTerrain", 2, 3)]
+      expected = [report.Coverage("Go1JoystickFlatTerrain", 3, 3)]
       with mock.patch.object(
           report, "collect_coverage", return_value=expected
       ) as collect, mock.patch.object(
@@ -133,7 +157,9 @@ class ReportClusterEvaluationsTest(absltest.TestCase):
           "_changed_environment_names",
           return_value={"Go1JoystickFlatTerrain"},
       ), mock.patch.object(
-          report, "_collect_environment_coverage", return_value=updated
+          report,
+          "_collect_environment_coverage",
+          side_effect=[updated, initial[1]],
       ) as collect_environment:
         report.collect_coverage_cached(
             "eagle",
@@ -149,12 +175,7 @@ class ReportClusterEvaluationsTest(absltest.TestCase):
         )
 
       self.assertEqual(rows, [updated, initial[1]])
-      collect_environment.assert_called_once_with(
-          "eagle",
-          PurePosixPath("/logs"),
-          PurePosixPath("/evaluations"),
-          "Go1JoystickFlatTerrain",
-      )
+      self.assertEqual(collect_environment.call_count, 2)
 
   def test_refresh_cache_queries_cluster_again(self):
     with tempfile.TemporaryDirectory() as temporary_directory:
