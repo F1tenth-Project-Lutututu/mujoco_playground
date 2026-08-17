@@ -15,8 +15,8 @@
 """Download and evaluate penalty sweeps used for Pareto-front comparisons.
 
 The default workflow selects the newest Eagle run for every
-(method, penalty scale, seed), downloads its latest checkpoint, and evaluates
-all policies on the same reproducible random tasks:
+(method, penalty scale, seed), downloads its target-aligned checkpoint, and
+evaluates all policies on the same reproducible random tasks:
 
   python -m learning.pareto_policy_pipeline all
 
@@ -50,6 +50,9 @@ DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "evaluations" / "pareto"
 MANIFEST_NAME = "pareto_manifest.json"
 EVALUATION_COVERAGE_NAME = "pareto_seed_coverage.json"
 DEFAULT_ARCHIVE_PARTITION = "standard"
+DEFAULT_EVALUATION_STEP = 400_000_000
+LONG_HORIZON_ENVIRONMENT = "Go1JoystickFlatTerrain25"
+LONG_HORIZON_EVALUATION_STEP = 1_000_000_000
 
 # The date prefix is captured so repeated sweeps can be deduplicated in favor
 # of the newest run.  High-pass cutoff/difference-order combinations are
@@ -57,19 +60,22 @@ DEFAULT_ARCHIVE_PARTITION = "standard"
 # the plain ``high_pass`` name for manifest and plotting compatibility.
 RUN_PATTERNS = {
     "action_smoothness": re.compile(
-        r"(?P<date>\d{6})-actionsmoothness-\d+M-"
+        r"(?P<date>\d{6})-actionsmoothness-(?P<steps>\d+)M-"
         r"as(?P<scale>[0-9]+e[mp][0-9]+)-seed(?P<seed>\d+)"
     ),
     "baseline": re.compile(
-        r"(?P<date>\d{6})-baseline-\d+M-ar(?P<scale>[0-9]+e[mp][0-9]+)"
+        r"(?P<date>\d{6})-baseline-(?P<steps>\d+)M-"
+        r"ar(?P<scale>[0-9]+e[mp][0-9]+)"
         r"-seed(?P<seed>\d+)"
     ),
     "torque_rate": re.compile(
-        r"(?P<date>\d{6})-torquerate-\d+M-tr(?P<scale>[0-9]+e[mp][0-9]+)"
+        r"(?P<date>\d{6})-torquerate-(?P<steps>\d+)M-"
+        r"tr(?P<scale>[0-9]+e[mp][0-9]+)"
         r"-seed(?P<seed>\d+)"
     ),
     "high_pass": re.compile(
-        r"(?P<date>\d{6})-highpass-\d+M-hp(?P<scale>[0-9]+e[mp][0-9]+)"
+        r"(?P<date>\d{6})-highpass-(?P<steps>\d+)M-"
+        r"hp(?P<scale>[0-9]+e[mp][0-9]+)"
         r"-f(?P<cutoff>[0-9]+(?:p[0-9]+)?)"
         r"o(?P<filter_order>[0-9]+)"
         r"m(?P<difference_order>[0-9]+(?:p[0-9]+)?)"
@@ -90,6 +96,7 @@ class PolicyRun:
   cutoff_hz: float | None = None
   filter_order: int | None = None
   difference_order: float | None = None
+  training_steps_millions: int | None = None
 
 
 def _decode_decimal_tag(tag: str) -> float:
@@ -131,7 +138,9 @@ def decode_scale(tag: str) -> float:
 
 
 def select_runs(
-    run_names: Sequence[str], run_date: int | None = None
+    run_names: Sequence[str],
+    run_date: int | None = None,
+    training_steps_millions: int | None = None,
 ) -> list[PolicyRun]:
   """Selects runs for one date, or the newest per method, scale, and seed."""
   selected: dict[tuple[str, str, int], PolicyRun] = {}
@@ -142,6 +151,12 @@ def select_runs(
         continue
       date = int(match.group("date"))
       if run_date is not None and date != run_date:
+        break
+      run_steps_millions = int(match.group("steps"))
+      if (
+          training_steps_millions is not None
+          and run_steps_millions != training_steps_millions
+      ):
         break
       cutoff_hz = None
       filter_order = None
@@ -165,7 +180,8 @@ def select_runs(
           run_name=run_name,
           cutoff_hz=cutoff_hz,
           filter_order=filter_order,
-          difference_order=difference_order,
+        difference_order=difference_order,
+        training_steps_millions=run_steps_millions,
       )
       key = (run.method, run.scale_tag, run.seed)
       if key not in selected or run.date > selected[key].date:
@@ -175,6 +191,23 @@ def select_runs(
       selected.values(),
       key=lambda run: (run.method, run.scale, run.seed),
   )
+
+
+def evaluation_target_step(environment: str) -> int:
+  """Returns the common checkpoint step used to compare one environment."""
+  if environment == LONG_HORIZON_ENVIRONMENT:
+    return LONG_HORIZON_EVALUATION_STEP
+  return DEFAULT_EVALUATION_STEP
+
+
+def select_checkpoint_name(
+    checkpoint_names: Sequence[str], target_step: int
+) -> str:
+  """Selects the numeric checkpoint nearest a target, preferring later ties."""
+  numeric = [name for name in checkpoint_names if name.isdigit()]
+  if not numeric:
+    raise ValueError("No numeric checkpoints exist.")
+  return min(numeric, key=lambda name: (abs(int(name) - target_step), -int(name)))
 
 
 def _write_manifest(
@@ -473,7 +506,11 @@ def download(
   environment_root = remote_logs / environment
   local_environment = local_root / environment
   runs = select_runs(
-      downloader._remote_run_names(host, environment_root), run_date=run_date
+      downloader._remote_run_names(host, environment_root),
+      run_date=run_date,
+      training_steps_millions=(
+          1000 if environment == LONG_HORIZON_ENVIRONMENT else None
+      ),
   )
   if not runs:
     date_description = f" for date {run_date:06d}" if run_date else ""
@@ -486,10 +523,13 @@ def download(
   skipped: list[dict] = []
   archive_members: list[PurePosixPath] = []
   print(f"Selected {len(runs)} policies from {environment_root}.", flush=True)
+  target_step = evaluation_target_step(environment)
   for index, run in enumerate(runs, start=1):
     remote_run = environment_root / run.run_name
     try:
-      checkpoint, configs = downloader._latest_checkpoint(host, remote_run)
+      checkpoint_names, configs = downloader._checkpoint_inventory(
+          host, remote_run
+      )
     except ValueError as error:
       if "No numeric checkpoints found" not in str(error):
         raise
@@ -513,20 +553,23 @@ def download(
           "remote_directory_deleted": deleted,
       })
       continue
-    if int(checkpoint) < min_checkpoint_step:
+    latest_step = max(map(int, checkpoint_names))
+    required_step = max(min_checkpoint_step, target_step)
+    if latest_step < required_step:
       print(
           f"[{index}/{len(runs)}] {run.run_name}: skipped because latest "
-          f"checkpoint {checkpoint} is below {min_checkpoint_step:012d}",
+          f"checkpoint {latest_step:012d} is below {required_step:012d}",
           flush=True,
       )
       skipped.append({
           **asdict(run),
           "reason": (
-              f"latest checkpoint {checkpoint} is below "
-              f"{min_checkpoint_step:012d}"
+              f"latest checkpoint {latest_step:012d} is below "
+              f"{required_step:012d}"
           ),
       })
       continue
+    checkpoint = select_checkpoint_name(checkpoint_names, target_step)
     local_run = local_environment / run.run_name
     local_checkpoint = local_run / "checkpoints" / checkpoint
     print(

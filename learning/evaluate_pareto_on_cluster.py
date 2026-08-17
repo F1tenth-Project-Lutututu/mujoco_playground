@@ -24,7 +24,15 @@ def _build_parser() -> argparse.ArgumentParser:
   parser.add_argument("--models-root", type=Path, required=True)
   parser.add_argument("--output-root", type=Path, required=True)
   parser.add_argument("--run-date", type=int)
-  parser.add_argument("--min-checkpoint-step", type=int, default=400_000_000)
+  parser.add_argument(
+      "--min-checkpoint-step",
+      type=int,
+      default=400_000_000,
+      help=(
+          "Minimum progress required for eligibility. Checkpoint selection "
+          "targets 400M, or 1B for Go1JoystickFlatTerrain25."
+      ),
+  )
   parser.add_argument("--num-random-tasks", type=int, default=2048)
   parser.add_argument("--task-seed", type=int, default=0)
   parser.add_argument("--episode-length", type=int, default=1000)
@@ -100,7 +108,14 @@ def main(argv: Sequence[str] | None = None) -> None:
             if path.is_dir()
         ],
         run_date=args.run_date,
+        training_steps_millions=(
+            1000
+            if environment
+            == pareto_policy_pipeline.LONG_HORIZON_ENVIRONMENT
+            else None
+        ),
     )
+    target_step = pareto_policy_pipeline.evaluation_target_step(environment)
     completed = []
     skipped = []
     for run in selected:
@@ -120,21 +135,25 @@ def main(argv: Sequence[str] | None = None) -> None:
             "reason": "no numeric checkpoint exists",
         })
         continue
-      checkpoint = max(numeric, key=lambda path: int(path.name))
-      if int(checkpoint.name) < args.min_checkpoint_step:
+      latest_step = max(int(path.name) for path in numeric)
+      required_step = max(args.min_checkpoint_step, target_step)
+      if latest_step < required_step:
         skipped.append({
             **asdict(run),
             "reason": (
-                f"latest checkpoint {checkpoint.name} is below "
-                f"{args.min_checkpoint_step:012d}"
+                f"latest checkpoint {latest_step:012d} is below "
+                f"{required_step:012d}"
             ),
         })
         continue
+      checkpoint_name = pareto_policy_pipeline.select_checkpoint_name(
+          [path.name for path in numeric], target_step
+      )
       completed.append(
           pareto_policy_pipeline.PolicyRun(
               **{
                   **asdict(run),
-                  "checkpoint": checkpoint.name,
+                  "checkpoint": checkpoint_name,
               }
           )
       )

@@ -101,6 +101,50 @@ class ParetoPolicyPipelineTest(absltest.TestCase):
         ["260730-baseline-1000M-ar1em1-seed0"],
     )
 
+  def test_select_runs_can_restrict_nominal_training_duration(self):
+    runs = pareto_policy_pipeline.select_runs(
+        [
+            "260817-baseline-400M-ar1em1-seed0",
+            "260817-baseline-1000M-ar1em1-seed0",
+            "260817-actionsmoothness-1000M-as1em1-seed0",
+        ],
+        training_steps_millions=1000,
+    )
+
+    self.assertEqual(
+        [run.run_name for run in runs],
+        [
+            "260817-actionsmoothness-1000M-as1em1-seed0",
+            "260817-baseline-1000M-ar1em1-seed0",
+        ],
+    )
+
+  def test_environment_checkpoint_targets(self):
+    self.assertEqual(
+        pareto_policy_pipeline.evaluation_target_step("BarkourJoystick"),
+        400_000_000,
+    )
+    self.assertEqual(
+        pareto_policy_pipeline.evaluation_target_step(
+            "Go1JoystickFlatTerrain25"
+        ),
+        1_000_000_000,
+    )
+
+  def test_select_checkpoint_uses_nearest_and_prefers_later_ties(self):
+    self.assertEqual(
+        pareto_policy_pipeline.select_checkpoint_name(
+            ["not-a-step", "380000000", "410000000"], 400_000_000
+        ),
+        "410000000",
+    )
+    self.assertEqual(
+        pareto_policy_pipeline.select_checkpoint_name(
+            ["390000000", "410000000"], 400_000_000
+        ),
+        "410000000",
+    )
+
   def test_checkpoint_complete_requires_network_config(self):
     with tempfile.TemporaryDirectory() as temporary_directory:
       checkpoint = Path(temporary_directory)

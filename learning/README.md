@@ -478,9 +478,12 @@ python -m learning.pareto_cluster submit Go1JoystickFlatTerrain
 ```
 
 The cluster worker discovers matching run directories directly in Eagle's
-`logs/<environment>/`, selects their latest complete checkpoints, validates
+`logs/<environment>/`, selects the checkpoint nearest 400M steps, validates
 that each method's sweep differs only by penalty scale and seed, and writes
 the resulting `pareto_manifest.json` into the remote evaluation directory.
+For `Go1JoystickFlatTerrain25`, discovery is restricted to nominal 1000M runs
+and selects the checkpoint nearest 1B steps instead. A run must have reached
+the applicable target before it is eligible.
 Use `--run-date 260729` when the logs contain incompatible experiment cohorts
 from different dates.
 

@@ -101,9 +101,9 @@ def _matching_runs(
   return result
 
 
-def _latest_checkpoint(
+def _checkpoint_inventory(
     host: str, remote_run: PurePosixPath
-) -> tuple[str, list[PurePosixPath]]:
+) -> tuple[list[str], list[PurePosixPath]]:
   checkpoints = remote_run / "checkpoints"
   quoted_checkpoints = shlex.quote(str(checkpoints))
   names = _ssh_lines(
@@ -114,7 +114,6 @@ def _latest_checkpoint(
   numeric = [name for name in names if name.isdigit()]
   if not numeric:
     raise ValueError(f"No numeric checkpoints found at {host}:{checkpoints}")
-  latest = max(numeric, key=int)
 
   quoted_run = shlex.quote(str(remote_run))
   config_files = _ssh_lines(
@@ -122,7 +121,14 @@ def _latest_checkpoint(
       f"find {quoted_run} -maxdepth 2 -type f "
       "\\( -name run_config.json -o -name config.json \\) -print",
   )
-  return latest, [PurePosixPath(path) for path in config_files]
+  return numeric, [PurePosixPath(path) for path in config_files]
+
+
+def _latest_checkpoint(
+    host: str, remote_run: PurePosixPath
+) -> tuple[str, list[PurePosixPath]]:
+  numeric, config_files = _checkpoint_inventory(host, remote_run)
+  return max(numeric, key=int), config_files
 
 
 def _copy_remote(
