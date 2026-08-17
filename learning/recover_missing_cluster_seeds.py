@@ -100,6 +100,10 @@ def _launcher_arguments(run_config: dict[str, Any]) -> list[str]:
         f"found {active}"
     )
   method, signed_scale = active[0]
+  if method == "ar" and overrides.get(
+      "reward_config.action_rate_use_second_difference", False
+  ):
+    method = "as"
   if method == "hp":
     highpass_order = float(
         overrides.get("reward_config.torque_highpass_order", 1.0)
@@ -137,6 +141,7 @@ def _launcher_family(arguments: Sequence[str], date_prefix: str) -> str:
   method, scale, _, cutoff, difference_order, timesteps = arguments
   method_name = {
       "ar": "baseline",
+      "as": "actionsmoothness",
       "tr": "torquerate",
       "hp": "highpass",
   }.get(method)

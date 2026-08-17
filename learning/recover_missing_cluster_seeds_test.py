@@ -56,6 +56,30 @@ class RecoverMissingClusterSeedsTest(unittest.TestCase):
     }
     self.assertEqual(recovery._launcher_arguments(config)[1], "2e-2")
 
+  def test_launcher_arguments_identify_action_smoothness(self):
+    config = {
+        "command": [
+            "train-jax-ppo",
+            "--num_timesteps=1000000000",
+            "--env_name=Go1JoystickFlatTerrain",
+            "--playground_config_overrides="
+            '{"reward_config.scales.action_rate": -0.02, '
+            '"reward_config.action_rate_use_second_difference": true}',
+        ]
+    }
+
+    self.assertEqual(
+        recovery._launcher_arguments(config),
+        [
+            "as",
+            "2e-2",
+            "Go1JoystickFlatTerrain",
+            "5",
+            "1.0",
+            "1000000000",
+        ],
+    )
+
   def test_launcher_arguments_remove_binary_float_artifacts(self):
     config = {
         "command": [
@@ -87,6 +111,10 @@ class RecoverMissingClusterSeedsTest(unittest.TestCase):
             "260729-baseline-400M-ar2em2",
         ),
         (
+            ["as", "2e-2", "Env", "5", "1.0", "1000000000"],
+            "260817-actionsmoothness-1000M-as2em2",
+        ),
+        (
             ["tr", "6e-4", "Env", "5", "1.0", "400M"],
             "260729-torquerate-400M-tr6em4",
         ),
@@ -98,7 +126,7 @@ class RecoverMissingClusterSeedsTest(unittest.TestCase):
     for arguments, expected in cases:
       with self.subTest(arguments=arguments):
         self.assertEqual(
-            recovery._launcher_family(arguments, "260729"), expected
+            recovery._launcher_family(arguments, expected[:6]), expected
         )
         recovery._validate_launcher_family(expected, arguments)
 
