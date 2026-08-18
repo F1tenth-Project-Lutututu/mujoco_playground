@@ -64,7 +64,12 @@ class ReportClusterEvaluationsTest(absltest.TestCase):
 
     self.assertEqual(
         rows,
-        [report.Coverage("Go1JoystickFlatTerrain", 2, 3, 1)],
+        [
+            report.Coverage(
+                "Go1JoystickFlatTerrain", 2, 3, 1,
+                method_progress="other 2/3"
+            )
+        ],
     )
     self.assertEqual(rows[0].missing_runs, 1)
 
@@ -92,9 +97,46 @@ class ReportClusterEvaluationsTest(absltest.TestCase):
     self.assertEqual(
         row,
         report.Coverage(
-            "Go1JoystickFlatTerrain", 1, 1, manifest_available=False
+            "Go1JoystickFlatTerrain",
+            1,
+            1,
+            manifest_available=False,
+            method_progress="other 1/1",
         ),
     )
+
+  def test_comprehensive_plan_includes_old_and_current_pareto_methods(self):
+    run_names = [
+        "260729-baseline-400M-ar1em2-seed0",
+        "260729-torquerate-400M-tr1em4-seed0",
+        "260818-torquesmoothness-400M-ts1em4-seed0",
+    ]
+    with mock.patch.object(
+        report.downloader, "_remote_run_names", return_value=run_names
+    ), mock.patch.object(
+        report,
+        "_evaluation_manifest",
+        return_value={
+            "runs": [{"run_name": run_names[-1]}],
+            "skipped_runs": [],
+        },
+    ), mock.patch.object(
+        report,
+        "_evaluation_artifact_run_names",
+        return_value=({run_names[0], run_names[1]}, {run_names[2]}),
+    ):
+      row = report._collect_environment_coverage(
+          "eagle",
+          PurePosixPath("/logs"),
+          PurePosixPath("/evaluations"),
+          "Go1JoystickFlatTerrain",
+      )
+
+    self.assertEqual(row.evaluated_runs, 2)
+    self.assertEqual(row.active_runs, 1)
+    self.assertEqual(row.planned_runs, 3)
+    self.assertEqual(row.missing_runs, 1)
+    self.assertEqual(row.method_progress, "ar 1/1, tr 1/1, ts 0/1")
 
   def test_formats_table_and_status(self):
     table = report.format_table([

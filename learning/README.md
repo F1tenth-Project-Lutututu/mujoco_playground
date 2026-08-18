@@ -520,6 +520,21 @@ checkpoint does not waste the remaining allocation. Evaluation caching is
 unchanged, so resubmitting skips reports whose checkpoint, settings, code, and
 dependencies have not changed.
 
+Inspect comprehensive evaluation coverage with:
+
+```bash
+python -m learning.report_cluster_evaluations
+```
+
+The report reconstructs the Pareto workload across all dates, selecting the
+newest run for every method, scale, and seed. It therefore keeps valid July
+baseline, torque-rate, and high-pass reports visible when a newer restricted
+manifest is evaluating another method. The final column reports compact
+per-method fractions such as `ar 35/35, hp 70/70, ts 18/35`. `Remaining`
+counts every selected policy without a valid evaluation; `Active` counts
+policies with an evaluation-in-progress marker. Use `--refresh-cache` to force
+a complete cluster rescan.
+
 Cluster Pareto evaluations do not retain batched `signals.npz` archives by
 default. Torque, joint-velocity, action, and motor-target smoothness metrics
 are computed directly from the in-memory rollout tensors before they are

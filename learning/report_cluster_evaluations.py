@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Report live cluster evaluation progress for quadruped environments.
+"""Report comprehensive Pareto evaluation progress for quadruped environments.
 
-When available, each evaluation's ``pareto_manifest.json`` defines the exact
-deduplicated workload. Output directories and top-level ``rollouts.csv`` files
-then provide read-only started and completed counters, respectively.
+The expected workload is reconstructed from all recognized training runs using
+the same newest-per-method/scale/seed selection as the Pareto pipeline. Output
+directories and top-level ``rollouts.csv`` files provide read-only started and
+completed counters, including valid reports outside the latest manifest.
 
 Example:
 
@@ -24,7 +25,7 @@ from pathlib import Path, PurePosixPath
 from typing import Sequence
 
 from learning import download_models_to_evaluate as downloader
-from learning import pareto_cluster
+from learning import pareto_cluster, pareto_policy_pipeline
 
 QUADRUPED_PREFIXES = (
     "Barkour",
@@ -32,7 +33,7 @@ QUADRUPED_PREFIXES = (
     "SilverBadger",
     "Spot",
 )
-CACHE_FORMAT_VERSION = 5
+CACHE_FORMAT_VERSION = 6
 
 
 def _default_cache_file() -> Path:
@@ -50,6 +51,7 @@ class Coverage:
   active_runs: int = 0
   skipped_runs: int = 0
   manifest_available: bool = True
+  method_progress: str = ""
 
   @property
   def missing_runs(self) -> int:
@@ -91,7 +93,6 @@ def _evaluation_artifact_run_names(
     environment: str,
 ) -> tuple[set[str], set[str]]:
   """Returns configuration-valid completed runs and explicitly active runs."""
-  raw_torque = evaluation_root / environment / "raw_torque"
   environment_root = evaluation_root / environment
   script = r'''
 import json
@@ -187,6 +188,7 @@ def _evaluation_manifest(
 
 def _changed_environment_names(
     host: str,
+    remote_logs: PurePosixPath,
     evaluation_root: PurePosixPath,
     since: float,
 ) -> set[str]:
@@ -214,6 +216,19 @@ def _changed_environment_names(
       changed.add(relative.parts[0])
     elif len(relative.parts) >= 3 and relative.parts[1] == "raw_torque":
       changed.add(relative.parts[0])
+  quoted_logs = shlex.quote(str(remote_logs))
+  changed_runs = downloader._ssh_lines(
+      host,
+      f"if test -d {quoted_logs}; then "
+      f"find {quoted_logs} -mindepth 2 -maxdepth 2 -type d "
+      f"-newermt {shlex.quote(f'@{since}')} -printf '%P\\n' "
+      "2>/dev/null || true; fi",
+  )
+  changed.update(
+      PurePosixPath(value).parts[0]
+      for value in changed_runs
+      if len(PurePosixPath(value).parts) == 2
+  )
   return changed
 
 
@@ -223,17 +238,38 @@ def _collect_environment_coverage(
     evaluation_root: PurePosixPath,
     environment: str,
 ) -> Coverage:
+  run_names = [
+      name
+      for name in downloader._remote_run_names(
+          host, remote_logs / environment
+      )
+      if not name.startswith(".")
+  ]
+  selected = pareto_policy_pipeline.select_runs(
+      run_names,
+      training_steps_millions=(
+          1000
+          if environment
+          == pareto_policy_pipeline.LONG_HORIZON_ENVIRONMENT
+          else None
+      ),
+  )
   manifest = _evaluation_manifest(host, evaluation_root, environment)
-  if manifest is None:
-    # Before submission, retain the legacy saved-run estimate while clearly
-    # marking that no exact evaluation plan exists yet.
-    planned = {
-        name
-        for name in downloader._remote_run_names(
-            host, remote_logs / environment
-        )
-        if not name.startswith(".")
+  if selected:
+    planned_methods = {run.run_name: run.method for run in selected}
+    planned = set(planned_methods)
+    skipped_names = {
+        str(item["run_name"])
+        for item in (manifest or {}).get("skipped_runs", [])
+        if isinstance(item, dict) and "run_name" in item
     }
+    skipped_count = len(planned & skipped_names)
+    manifest_available = True
+  elif manifest is None:
+    # Retain support for legacy or custom run names that do not follow the
+    # Pareto naming convention.
+    planned = set(run_names)
+    planned_methods = {name: "other" for name in planned}
     skipped_count = 0
     manifest_available = False
   else:
@@ -242,19 +278,48 @@ def _collect_environment_coverage(
         for run in manifest.get("runs", [])
         if isinstance(run, dict) and "run_name" in run
     }
+    planned_methods = {
+        str(run["run_name"]): str(run.get("method", "other"))
+        for run in manifest.get("runs", [])
+        if isinstance(run, dict) and "run_name" in run
+    }
     skipped_count = len(manifest.get("skipped_runs", []))
     manifest_available = True
   evaluated, active = _evaluation_artifact_run_names(
       host, evaluation_root, environment
   )
+  completed_planned = planned & evaluated
+  active_planned = (planned & active) - evaluated
+  method_counts: dict[str, list[int]] = {}
+  for run_name, method in planned_methods.items():
+    short_method = _short_method_name(method)
+    counts = method_counts.setdefault(short_method, [0, 0])
+    counts[1] += 1
+    if run_name in completed_planned:
+      counts[0] += 1
   return Coverage(
       environment=environment,
-      evaluated_runs=len(planned & evaluated),
+      evaluated_runs=len(completed_planned),
       planned_runs=len(planned),
-      active_runs=len((planned & active) - evaluated),
+      active_runs=len(active_planned),
       skipped_runs=skipped_count,
       manifest_available=manifest_available,
+      method_progress=", ".join(
+          f"{method} {counts[0]}/{counts[1]}"
+          for method, counts in sorted(method_counts.items())
+      ),
   )
+
+
+def _short_method_name(method: str) -> str:
+  if method.startswith("high_pass"):
+    return "hp"
+  return {
+      "action_smoothness": "as",
+      "baseline": "ar",
+      "torque_rate": "tr",
+      "torque_smoothness": "ts",
+  }.get(method, method)
 
 
 def collect_coverage(
@@ -331,6 +396,7 @@ def _write_cached_coverage(
             "active_runs": row.active_runs,
             "skipped_runs": row.skipped_runs,
             "manifest_available": row.manifest_available,
+            "method_progress": row.method_progress,
           }
           for row in rows
       ],
@@ -373,7 +439,7 @@ def collect_coverage_cached(
     environments = _environment_names(host, remote_logs, pattern)
     cached_by_environment = {row.environment: row for row in cached_rows}
     changed = _changed_environment_names(
-        host, evaluation_root, checked_at
+        host, remote_logs, evaluation_root, checked_at
     )
     refresh_environments = changed | (
         set(environments) - cached_by_environment.keys()
@@ -404,6 +470,7 @@ def format_table(rows: Sequence[Coverage]) -> str:
       "Remaining",
       "Progress",
       "Status",
+      "Methods (done/planned)",
   )
   values = [
       (
@@ -418,11 +485,14 @@ def format_table(rows: Sequence[Coverage]) -> str:
               "COMPLETE"
               if row.missing_runs == 0
               else "RUNNING"
-              if row.active_runs > 0 or row.evaluated_runs > 0
+              if row.active_runs > 0
+              else "INCOMPLETE"
+              if row.evaluated_runs > 0
               else "PLANNED"
               if row.manifest_available
               else "UNPLANNED"
           ),
+          row.method_progress or "-",
       )
       for row in rows
   ]
