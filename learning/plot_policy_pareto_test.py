@@ -13,17 +13,56 @@ from learning import plot_policy_pareto
 
 class PlotPolicyParetoTest(absltest.TestCase):
 
-  def test_default_metrics_include_joint_velocity_mssd_and_msgfd(self):
-    self.assertIn(
-        "smoothness/joint_velocity/"
-        "mssd_mean_squared_second_difference_per_dof",
-        plot_policy_pareto.DEFAULT_Y_METRICS,
+  def test_default_metrics_use_body_smoothness_instead_of_joint_velocity(self):
+    for signal in (
+        "base_position",
+        "base_linear_velocity",
+        "base_angular_velocity",
+        "base_linear_acceleration",
+        "base_angular_acceleration",
+    ):
+      self.assertIn(
+          f"smoothness/{signal}/"
+          "mssd_mean_squared_second_difference_per_dof",
+          plot_policy_pareto.DEFAULT_Y_METRICS,
+      )
+    self.assertFalse(
+        any(
+            metric.startswith("smoothness/joint_velocity/")
+            for metric in plot_policy_pareto.DEFAULT_Y_METRICS
+        )
     )
-    self.assertIn(
-        "smoothness/joint_velocity/"
-        "msgfd_mean_absolute_savgol_filter_deviation_per_dof",
-        plot_policy_pareto.DEFAULT_Y_METRICS,
+
+  def test_metric_labels_are_readable_and_explain_pareto_direction(self):
+    self.assertEqual(
+        plot_policy_pareto._metric_label(plot_policy_pareto.DEFAULT_X_METRIC),
+        "Task reward without regularization\n(higher is better)",
     )
+    for metric in plot_policy_pareto.DEFAULT_Y_METRICS:
+      label = plot_policy_pareto._metric_label(metric)
+      self.assertNotEqual(label, metric)
+      self.assertNotIn("_", label)
+      self.assertIn("lower is better", label)
+
+  def test_custom_metric_label_has_a_readable_fallback(self):
+    self.assertEqual(
+        plot_policy_pareto._metric_label("custom/mean_foot_error"),
+        "Mean foot error",
+    )
+
+  def test_percent_above_minimum_scaling(self):
+    np.testing.assert_allclose(
+        plot_policy_pareto._percent_above_minimum(
+            np.array([2.0, 2.5, 4.0]), 2.0, "smoothness"
+        ),
+        [0.0, 25.0, 100.0],
+    )
+
+  def test_percent_above_minimum_requires_positive_baseline(self):
+    with self.assertRaisesRegex(ValueError, "minimum must be positive"):
+      plot_policy_pareto._percent_above_minimum(
+          np.array([0.0, 1.0]), 0.0, "smoothness"
+      )
 
   def test_require_metrics_explains_that_evaluation_must_be_regenerated(self):
     with self.assertRaisesRegex(
@@ -65,6 +104,15 @@ class PlotPolicyParetoTest(absltest.TestCase):
             "policy_pareto_opacity.png",
             "policy_pareto_arrows.png",
         ],
+    )
+    self.assertTrue(
+        all(call.kwargs["hide_non_pareto"] for call in plot.call_args_list)
+    )
+    self.assertTrue(
+        all(
+            call.kwargs["y_percent_above_minimum"]
+            for call in plot.call_args_list
+        )
     )
 
   def test_xlim_is_forwarded_to_plot(self):
@@ -116,6 +164,23 @@ class PlotPolicyParetoTest(absltest.TestCase):
 
     self.assertEqual(arguments.environment, "Go1JoystickFlatTerrain")
     self.assertTrue(arguments.cluster)
+
+  def test_non_pareto_policies_are_hidden_by_default(self):
+    parser = plot_policy_pareto._build_parser()
+
+    self.assertTrue(parser.parse_args([]).hide_non_pareto)
+    self.assertFalse(
+        parser.parse_args(["--no-hide-non-pareto"]).hide_non_pareto
+    )
+    self.assertTrue(parser.parse_args([]).y_percent_above_minimum)
+    self.assertTrue(
+        parser.parse_args(["--y-percent-above-minimum"])
+        .y_percent_above_minimum
+    )
+    self.assertFalse(
+        parser.parse_args(["--absolute-y-values"])
+        .y_percent_above_minimum
+    )
 
   def test_default_source_prefers_complete_local_evaluations(self):
     local = (Path("local-manifest"), Path("local-root"))

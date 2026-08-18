@@ -38,7 +38,7 @@ from typing import Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib import cm
+from matplotlib import cm, ticker
 from matplotlib import colors as matplotlib_colors
 
 from learning import pareto_policy_pipeline
@@ -55,11 +55,57 @@ AGGREGATE_CACHE_VERSION = 3
 DEFAULT_Y_METRICS = (
     "smoothness/torque/mssd_mean_squared_second_difference_per_dof",
     "smoothness/torque/msgfd_mean_absolute_savgol_filter_deviation_per_dof",
-    "smoothness/joint_velocity/mssd_mean_squared_second_difference_per_dof",
-    "smoothness/joint_velocity/msgfd_mean_absolute_savgol_filter_deviation_per_dof",
+    "smoothness/base_position/mssd_mean_squared_second_difference_per_dof",
+    "smoothness/base_linear_velocity/mssd_mean_squared_second_difference_per_dof",
+    "smoothness/base_angular_velocity/mssd_mean_squared_second_difference_per_dof",
+    "smoothness/base_linear_acceleration/mssd_mean_squared_second_difference_per_dof",
+    "smoothness/base_angular_acceleration/mssd_mean_squared_second_difference_per_dof",
     "torque_spectrum/eval/total_energy_per_step",
     "tracking/absolute_mechanical_energy",
 )
+METRIC_LABELS = {
+    DEFAULT_X_METRIC: "Task reward without regularization\n(higher is better)",
+    "smoothness/torque/mssd_mean_squared_second_difference_per_dof": (
+        "Torque smoothness: mean squared second difference\n"
+        "(N²·m² per DoF; lower is better)"
+    ),
+    "smoothness/torque/msgfd_mean_absolute_savgol_filter_deviation_per_dof": (
+        "Torque smoothness: mean Savitzky–Golay deviation\n"
+        "(N·m per DoF; lower is better)"
+    ),
+    "smoothness/base_position/"
+    "mssd_mean_squared_second_difference_per_dof": (
+        "Body-position smoothness: mean squared second difference\n"
+        "(m² per axis; lower is better)"
+    ),
+    "smoothness/base_linear_velocity/"
+    "mssd_mean_squared_second_difference_per_dof": (
+        "Body linear-velocity smoothness: mean squared second difference\n"
+        "((m/s)² per axis; lower is better)"
+    ),
+    "smoothness/base_angular_velocity/"
+    "mssd_mean_squared_second_difference_per_dof": (
+        "Body angular-velocity smoothness: mean squared second difference\n"
+        "((rad/s)² per axis; lower is better)"
+    ),
+    "smoothness/base_linear_acceleration/"
+    "mssd_mean_squared_second_difference_per_dof": (
+        "Body linear-acceleration smoothness: mean squared second difference\n"
+        "((m/s²)² per axis; lower is better)"
+    ),
+    "smoothness/base_angular_acceleration/"
+    "mssd_mean_squared_second_difference_per_dof": (
+        "Body angular-acceleration smoothness: mean squared second difference\n"
+        "((rad/s²)² per axis; lower is better)"
+    ),
+    "torque_spectrum/eval/total_energy_per_step": (
+        "Total torque spectral energy per step\n"
+        "(N²·m²; lower is better)"
+    ),
+    "tracking/absolute_mechanical_energy": (
+        "Absolute mechanical energy per episode\n(J; lower is better)"
+    ),
+}
 METHOD_LABELS = {
     "action_smoothness": "Action smoothness",
     "baseline": "Action rate",
@@ -93,6 +139,25 @@ def _method_label(method: str) -> str:
   order = configured.group("o")
   order_text = "" if order is None else f", order={order}"
   return f"High-pass torque (f={cutoff} Hz, m={difference}{order_text})"
+
+
+def _metric_label(metric: str) -> str:
+  """Returns a concise plot label while retaining support for custom metrics."""
+  if metric in METRIC_LABELS:
+    return METRIC_LABELS[metric]
+  return metric.split("/")[-1].replace("_", " ").capitalize()
+
+
+def _percent_above_minimum(
+    values: np.ndarray, minimum: float, metric: str
+) -> np.ndarray:
+  """Expresses values as percentages above a positive plotted minimum."""
+  if minimum <= 0:
+    raise ValueError(
+        f"Cannot scale {metric!r} relative to its lowest plotted value "
+        f"({minimum:g}); the minimum must be positive."
+    )
+  return 100.0 * (values / minimum - 1.0)
 
 
 def _method_color(method: str) -> str:
@@ -516,11 +581,13 @@ def plot(
     y_metrics: Sequence[str],
     xlim: tuple[float, float | None] | None = None,
     scale_encoding: str = "labels",
+    hide_non_pareto: bool = True,
+    y_percent_above_minimum: bool = True,
 ) -> Path:
   """Plots Pareto fronts with one of several penalty-scale encodings."""
   if scale_encoding not in {"labels", "size", "opacity", "arrows"}:
     raise ValueError(f"Unknown scale encoding: {scale_encoding!r}")
-  columns = 2
+  columns = 3
   rows = math.ceil(len(y_metrics) / columns)
   figure, axes = plt.subplots(
       rows, columns, figsize=(7.0 * columns, 5.2 * rows), squeeze=False
@@ -547,6 +614,18 @@ def plot(
       raise ValueError(
           f"No points for {y_metric!r} have {x_metric!r} {selected_range}."
       )
+    plotted_y = []
+    for method in _method_order(points):
+      method_points = [point for point in points if point.method == method]
+      method_x = np.asarray([point.x for point in method_points])
+      method_y = np.asarray([point.y for point in method_points])
+      visible = (
+          pareto_mask(method_x, method_y)
+          if hide_non_pareto
+          else np.ones(method_y.shape, dtype=bool)
+      )
+      plotted_y.extend(method_y[visible])
+    y_minimum = min(plotted_y)
     for method in _method_order(points):
       method_points = [point for point in points if point.method == method]
       if not method_points:
@@ -559,6 +638,12 @@ def plot(
           max(point.scale for point in method_points),
       )
       front = pareto_mask(x, y)
+      visible = front if hide_non_pareto else np.ones_like(front, dtype=bool)
+      display_y = (
+          _percent_above_minimum(y, y_minimum, y_metric)
+          if y_percent_above_minimum
+          else y
+      )
       color = _method_color(method)
       sizes = (
           42.0 + 120.0 * normalized_scales
@@ -573,26 +658,31 @@ def plot(
             for normalized in normalized_scales
         ]
       axis.scatter(
-          x,
-          y,
-          color=colors,
-          s=sizes,
+          x[visible],
+          display_y[visible],
+          color=(
+              np.asarray(colors)[visible]
+              if scale_encoding == "opacity"
+              else colors
+          ),
+          s=sizes[visible],
           alpha=None if scale_encoding == "opacity" else 0.85,
           label=_method_label(method),
       )
       front_order = np.argsort(x[front])
       axis.plot(
           x[front][front_order],
-          y[front][front_order],
+          display_y[front][front_order],
           color=color,
           linewidth=2.2,
       )
       if scale_encoding == "arrows" and len(method_points) > 1:
-        scale_order = np.argsort(
-            [point.scale for point in method_points]
-        )
+        visible_indices = np.flatnonzero(visible)
+        scale_order = visible_indices[np.argsort(
+            [method_points[index].scale for index in visible_indices]
+        )]
         ordered_x = x[scale_order]
-        ordered_y = y[scale_order]
+        ordered_y = display_y[scale_order]
         axis.plot(
             ordered_x,
             ordered_y,
@@ -618,16 +708,18 @@ def plot(
                   "shrinkB": 7,
               },
           )
-      for point, is_front in zip(method_points, front):
+      for point, is_front, is_visible, displayed_y in zip(
+          method_points, front, visible, display_y
+      ):
         coverage_suffix = (
             ""
             if point.seed_count == point.expected_seed_count
             else f"\n{point.seed_count}/{point.expected_seed_count} seeds"
         )
-        if scale_encoding == "labels":
+        if scale_encoding == "labels" and is_visible:
           axis.annotate(
               f"{point.scale:g}{coverage_suffix}",
-              (point.x, point.y),
+              (point.x, displayed_y),
               xytext=(4, 4),
               textcoords="offset points",
               fontsize=8,
@@ -649,8 +741,15 @@ def plot(
                 point.seed_count == point.expected_seed_count
             ),
         })
-    axis.set_xlabel(x_metric)
-    axis.set_ylabel(y_metric)
+    axis.set_xlabel(_metric_label(x_metric))
+    axis.set_ylabel(
+        f"{_metric_label(y_metric).splitlines()[0]}\n"
+        "% above lowest plotted value (lower is better)"
+        if y_percent_above_minimum
+        else _metric_label(y_metric)
+    )
+    if y_percent_above_minimum:
+      axis.yaxis.set_major_formatter(ticker.PercentFormatter(xmax=100.0))
     if xlim is not None:
       axis.set_xlim(left=xlim[0], right=xlim[1])
     axis.grid(alpha=0.25)
@@ -799,6 +898,32 @@ def _build_parser() -> argparse.ArgumentParser:
       dest="y_metrics",
       help="Metric to plot; repeat for multiple subplots.",
   )
+  parser.add_argument(
+      "--hide-non-pareto",
+      action=argparse.BooleanOptionalAction,
+      default=True,
+      help=(
+          "Hide dominated policy points (default). Use --no-hide-non-pareto "
+          "to show every evaluated policy."
+      ),
+  )
+  y_scale = parser.add_mutually_exclusive_group()
+  y_scale.add_argument(
+      "--y-percent-above-minimum",
+      dest="y_percent_above_minimum",
+      action="store_true",
+      default=True,
+      help=(
+          "Scale each y axis as the percentage above its lowest visible "
+          "value (default)."
+      ),
+  )
+  y_scale.add_argument(
+      "--absolute-y-values",
+      dest="y_percent_above_minimum",
+      action="store_false",
+      help="Show the absolute y-metric values instead of relative percentages.",
+  )
   return parser
 
 
@@ -870,6 +995,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         args.x_metric,
         tuple(args.y_metrics or DEFAULT_Y_METRICS),
         xlim,
+        hide_non_pareto=args.hide_non_pareto,
+        y_percent_above_minimum=args.y_percent_above_minimum,
     )
     outputs = [output]
     for scale_encoding in ("size", "opacity", "arrows"):
@@ -885,6 +1012,8 @@ def main(argv: Sequence[str] | None = None) -> None:
               tuple(args.y_metrics or DEFAULT_Y_METRICS),
               xlim,
               scale_encoding=scale_encoding,
+              hide_non_pareto=args.hide_non_pareto,
+              y_percent_above_minimum=args.y_percent_above_minimum,
           )
         )
   except MissingEvaluationMetricsError as error:
