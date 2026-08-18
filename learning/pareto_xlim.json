@@ -1,15 +1,15 @@
 {
-  "BarkourJoystick": 31.0,
-  "Go1JoystickFlatTerrain": 31.0,
-  "Go1JoystickFlatTerrain25": 27.0,
+  "BarkourJoystick": 37.5,
+  "Go1JoystickFlatTerrain": 31.7,
+  "Go1JoystickFlatTerrain25": 27.8,
   "Go1JoystickFlatTerrain35": 0.0,
-  "Go1JoystickRoughTerrain": 31.0,
-  "Go1JoystickRoughTerrainPushesAndDomainRandomization": 31.0,
-  "SilverBadgerJoystickFlatTerrain": 31.0,
-  "SilverBadgerJoystickRoughTerrain": 31.0,
-  "SilverBadgerJoystickRoughTerrainNoLinearVelocityPushesAndDomainRandomization": 31.0,
-  "SpotFlatTerrainJoystick": 31.0,
-  "SpotFlatTerrainJoystickPushesAndDomainRandomization": 31.0,
-  "SpotJoystickGaitTracking": 31.0,
-  "SpotJoystickGaitTrackingDomainRandomization": 31.0
+  "Go1JoystickRoughTerrain": 29.7,
+  "Go1JoystickRoughTerrainPushesAndDomainRandomization": 29.0,
+  "SilverBadgerJoystickFlatTerrain": 58.0,
+  "SilverBadgerJoystickRoughTerrain": 52.5,
+  "SilverBadgerJoystickRoughTerrainNoLinearVelocityPushesAndDomainRandomization": 52.2,
+  "SpotFlatTerrainJoystick": 33.0,
+  "SpotFlatTerrainJoystickPushesAndDomainRandomization": 33.0,
+  "SpotJoystickGaitTracking": 33.0,
+  "SpotJoystickGaitTrackingDomainRandomization": 33.0
 }
