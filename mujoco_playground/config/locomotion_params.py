@@ -158,8 +158,7 @@ def brax_ppo_config(
         value_obs_key="privileged_state",
     )
 
-  elif env_name in (
-      "BarkourJoystick",
+  elif env_name.startswith("BarkourJoystick") or env_name in (
       "H1InplaceGaitTracking",
       "H1JoystickGaitTracking",
       "Op3Joystick",

@@ -89,13 +89,21 @@ def default_config() -> config_dict.ConfigDict:
   return config
 
 
+def velocity_25_config() -> config_dict.ConfigDict:
+  """Returns the joystick config with a ±2.5 m/s vx command range."""
+  config = default_config()
+  config.command_config.lin_vel_x = [-2.5, 2.5]
+  return config
+
+
 def robustness_config(
+    base_config=default_config,
     *,
     pushes: bool = False,
     domain_randomization: bool = False,
 ) -> config_dict.ConfigDict:
   """Returns a Spot robustness-task configuration."""
-  config = default_config()
+  config = base_config()
   config.pert_config.enable = pushes
   config.domain_randomization = domain_randomization
   return config

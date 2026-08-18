@@ -16,7 +16,10 @@ class RobustnessVariantsTest(absltest.TestCase):
         "Go1JoystickRoughTerrain",
         "Go1JoystickRoughTerrain25",
     )
-    spot_bases = ("SpotFlatTerrainJoystick",)
+    spot_bases = (
+        "SpotFlatTerrainJoystick",
+        "SpotFlatTerrainJoystick25",
+    )
     variants = {
         "Pushes": (True, False),
         "DomainRandomization": (False, True),
@@ -31,6 +34,26 @@ class RobustnessVariantsTest(absltest.TestCase):
         self.assertEqual(config.domain_randomization, randomization)
         registry.get_domain_randomizer(name)
         locomotion_params.brax_ppo_config(name)
+
+  def test_flat_terrain_velocity_25_variants(self):
+    expected = {
+        "BarkourJoystick25": ("lin_vel_x", [-2.5, 2.5]),
+        "Go1JoystickFlatTerrain25": ("command_config.a", [2.5, 0.8, 1.2]),
+        "SilverBadgerJoystickFlatTerrain25": (
+            "command_config.a", [2.5, 0.8, 1.2]
+        ),
+        "SpotFlatTerrainJoystick25": (
+            "command_config.lin_vel_x", [-2.5, 2.5]
+        ),
+    }
+    for name, (path, value) in expected.items():
+      self.assertIn(name, registry.ALL_ENVS)
+      config = registry.get_default_config(name)
+      actual = config
+      for component in path.split("."):
+        actual = getattr(actual, component)
+      self.assertSequenceEqual(list(actual), value)
+      locomotion_params.brax_ppo_config(name)
 
   def test_go1_nonjoystick_domain_randomization_variants(self):
     for base in ("Go1Getup", "Go1Handstand", "Go1Footstand"):

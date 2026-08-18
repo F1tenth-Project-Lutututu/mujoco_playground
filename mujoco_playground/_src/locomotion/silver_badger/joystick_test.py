@@ -84,6 +84,8 @@ class JoystickTest(absltest.TestCase):
   def test_robustness_task_variants_have_expected_defaults(self):
     bases = (
         "SilverBadgerJoystickFlatTerrain",
+        "SilverBadgerJoystickFlatTerrain25",
+        "SilverBadgerJoystickFlatTerrain25NoLinearVelocity",
         "SilverBadgerJoystickFlatTerrainNoLinearVelocity",
         "SilverBadgerJoystickRoughTerrain",
         "SilverBadgerJoystickRoughTerrainNoLinearVelocity",

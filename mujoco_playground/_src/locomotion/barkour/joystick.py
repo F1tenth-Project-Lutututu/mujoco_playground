@@ -111,6 +111,13 @@ def default_config() -> config_dict.ConfigDict:
   return config
 
 
+def velocity_25_config() -> config_dict.ConfigDict:
+  """Returns the joystick config with a ±2.5 m/s vx command range."""
+  config = default_config()
+  config.lin_vel_x = [-2.5, 2.5]
+  return config
+
+
 class Joystick(mjx_env.MjxEnv):
   """Joystick environment for Barkour."""
 

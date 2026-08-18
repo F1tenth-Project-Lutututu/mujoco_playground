@@ -56,6 +56,7 @@ _envs = {
         apollo_joystick.Joystick, task="flat_terrain"
     ),
     "BarkourJoystick": barkour_joystick.Joystick,
+    "BarkourJoystick25": barkour_joystick.Joystick,
     "BerkeleyHumanoidJoystickFlatTerrain": functools.partial(
         berkeley_humanoid_joystick.Joystick, task="flat_terrain"
     ),
@@ -92,6 +93,12 @@ _envs = {
     "SilverBadgerJoystickFlatTerrain": functools.partial(
         silver_badger_joystick.Joystick, task="flat_terrain"
     ),
+    "SilverBadgerJoystickFlatTerrain25": functools.partial(
+        silver_badger_joystick.Joystick, task="flat_terrain"
+    ),
+    "SilverBadgerJoystickFlatTerrain25NoLinearVelocity": functools.partial(
+        silver_badger_joystick.Joystick, task="flat_terrain"
+    ),
     "SilverBadgerJoystickFlatTerrainNoLinearVelocity": functools.partial(
         silver_badger_joystick.Joystick, task="flat_terrain"
     ),
@@ -102,6 +109,9 @@ _envs = {
         silver_badger_joystick.Joystick, task="rough_terrain"
     ),
     "SpotFlatTerrainJoystick": functools.partial(
+        spot_joystick.Joystick, task="flat_terrain"
+    ),
+    "SpotFlatTerrainJoystick25": functools.partial(
         spot_joystick.Joystick, task="flat_terrain"
     ),
     "SpotGetup": spot_getup.Getup,
@@ -119,6 +129,7 @@ _envs = {
 _cfgs = {
     "ApolloJoystickFlatTerrain": apollo_joystick.default_config,
     "BarkourJoystick": barkour_joystick.default_config,
+    "BarkourJoystick25": barkour_joystick.velocity_25_config,
     "BerkeleyHumanoidJoystickFlatTerrain": (
         berkeley_humanoid_joystick.default_config
     ),
@@ -139,6 +150,14 @@ _cfgs = {
     "H1JoystickGaitTracking": h1_joystick_gait_tracking.default_config,
     "Op3Joystick": op3_joystick.default_config,
     "SilverBadgerJoystickFlatTerrain": silver_badger_joystick.default_config,
+    "SilverBadgerJoystickFlatTerrain25": (
+        silver_badger_joystick.velocity_25_config
+    ),
+    "SilverBadgerJoystickFlatTerrain25NoLinearVelocity": functools.partial(
+        silver_badger_joystick.variant_config,
+        silver_badger_joystick.velocity_25_config,
+        no_linear_velocity=True,
+    ),
     "SilverBadgerJoystickFlatTerrainNoLinearVelocity": (
         silver_badger_joystick.no_linear_velocity_config
     ),
@@ -147,6 +166,7 @@ _cfgs = {
         silver_badger_joystick.no_linear_velocity_config
     ),
     "SpotFlatTerrainJoystick": spot_joystick.default_config,
+    "SpotFlatTerrainJoystick25": spot_joystick.velocity_25_config,
     "SpotGetup": spot_getup.default_config,
     "SpotJoystickGaitTracking": spot_joystick_gait_tracking.default_config,
     "T1JoystickFlatTerrain": t1_joystick.default_config,
@@ -173,6 +193,12 @@ _randomizer = {
     "SilverBadgerJoystickFlatTerrain": (
         silver_badger_randomize.domain_randomize
     ),
+    "SilverBadgerJoystickFlatTerrain25": (
+        silver_badger_randomize.domain_randomize
+    ),
+    "SilverBadgerJoystickFlatTerrain25NoLinearVelocity": (
+        silver_badger_randomize.domain_randomize
+    ),
     "SilverBadgerJoystickFlatTerrainNoLinearVelocity": (
         silver_badger_randomize.domain_randomize
     ),
@@ -183,6 +209,7 @@ _randomizer = {
         silver_badger_randomize.domain_randomize
     ),
     "SpotFlatTerrainJoystick": spot_randomize.domain_randomize,
+    "SpotFlatTerrainJoystick25": spot_randomize.domain_randomize,
     "T1JoystickFlatTerrain": t1_randomize.domain_randomize,
     "T1JoystickRoughTerrain": t1_randomize.domain_randomize,
 }
@@ -191,15 +218,27 @@ _randomizer = {
 # These remain separate registered tasks so experiment names and saved configs
 # state whether pushes and/or domain randomization are enabled.
 _silver_badger_bases = {
-    "SilverBadgerJoystickFlatTerrain": ("flat_terrain", False),
+    "SilverBadgerJoystickFlatTerrain": (
+        "flat_terrain", False, silver_badger_joystick.default_config
+    ),
+    "SilverBadgerJoystickFlatTerrain25": (
+        "flat_terrain", False, silver_badger_joystick.velocity_25_config
+    ),
+    "SilverBadgerJoystickFlatTerrain25NoLinearVelocity": (
+        "flat_terrain", True, silver_badger_joystick.velocity_25_config
+    ),
     "SilverBadgerJoystickFlatTerrainNoLinearVelocity": (
         "flat_terrain",
         True,
+        silver_badger_joystick.default_config,
     ),
-    "SilverBadgerJoystickRoughTerrain": ("rough_terrain", False),
+    "SilverBadgerJoystickRoughTerrain": (
+        "rough_terrain", False, silver_badger_joystick.default_config
+    ),
     "SilverBadgerJoystickRoughTerrainNoLinearVelocity": (
         "rough_terrain",
         True,
+        silver_badger_joystick.default_config,
     ),
 }
 _silver_badger_robustness_variants = {
@@ -207,7 +246,9 @@ _silver_badger_robustness_variants = {
     "DomainRandomization": (False, True),
     "PushesAndDomainRandomization": (True, True),
 }
-for _base_name, (_task, _no_linear_velocity) in _silver_badger_bases.items():
+for _base_name, (
+    _task, _no_linear_velocity, _config_factory
+) in _silver_badger_bases.items():
   for _suffix, (_pushes, _domain_randomization) in (
       _silver_badger_robustness_variants.items()
   ):
@@ -217,6 +258,7 @@ for _base_name, (_task, _no_linear_velocity) in _silver_badger_bases.items():
     )
     _cfgs[_variant_name] = functools.partial(
         silver_badger_joystick.variant_config,
+        _config_factory,
         no_linear_velocity=_no_linear_velocity,
         pushes=_pushes,
         domain_randomization=_domain_randomization,
@@ -257,19 +299,25 @@ for _base_name, (_task, _config_factory) in _go1_joystick_bases.items():
     _randomizer[_variant_name] = go1_randomize.domain_randomize
 
 # Spot flat-terrain joystick robustness variants.
-for _suffix, (_pushes, _domain_randomization) in (
-    _silver_badger_robustness_variants.items()
-):
-  _variant_name = f"SpotFlatTerrainJoystick{_suffix}"
-  _envs[_variant_name] = functools.partial(
-      spot_joystick.Joystick, task="flat_terrain"
-  )
-  _cfgs[_variant_name] = functools.partial(
-      spot_joystick.robustness_config,
-      pushes=_pushes,
-      domain_randomization=_domain_randomization,
-  )
-  _randomizer[_variant_name] = spot_randomize.domain_randomize
+_spot_joystick_bases = {
+    "SpotFlatTerrainJoystick": spot_joystick.default_config,
+    "SpotFlatTerrainJoystick25": spot_joystick.velocity_25_config,
+}
+for _base_name, _config_factory in _spot_joystick_bases.items():
+  for _suffix, (_pushes, _domain_randomization) in (
+      _silver_badger_robustness_variants.items()
+  ):
+    _variant_name = f"{_base_name}{_suffix}"
+    _envs[_variant_name] = functools.partial(
+        spot_joystick.Joystick, task="flat_terrain"
+    )
+    _cfgs[_variant_name] = functools.partial(
+        spot_joystick.robustness_config,
+        _config_factory,
+        pushes=_pushes,
+        domain_randomization=_domain_randomization,
+    )
+    _randomizer[_variant_name] = spot_randomize.domain_randomize
 
 
 def _domain_randomized_config(config_factory):

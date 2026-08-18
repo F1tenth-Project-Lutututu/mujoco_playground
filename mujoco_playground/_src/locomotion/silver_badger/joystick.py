@@ -352,13 +352,14 @@ def no_linear_velocity_config() -> config_dict.ConfigDict:
 
 
 def variant_config(
+    base_config=default_config,
     *,
     no_linear_velocity: bool = False,
     pushes: bool = False,
     domain_randomization: bool = False,
 ) -> config_dict.ConfigDict:
   """Returns a SilverBadger robustness-task configuration."""
-  config = default_config()
+  config = base_config()
   config.policy_observes_linear_velocity = not no_linear_velocity
   config.pert_config.enable = pushes
   config.domain_randomization = domain_randomization
