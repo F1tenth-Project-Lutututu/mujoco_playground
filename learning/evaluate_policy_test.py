@@ -654,6 +654,19 @@ class EvaluatePolicyTest(absltest.TestCase):
         metrics["msgfd_mean_absolute_savgol_filter_deviation_per_dof"], 0.0
     )
 
+  def test_fixed_torque_savgol_configurations_are_self_describing(self):
+    signal = np.zeros((41, 2))
+    signal[20, 0] = 1.0
+    metrics = evaluate_policy._fixed_torque_savgol_metrics(signal)
+
+    for window_length, polyorder in evaluate_policy.TORQUE_SAVGOL_CONFIGS:
+      metric = (
+          f"msgfd_w{window_length}_p{polyorder}_"
+          "mean_absolute_savgol_filter_deviation_per_dof"
+      )
+      self.assertIn(metric, metrics)
+      self.assertGreater(metrics[metric], 0.0)
+
   def test_feet_height_error_uses_completed_swing_peak(self):
     feet_position = np.zeros((6, 1, 3))
     feet_position[:, 0, 2] = [0.0, 0.02, 0.12, 0.09, 0.0, 0.0]

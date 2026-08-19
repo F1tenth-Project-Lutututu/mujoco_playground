@@ -44,7 +44,7 @@ from learning import train_jax_ppo as train_utils
 
 
 EVALUATOR_COMPATIBILITY_VERSION = 3
-EVALUATION_SCHEMA_VERSION = 5
+EVALUATION_SCHEMA_VERSION = 6
 
 
 DEFAULT_COMMANDS = {
@@ -59,6 +59,11 @@ DEFAULT_COMMANDS = {
 DEFAULT_FFT_CUTOFFS_HZ = (1.0, 2.0, 5.0, 10.0, 15.0, 20.0)
 DEFAULT_SAVGOL_WINDOW_LENGTH = 11
 DEFAULT_SAVGOL_POLYORDER = 3
+# Fixed torque MSGFD measurements at the usual 50 Hz evaluation rate. These
+# windows span approximately 0.10--0.62 seconds and expose both short torque
+# spikes and slower oscillations without making comparisons depend on CLI
+# settings.
+TORQUE_SAVGOL_CONFIGS = ((5, 2), (11, 3), (21, 3), (31, 3))
 
 
 def _parse_commands(value: str | None) -> dict[str, tuple[float, float, float]]:
@@ -202,6 +207,37 @@ def _fft_energy_metrics(
   return metrics
 
 
+def _savgol_deviation(
+    signal: np.ndarray, window_length: int, polyorder: int
+) -> float:
+  """Returns MSGFD using the largest valid odd window for short episodes."""
+  effective_window = min(window_length, signal.shape[0])
+  if effective_window % 2 == 0:
+    effective_window -= 1
+  if effective_window < 1:
+    return 0.0
+  effective_polyorder = min(polyorder, effective_window - 1)
+  filtered = scipy_signal.savgol_filter(
+      signal,
+      window_length=effective_window,
+      polyorder=effective_polyorder,
+      axis=0,
+      mode="interp",
+  )
+  return float(np.mean(np.abs(signal - filtered)))
+
+
+def _fixed_torque_savgol_metrics(signal: np.ndarray) -> dict[str, float]:
+  """Computes self-describing torque MSGFD variants at fixed timescales."""
+  return {
+      (
+          f"msgfd_w{window_length}_p{polyorder}_"
+          "mean_absolute_savgol_filter_deviation_per_dof"
+      ): _savgol_deviation(signal, window_length, polyorder)
+      for window_length, polyorder in TORQUE_SAVGOL_CONFIGS
+  }
+
+
 def _smoothness_metrics(
     signal: np.ndarray,
     sample_period: float,
@@ -273,24 +309,9 @@ def _smoothness_metrics(
   metrics["peak_acceleration_abs_per_second2"] = (
       float(np.max(absolute_acceleration)) if len(second_delta) else 0.0
   )
-  # Use the largest valid odd window for very short, terminated episodes.
-  effective_window = min(savgol_window_length, signal.shape[0])
-  if effective_window % 2 == 0:
-    effective_window -= 1
-  if effective_window >= 1:
-    effective_polyorder = min(savgol_polyorder, effective_window - 1)
-    filtered = scipy_signal.savgol_filter(
-        signal,
-        window_length=effective_window,
-        polyorder=effective_polyorder,
-        axis=0,
-        mode="interp",
-    )
-    metrics["msgfd_mean_absolute_savgol_filter_deviation_per_dof"] = float(
-        np.mean(np.abs(signal - filtered))
-    )
-  else:
-    metrics["msgfd_mean_absolute_savgol_filter_deviation_per_dof"] = 0.0
+  metrics["msgfd_mean_absolute_savgol_filter_deviation_per_dof"] = (
+      _savgol_deviation(signal, savgol_window_length, savgol_polyorder)
+  )
   third_delta = np.diff(signal, n=3, axis=0)
   metrics["third_difference_rms_per_dof"] = (
       float(np.sqrt(np.mean(np.square(third_delta))))
@@ -550,6 +571,9 @@ def _episode_rows(
         savgol_window_length,
         savgol_polyorder,
     )
+    torque_metrics.update(_fixed_torque_savgol_metrics(
+        episodes["actuator_force"][rollout_index]
+    ))
     row.update({
         f"smoothness/torque/{key}": value
         for key, value in torque_metrics.items()
@@ -1199,6 +1223,10 @@ def evaluate(args, rollout_cache: dict[str, Any] | None = None) -> Path:
           "fft_cutoffs_hz": cutoffs_hz,
           "savgol_window_length": args.savgol_window_length,
           "savgol_polyorder": args.savgol_polyorder,
+          "torque_savgol_configs": [
+              {"window_length": window, "polyorder": polyorder}
+              for window, polyorder in TORQUE_SAVGOL_CONFIGS
+          ],
           "feet_height_target_meters": feet_height_target,
           "signals_saved": args.save_signals,
           "video_rendered": args.render_video,
@@ -1220,6 +1248,11 @@ def evaluate(args, rollout_cache: dict[str, Any] | None = None) -> Path:
               "smoothness/torque/mean_squared_delta_l2_per_step",
               "smoothness/torque/mssd_mean_squared_second_difference_per_dof",
               "smoothness/torque/msgfd_mean_absolute_savgol_filter_deviation_per_dof",
+              *[
+                  f"smoothness/torque/msgfd_w{window}_p{polyorder}_"
+                  "mean_absolute_savgol_filter_deviation_per_dof"
+                  for window, polyorder in TORQUE_SAVGOL_CONFIGS
+              ],
               "smoothness/torque/rate_abs_p95_per_second",
               "smoothness/torque/fft_above_5hz_ac_energy_fraction",
               "smoothness/joint_position/mssd_mean_squared_second_difference_per_dof",
