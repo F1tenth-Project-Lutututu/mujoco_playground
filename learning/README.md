@@ -502,7 +502,8 @@ Defaults assume the repository and logs use the standard Eagle locations. Use
 they differ.
 
 The cluster job uses `slurm_pareto_evaluate.sh`, requests one GPU on the
-`proxima` partition, and evaluates all policies in a single Python process.
+`proxima` partition, four CPUs, and 40 GB of system memory, and evaluates all
+policies in a single Python process.
 This allows compatible policies to reuse the same JAX-compiled rollout. Each
 policy evaluates 1024 random tasks in parallel by default, XLA preallocates
 90% of GPU memory, and videos and raw signal archives are disabled. These
