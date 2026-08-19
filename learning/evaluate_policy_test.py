@@ -667,6 +667,24 @@ class EvaluatePolicyTest(absltest.TestCase):
       self.assertIn(metric, metrics)
       self.assertGreater(metrics[metric], 0.0)
 
+  def test_torque_variation_and_sign_changes_ignore_intermediate_zeros(self):
+    signal = np.asarray([
+        [1.0, 0.0],
+        [0.0, -1.0],
+        [-2.0, 2.0],
+        [1.0, 0.0],
+    ])
+
+    metrics = evaluate_policy._torque_variation_metrics(
+        signal, sample_period=0.5
+    )
+
+    self.assertEqual(metrics["total_variation"], 12.0)
+    self.assertEqual(metrics["total_variation_per_dof"], 6.0)
+    self.assertEqual(metrics["sign_changes_total"], 3.0)
+    self.assertEqual(metrics["sign_changes_per_dof"], 1.5)
+    self.assertEqual(metrics["sign_changes_per_second_per_dof"], 1.0)
+
   def test_feet_height_error_uses_completed_swing_peak(self):
     feet_position = np.zeros((6, 1, 3))
     feet_position[:, 0, 2] = [0.0, 0.02, 0.12, 0.09, 0.0, 0.0]

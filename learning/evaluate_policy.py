@@ -44,7 +44,7 @@ from learning import train_jax_ppo as train_utils
 
 
 EVALUATOR_COMPATIBILITY_VERSION = 3
-EVALUATION_SCHEMA_VERSION = 6
+EVALUATION_SCHEMA_VERSION = 7
 
 
 DEFAULT_COMMANDS = {
@@ -235,6 +235,32 @@ def _fixed_torque_savgol_metrics(signal: np.ndarray) -> dict[str, float]:
           "mean_absolute_savgol_filter_deviation_per_dof"
       ): _savgol_deviation(signal, window_length, polyorder)
       for window_length, polyorder in TORQUE_SAVGOL_CONFIGS
+  }
+
+
+def _torque_variation_metrics(
+    signal: np.ndarray, sample_period: float
+) -> dict[str, float]:
+  """Returns episode-integrated torque variation and zero-aware crossings."""
+  signal = np.asarray(signal, dtype=np.float64)
+  if signal.ndim == 1:
+    signal = signal[:, None]
+  dofs = signal.shape[-1]
+  delta = np.diff(signal, axis=0)
+  total_variation = float(np.sum(np.abs(delta))) if len(delta) else 0.0
+  sign_changes = 0
+  for dof_signal in signal.T:
+    nonzero_signs = np.sign(dof_signal[dof_signal != 0.0])
+    sign_changes += int(np.sum(nonzero_signs[1:] != nonzero_signs[:-1]))
+  duration = max(signal.shape[0] - 1, 0) * sample_period
+  return {
+      "total_variation": total_variation,
+      "total_variation_per_dof": total_variation / dofs,
+      "sign_changes_total": float(sign_changes),
+      "sign_changes_per_dof": sign_changes / dofs,
+      "sign_changes_per_second_per_dof": (
+          sign_changes / (duration * dofs) if duration > 0 else 0.0
+      ),
   }
 
 
@@ -573,6 +599,9 @@ def _episode_rows(
     )
     torque_metrics.update(_fixed_torque_savgol_metrics(
         episodes["actuator_force"][rollout_index]
+    ))
+    torque_metrics.update(_torque_variation_metrics(
+        episodes["actuator_force"][rollout_index], sample_period
     ))
     row.update({
         f"smoothness/torque/{key}": value
@@ -1254,6 +1283,9 @@ def evaluate(args, rollout_cache: dict[str, Any] | None = None) -> Path:
                   for window, polyorder in TORQUE_SAVGOL_CONFIGS
               ],
               "smoothness/torque/rate_abs_p95_per_second",
+              "smoothness/torque/total_variation_per_dof",
+              "smoothness/torque/sign_changes_per_dof",
+              "smoothness/torque/sign_changes_per_second_per_dof",
               "smoothness/torque/fft_above_5hz_ac_energy_fraction",
               "smoothness/joint_position/mssd_mean_squared_second_difference_per_dof",
               "smoothness/joint_position/msgfd_mean_absolute_savgol_filter_deviation_per_dof",

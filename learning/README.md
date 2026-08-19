@@ -822,6 +822,12 @@ windows span approximately 0.10, 0.22, 0.42, and 0.62 seconds. Their metric
 names contain `msgfd_w<window>_p<order>` so results remain self-describing.
 The visual comparison includes action MSSD and MSGFD panels by default.
 
+Torque smoothness also includes episode-integrated total variation, reported
+both across all actuators and per degree of freedom, plus total, per-DoF, and
+per-second-per-DoF sign-change counts. Exact zero samples are skipped when
+counting crossings, so positive-to-zero-to-negative torque counts as one sign
+change.
+
 The evaluator also reports physical totals and tracking diagnostics used by the
 comparison plots: absolute mechanical energy in joules, integrated absolute
 actuator torque in N·m·s, RMS body-orientation error in degrees, RMS roll/pitch
