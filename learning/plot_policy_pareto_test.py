@@ -13,22 +13,15 @@ from learning import plot_policy_pareto
 
 class PlotPolicyParetoTest(absltest.TestCase):
 
-  def test_default_metrics_use_body_smoothness_instead_of_joint_velocity(self):
-    for signal in (
-        "base_position",
-        "base_linear_velocity",
-        "base_angular_velocity",
-        "base_linear_acceleration",
-        "base_angular_acceleration",
-    ):
+  def test_default_metrics_use_requested_torque_spectral_cutoffs(self):
+    for cutoff in (1, 2, 5, 10, 15, 20):
       self.assertIn(
-          f"smoothness/{signal}/"
-          "mssd_mean_squared_second_difference_per_dof",
+          f"torque_spectrum/eval/fft_above_{cutoff}hz_energy_per_step",
           plot_policy_pareto.DEFAULT_Y_METRICS,
       )
     self.assertFalse(
         any(
-            metric.startswith("smoothness/joint_velocity/")
+            metric.startswith("smoothness/base_")
             for metric in plot_policy_pareto.DEFAULT_Y_METRICS
         )
     )
@@ -63,6 +56,15 @@ class PlotPolicyParetoTest(absltest.TestCase):
       plot_policy_pareto._percent_above_minimum(
           np.array([0.0, 1.0]), 0.0, "smoothness"
       )
+
+  def test_exponential_x_axis_transform_is_invertible(self):
+    forward, inverse = plot_policy_pareto._exponential_axis_functions(
+        20.0, 40.0, 2.0
+    )
+    values = np.array([20.0, 25.0, 30.0, 35.0, 40.0])
+
+    np.testing.assert_allclose(inverse(forward(values)), values)
+    self.assertLess(forward(30.0), 0.5)
 
   def test_require_metrics_explains_that_evaluation_must_be_regenerated(self):
     with self.assertRaisesRegex(
@@ -114,6 +116,9 @@ class PlotPolicyParetoTest(absltest.TestCase):
             for call in plot.call_args_list
         )
     )
+    self.assertTrue(
+        all(call.kwargs["log_percentage_y"] for call in plot.call_args_list)
+    )
 
   def test_xlim_is_forwarded_to_plot(self):
     with mock.patch.object(
@@ -156,6 +161,45 @@ class PlotPolicyParetoTest(absltest.TestCase):
 
     np.testing.assert_array_equal(actual, [True, True, True, False])
 
+  def test_plotted_methods_are_an_explicit_filter_and_order(self):
+    points = [
+        plot_policy_pareto.Point(
+            method=method,
+            scale=1.0,
+            scale_tag="1",
+            x=1.0,
+            y=1.0,
+            sample_count=1,
+            seed_count=1,
+            expected_seed_count=1,
+            missing_seeds="",
+        )
+        for method in ("unknown", "high_pass", "baseline")
+    ]
+
+    self.assertEqual(
+        [point.method for point in plot_policy_pareto._filter_methods(points)],
+        ["high_pass", "baseline"],
+    )
+    self.assertEqual(
+        plot_policy_pareto._method_order(points), ["baseline", "high_pass"]
+    )
+    self.assertEqual(
+        plot_policy_pareto._method_order(points, all_methods=True),
+        ["baseline", "high_pass", "unknown"],
+    )
+
+  def test_configured_high_pass_variants_have_distinct_colors(self):
+    methods = (
+        "high_pass_f4_m1",
+        "high_pass_f5_m0p5",
+        "high_pass_f5_m1p5",
+        "high_pass_f6_m1",
+    )
+
+    colors = [plot_policy_pareto._method_color(method) for method in methods]
+    self.assertLen(set(colors), len(methods))
+
   def test_cluster_cli_accepts_only_environment_and_flag(self):
     arguments = plot_policy_pareto._build_parser().parse_args([
         "Go1JoystickFlatTerrain",
@@ -164,6 +208,12 @@ class PlotPolicyParetoTest(absltest.TestCase):
 
     self.assertEqual(arguments.environment, "Go1JoystickFlatTerrain")
     self.assertTrue(arguments.cluster)
+
+  def test_all_methods_cli_is_opt_in(self):
+    parser = plot_policy_pareto._build_parser()
+
+    self.assertFalse(parser.parse_args([]).all_methods)
+    self.assertTrue(parser.parse_args(["--all-methods"]).all_methods)
 
   def test_non_pareto_policies_are_hidden_by_default(self):
     parser = plot_policy_pareto._build_parser()
@@ -181,6 +231,12 @@ class PlotPolicyParetoTest(absltest.TestCase):
         parser.parse_args(["--absolute-y-values"])
         .y_percent_above_minimum
     )
+    self.assertTrue(parser.parse_args([]).log_percentage_y)
+    self.assertFalse(
+        parser.parse_args(["--linear-percentage-y-axis"]).log_percentage_y
+    )
+    shifted = parser.parse_args(["--shifted-log-percentage-y-axis"])
+    self.assertTrue(shifted.shifted_log_percentage_y)
 
   def test_default_source_prefers_complete_local_evaluations(self):
     local = (Path("local-manifest"), Path("local-root"))

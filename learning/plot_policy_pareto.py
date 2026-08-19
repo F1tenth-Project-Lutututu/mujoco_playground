@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import re
@@ -55,11 +56,12 @@ AGGREGATE_CACHE_VERSION = 3
 DEFAULT_Y_METRICS = (
     "smoothness/torque/mssd_mean_squared_second_difference_per_dof",
     "smoothness/torque/msgfd_mean_absolute_savgol_filter_deviation_per_dof",
-    "smoothness/base_position/mssd_mean_squared_second_difference_per_dof",
-    "smoothness/base_linear_velocity/mssd_mean_squared_second_difference_per_dof",
-    "smoothness/base_angular_velocity/mssd_mean_squared_second_difference_per_dof",
-    "smoothness/base_linear_acceleration/mssd_mean_squared_second_difference_per_dof",
-    "smoothness/base_angular_acceleration/mssd_mean_squared_second_difference_per_dof",
+    "torque_spectrum/eval/fft_above_1hz_energy_per_step",
+    "torque_spectrum/eval/fft_above_2hz_energy_per_step",
+    "torque_spectrum/eval/fft_above_5hz_energy_per_step",
+    "torque_spectrum/eval/fft_above_10hz_energy_per_step",
+    "torque_spectrum/eval/fft_above_15hz_energy_per_step",
+    "torque_spectrum/eval/fft_above_20hz_energy_per_step",
     "torque_spectrum/eval/total_energy_per_step",
     "tracking/absolute_mechanical_energy",
 )
@@ -73,31 +75,6 @@ METRIC_LABELS = {
         "Torque smoothness: mean Savitzky–Golay deviation\n"
         "(N·m per DoF; lower is better)"
     ),
-    "smoothness/base_position/"
-    "mssd_mean_squared_second_difference_per_dof": (
-        "Body-position smoothness: mean squared second difference\n"
-        "(m² per axis; lower is better)"
-    ),
-    "smoothness/base_linear_velocity/"
-    "mssd_mean_squared_second_difference_per_dof": (
-        "Body linear-velocity smoothness: mean squared second difference\n"
-        "((m/s)² per axis; lower is better)"
-    ),
-    "smoothness/base_angular_velocity/"
-    "mssd_mean_squared_second_difference_per_dof": (
-        "Body angular-velocity smoothness: mean squared second difference\n"
-        "((rad/s)² per axis; lower is better)"
-    ),
-    "smoothness/base_linear_acceleration/"
-    "mssd_mean_squared_second_difference_per_dof": (
-        "Body linear-acceleration smoothness: mean squared second difference\n"
-        "((m/s²)² per axis; lower is better)"
-    ),
-    "smoothness/base_angular_acceleration/"
-    "mssd_mean_squared_second_difference_per_dof": (
-        "Body angular-acceleration smoothness: mean squared second difference\n"
-        "((rad/s²)² per axis; lower is better)"
-    ),
     "torque_spectrum/eval/total_energy_per_step": (
         "Total torque spectral energy per step\n"
         "(N²·m²; lower is better)"
@@ -106,6 +83,22 @@ METRIC_LABELS = {
         "Absolute mechanical energy per episode\n(J; lower is better)"
     ),
 }
+
+# Methods included in every Pareto subplot, in legend order. Comment out a
+# line to omit that method from a comparison. Add configured method IDs here
+# when plotting a manifest that contains additional variants.
+PLOTTED_METHODS = (
+    "action_smoothness",
+    "baseline",
+    "torque_rate",
+    "torque_smoothness",
+    "high_pass",
+    "high_pass_f4_m1",
+    #"high_pass_f5_m0p5",
+    "high_pass_f5_m1p5",
+    #"high_pass_f6_m1",
+
+)
 METHOD_LABELS = {
     "action_smoothness": "Action smoothness",
     "baseline": "Action rate",
@@ -145,6 +138,17 @@ def _metric_label(metric: str) -> str:
   """Returns a concise plot label while retaining support for custom metrics."""
   if metric in METRIC_LABELS:
     return METRIC_LABELS[metric]
+  spectral_energy = re.fullmatch(
+      r"torque_spectrum/eval/fft_above_(?P<cutoff>[0-9]+(?:\.[0-9]+)?)"
+      r"hz_energy_per_step",
+      metric,
+  )
+  if spectral_energy is not None:
+    return (
+        "Torque spectral energy above "
+        f"{spectral_energy.group('cutoff')} Hz per step\n"
+        "(N²·m²; lower is better)"
+    )
   return metric.split("/")[-1].replace("_", " ").capitalize()
 
 
@@ -160,21 +164,49 @@ def _percent_above_minimum(
   return 100.0 * (values / minimum - 1.0)
 
 
+def _exponential_axis_functions(
+    minimum: float, maximum: float, strength: float
+):
+  """Returns an invertible transform that expands the high end of an axis."""
+  span = maximum - minimum
+  if not math.isfinite(strength) or strength <= 0:
+    raise ValueError("Exponential x-axis strength must be positive and finite.")
+  if span <= 0:
+    raise ValueError("Exponential x-axis scaling requires distinct x values.")
+  denominator = np.expm1(strength)
+
+  def forward(values):
+    normalized = (np.asarray(values) - minimum) / span
+    return np.expm1(strength * normalized) / denominator
+
+  def inverse(values):
+    normalized = np.log1p(np.asarray(values) * denominator) / strength
+    return minimum + span * normalized
+
+  return forward, inverse
+
+
 def _method_color(method: str) -> str:
   """Returns stable colors while preserving colors of historical methods."""
   if method in METHOD_COLORS:
     return METHOD_COLORS[method]
-  palette = (
-      "#2E8B57", "#8E6C8A", "#B279A2", "#59A14F",
-      "#76B7B2", "#EDC948", "#AF7AA1", "#9C755F",
+  digest = hashlib.blake2b(method.encode("utf-8"), digest_size=8).digest()
+  hue = int.from_bytes(digest, "big") / float(1 << 64)
+  return matplotlib_colors.to_hex(
+      matplotlib_colors.hsv_to_rgb((hue, 0.62, 0.72))
   )
-  return palette[sum(map(ord, method)) % len(palette)]
 
 
-def _method_order(points: Sequence["Point"]) -> list[str]:
+def _method_order(
+    points: Sequence["Point"], all_methods: bool = False
+) -> list[str]:
   present = {point.method for point in points}
-  historical = [method for method in METHOD_LABELS if method in present]
-  return historical + sorted(present - set(historical))
+  if all_methods:
+    configured_order = [
+        method for method in METHOD_LABELS if method in present
+    ]
+    return configured_order + sorted(present - set(configured_order))
+  return [method for method in PLOTTED_METHODS if method in present]
 
 
 @dataclass(frozen=True)
@@ -264,6 +296,12 @@ def _filter_points(
       if point.x >= xlim[0]
       and (xlim[1] is None or point.x <= xlim[1])
   ]
+
+
+def _filter_methods(points: Sequence[Point]) -> list[Point]:
+  """Keeps only methods explicitly enabled in PLOTTED_METHODS."""
+  enabled = set(PLOTTED_METHODS)
+  return [point for point in points if point.method in enabled]
 
 
 def _configured_xlim(environment: str, path: Path) -> tuple[float, None] | None:
@@ -583,11 +621,15 @@ def plot(
     scale_encoding: str = "labels",
     hide_non_pareto: bool = True,
     y_percent_above_minimum: bool = True,
+    log_percentage_y: bool = True,
+    shifted_log_percentage_y: bool = False,
+    x_exponential_strength: float = 0.0,
+    all_methods: bool = False,
 ) -> Path:
   """Plots Pareto fronts with one of several penalty-scale encodings."""
   if scale_encoding not in {"labels", "size", "opacity", "arrows"}:
     raise ValueError(f"Unknown scale encoding: {scale_encoding!r}")
-  columns = 3
+  columns = 4
   rows = math.ceil(len(y_metrics) / columns)
   figure, axes = plt.subplots(
       rows, columns, figsize=(7.0 * columns, 5.2 * rows), squeeze=False
@@ -614,8 +656,16 @@ def plot(
       raise ValueError(
           f"No points for {y_metric!r} have {x_metric!r} {selected_range}."
       )
+    available_methods = sorted({point.method for point in points})
+    if not all_methods:
+      points = _filter_methods(points)
+    if not points:
+      raise ValueError(
+          "None of the methods enabled in PLOTTED_METHODS are available. "
+          f"Report methods: {available_methods}."
+      )
     plotted_y = []
-    for method in _method_order(points):
+    for method in _method_order(points, all_methods=all_methods):
       method_points = [point for point in points if point.method == method]
       method_x = np.asarray([point.x for point in method_points])
       method_y = np.asarray([point.y for point in method_points])
@@ -626,7 +676,7 @@ def plot(
       )
       plotted_y.extend(method_y[visible])
     y_minimum = min(plotted_y)
-    for method in _method_order(points):
+    for method in _method_order(points, all_methods=all_methods):
       method_points = [point for point in points if point.method == method]
       if not method_points:
         continue
@@ -750,6 +800,39 @@ def plot(
     )
     if y_percent_above_minimum:
       axis.yaxis.set_major_formatter(ticker.PercentFormatter(xmax=100.0))
+      if shifted_log_percentage_y:
+        axis.set_yscale(
+            "function",
+            functions=(
+                lambda value: np.log1p(value / 100.0),
+                lambda value: 100.0 * np.expm1(value),
+            ),
+        )
+        tick_candidates = np.asarray(
+            [0, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000],
+            dtype=float,
+        )
+        percentage_max = 100.0 * (max(plotted_y) / y_minimum - 1.0)
+        visible_ticks = tick_candidates[tick_candidates <= percentage_max]
+        if len(visible_ticks) < 2 and percentage_max > 0:
+          visible_ticks = np.asarray([0.0, percentage_max])
+        elif not len(visible_ticks):
+          visible_ticks = np.asarray([0.0])
+        axis.yaxis.set_major_locator(ticker.FixedLocator(visible_ticks))
+      elif log_percentage_y:
+        # A strict log scale cannot represent the best point at 0%. Symlog
+        # retains it and transitions to logarithmic spacing above 1%.
+        axis.set_yscale("symlog", base=10, linthresh=1.0, linscale=1.0)
+    if x_exponential_strength:
+      plotted_x = np.asarray([point.x for point in points])
+      axis.set_xscale(
+          "function",
+          functions=_exponential_axis_functions(
+              float(np.min(plotted_x)),
+              float(np.max(plotted_x)),
+              x_exponential_strength,
+          ),
+      )
     if xlim is not None:
       axis.set_xlim(left=xlim[0], right=xlim[1])
     axis.grid(alpha=0.25)
@@ -762,6 +845,11 @@ def plot(
       loc="upper center",
       bbox_to_anchor=(0.5, 0.975),
       ncol=len(labels),
+      title=(
+          "Regularization method · y axis: shifted log of % above minimum"
+          if y_percent_above_minimum and shifted_log_percentage_y
+          else "Regularization method"
+      ),
   )
   figure.suptitle("Penalty-scale Pareto fronts", y=0.995)
   encoding_notes = {
@@ -794,7 +882,7 @@ def plot(
   if scale_encoding == "opacity":
     methods = [
         method
-        for method in _method_order(points)
+        for method in _method_order(points, all_methods=all_methods)
         if method in method_scale_ranges
     ]
     bar_width = 0.24
@@ -874,6 +962,15 @@ def _build_parser() -> argparse.ArgumentParser:
       ),
   )
   parser.add_argument(
+      "--all-methods",
+      action="store_true",
+      help=(
+          "Plot every method found in the manifest, including every "
+          "high-pass cutoff/m configuration. By default only methods in "
+          "PLOTTED_METHODS are shown."
+      ),
+  )
+  parser.add_argument(
       "--output",
       type=Path,
       help=(
@@ -882,6 +979,16 @@ def _build_parser() -> argparse.ArgumentParser:
       ),
   )
   parser.add_argument("--x-metric", default=DEFAULT_X_METRIC)
+  parser.add_argument(
+      "--x-exponential-strength",
+      type=float,
+      default=0.0,
+      metavar="STRENGTH",
+      help=(
+          "Exponentially expand high-reward x values. 0 is linear; try 1 "
+          "for mild, 2 for moderate, or 4 for strong expansion."
+      ),
+  )
   parser.add_argument(
       "--xlim",
       nargs="+",
@@ -923,6 +1030,26 @@ def _build_parser() -> argparse.ArgumentParser:
       dest="y_percent_above_minimum",
       action="store_false",
       help="Show the absolute y-metric values instead of relative percentages.",
+  )
+  percentage_axis = parser.add_mutually_exclusive_group()
+  percentage_axis.add_argument(
+      "--linear-percentage-y-axis",
+      dest="log_percentage_y",
+      action="store_false",
+      default=True,
+      help=(
+          "Use a linear y axis in percentage mode. By default it is linear "
+          "through 1%% so 0%% remains visible, then logarithmic."
+      ),
+  )
+  percentage_axis.add_argument(
+      "--shifted-log-percentage-y-axis",
+      dest="shifted_log_percentage_y",
+      action="store_true",
+      help=(
+          "Transform percentage-mode y coordinates as log(1 + percentage / "
+          "100), while labeling ticks in the original percentages."
+      ),
   )
   return parser
 
@@ -984,6 +1111,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     xlim = _configured_xlim(environment, DEFAULT_XLIM_CONFIG)
   if xlim is not None and xlim[1] is not None and xlim[0] >= xlim[1]:
     raise ValueError("--xlim MIN must be smaller than MAX.")
+  if not math.isfinite(args.x_exponential_strength):
+    raise ValueError("--x-exponential-strength must be finite.")
+  if args.x_exponential_strength < 0:
+    raise ValueError("--x-exponential-strength cannot be negative.")
   output_path = args.output or (
       DEFAULT_RESULTS_ROOT / environment / "policy_pareto.png"
   )
@@ -997,6 +1128,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         xlim,
         hide_non_pareto=args.hide_non_pareto,
         y_percent_above_minimum=args.y_percent_above_minimum,
+        log_percentage_y=args.log_percentage_y,
+        shifted_log_percentage_y=args.shifted_log_percentage_y,
+        x_exponential_strength=args.x_exponential_strength,
+        all_methods=args.all_methods,
     )
     outputs = [output]
     for scale_encoding in ("size", "opacity", "arrows"):
@@ -1014,6 +1149,10 @@ def main(argv: Sequence[str] | None = None) -> None:
               scale_encoding=scale_encoding,
               hide_non_pareto=args.hide_non_pareto,
               y_percent_above_minimum=args.y_percent_above_minimum,
+              log_percentage_y=args.log_percentage_y,
+              shifted_log_percentage_y=args.shifted_log_percentage_y,
+              x_exponential_strength=args.x_exponential_strength,
+              all_methods=args.all_methods,
           )
         )
   except MissingEvaluationMetricsError as error:
