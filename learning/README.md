@@ -815,8 +815,12 @@ difference per degree of freedom, and Mean Savitzky-Golay Filter Deviation
 (MSGFD), implemented as the mean absolute deviation from a Savitzky-Golay
 smoothed signal. MSGFD uses an 11-sample, order-3 filter by default; customize
 it with `--savgol_window_length` and `--savgol_polyorder`. Both settings are
-stored in evaluation metadata. The visual comparison includes action MSSD and
-MSGFD panels by default.
+stored in evaluation metadata. Torque evaluations additionally report fixed
+MSGFD variants with `(window length, polynomial order)` equal to `(5, 2)`,
+`(11, 3)`, `(21, 3)`, and `(31, 3)`. At the usual 50 Hz evaluation rate these
+windows span approximately 0.10, 0.22, 0.42, and 0.62 seconds. Their metric
+names contain `msgfd_w<window>_p<order>` so results remain self-describing.
+The visual comparison includes action MSSD and MSGFD panels by default.
 
 The evaluator also reports physical totals and tracking diagnostics used by the
 comparison plots: absolute mechanical energy in joules, integrated absolute
