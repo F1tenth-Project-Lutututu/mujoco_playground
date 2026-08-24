@@ -33,6 +33,7 @@ import hashlib
 import json
 import math
 import re
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -48,6 +49,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CLUSTER_ROOT = PROJECT_ROOT / "evaluations" / "pareto_cluster"
 DEFAULT_RESULTS_ROOT = PROJECT_ROOT / "evaluations" / "pareto_results"
 DEFAULT_XLIM_CONFIG = Path(__file__).with_name("pareto_xlim.json")
+DEFAULT_PLOT_CONFIG_ROOT = Path(__file__).with_name("pareto_plot_configs")
 DEFAULT_ENVIRONMENT = "Go1JoystickFlatTerrain"
 DEFAULT_X_METRIC = "eval_reward_means/total_without_regularization"
 AGGREGATE_CACHE_NAME = "pareto_aggregates.csv"
@@ -55,13 +57,12 @@ AGGREGATE_CACHE_MANIFEST_NAME = "pareto_aggregates_cache.json"
 AGGREGATE_CACHE_VERSION = 3
 DEFAULT_Y_METRICS = (
     "smoothness/torque/mssd_mean_squared_second_difference_per_dof",
-    "smoothness/torque/msgfd_mean_absolute_savgol_filter_deviation_per_dof",
-    "torque_spectrum/eval/fft_above_1hz_energy_per_step",
-    "torque_spectrum/eval/fft_above_2hz_energy_per_step",
-    "torque_spectrum/eval/fft_above_5hz_energy_per_step",
-    "torque_spectrum/eval/fft_above_10hz_energy_per_step",
-    "torque_spectrum/eval/fft_above_15hz_energy_per_step",
-    "torque_spectrum/eval/fft_above_20hz_energy_per_step",
+    "smoothness/torque/msgfd_w5_p2_mean_absolute_savgol_filter_deviation_per_dof",
+    "smoothness/torque/msgfd_w11_p3_mean_absolute_savgol_filter_deviation_per_dof",
+    "smoothness/torque/msgfd_w21_p3_mean_absolute_savgol_filter_deviation_per_dof",
+    "smoothness/torque/msgfd_w31_p3_mean_absolute_savgol_filter_deviation_per_dof",
+    "smoothness/torque/total_variation",
+    "smoothness/torque/sign_changes_total",
     "torque_spectrum/eval/total_energy_per_step",
     "tracking/absolute_mechanical_energy",
 )
@@ -74,6 +75,14 @@ METRIC_LABELS = {
     "smoothness/torque/msgfd_mean_absolute_savgol_filter_deviation_per_dof": (
         "Torque smoothness: mean Savitzky–Golay deviation\n"
         "(N·m per DoF; lower is better)"
+    ),
+    "smoothness/torque/total_variation": (
+        "Torque total variation per episode\n"
+        "(N·m; lower is better)"
+    ),
+    "smoothness/torque/sign_changes_total": (
+        "Total torque sign changes per episode\n"
+        "(count; lower is better)"
     ),
     "torque_spectrum/eval/total_energy_per_step": (
         "Total torque spectral energy per step\n"
@@ -112,6 +121,17 @@ METHOD_COLORS = {
     "torque_rate": "#F58518",
     "torque_smoothness": "#E45756",
     "high_pass": "#54A24B",
+    # Keep configured high-pass variants visually separable instead of
+    # relying on independently hashed hues, which can land close together.
+    "high_pass_f2_m1": "#9467BD",
+    "high_pass_f3_m1": "#17BECF",
+    "high_pass_f4_m1": "#8C564B",
+    "high_pass_f5_m0p5": "#E377C2",
+    "high_pass_f5_m1p5": "#BCBD22",
+    "high_pass_f5_m2": "#7F7F7F",
+    # f=5 uses the historical green above; use a deep purple for f=6 so the
+    # adjacent cutoff settings remain unmistakable in lines and markers.
+    "high_pass_f6_m1": "#7B2CBF",
 }
 
 
@@ -148,6 +168,17 @@ def _metric_label(metric: str) -> str:
         "Torque spectral energy above "
         f"{spectral_energy.group('cutoff')} Hz per step\n"
         "(N²·m²; lower is better)"
+    )
+  savgol = re.fullmatch(
+      r"smoothness/torque/msgfd_w(?P<window>[0-9]+)_p(?P<order>[0-9]+)_"
+      r"mean_absolute_savgol_filter_deviation_per_dof",
+      metric,
+  )
+  if savgol is not None:
+    return (
+        "Torque Savitzky–Golay deviation "
+        f"(window={savgol.group('window')}, order={savgol.group('order')})\n"
+        "(N·m per DoF; lower is better)"
     )
   return metric.split("/")[-1].replace("_", " ").capitalize()
 
@@ -186,6 +217,56 @@ def _exponential_axis_functions(
   return forward, inverse
 
 
+def _axis_scaling_tag(
+    *,
+    y_percent_above_minimum: bool,
+    log_y_axis: bool,
+    log_percentage_y: bool,
+    shifted_log_percentage_y: bool,
+    x_exponential_strength: float,
+) -> str:
+  """Returns a filename-safe description of both axis transformations."""
+  x_scaling = (
+      "x-linear"
+      if not x_exponential_strength
+      else "x-exp-" + f"{x_exponential_strength:g}".replace(".", "p")
+  )
+  if y_percent_above_minimum:
+    if shifted_log_percentage_y:
+      y_scaling = "y-percent-shifted-log"
+    elif log_percentage_y:
+      y_scaling = "y-percent-symlog"
+    else:
+      y_scaling = "y-percent-linear"
+  else:
+    y_scaling = "y-absolute-log" if log_y_axis else "y-absolute-linear"
+  return f"{x_scaling}_{y_scaling}"
+
+
+def _output_variant_path(
+    base_output: Path,
+    scale_encoding: str,
+    *,
+    y_percent_above_minimum: bool,
+    log_y_axis: bool,
+    log_percentage_y: bool,
+    shifted_log_percentage_y: bool,
+    x_exponential_strength: float,
+) -> Path:
+  """Adds axis-scaling and penalty-representation tags to an output path."""
+  axis_tag = _axis_scaling_tag(
+      y_percent_above_minimum=y_percent_above_minimum,
+      log_y_axis=log_y_axis,
+      log_percentage_y=log_percentage_y,
+      shifted_log_percentage_y=shifted_log_percentage_y,
+      x_exponential_strength=x_exponential_strength,
+  )
+  return base_output.with_name(
+      f"{base_output.stem}_{axis_tag}_repr-{scale_encoding}"
+      f"{base_output.suffix}"
+  )
+
+
 def _method_color(method: str) -> str:
   """Returns stable colors while preserving colors of historical methods."""
   if method in METHOD_COLORS:
@@ -198,7 +279,9 @@ def _method_color(method: str) -> str:
 
 
 def _method_order(
-    points: Sequence["Point"], all_methods: bool = False
+    points: Sequence["Point"],
+    all_methods: bool = False,
+    methods: Sequence[str] = PLOTTED_METHODS,
 ) -> list[str]:
   present = {point.method for point in points}
   if all_methods:
@@ -206,7 +289,7 @@ def _method_order(
         method for method in METHOD_LABELS if method in present
     ]
     return configured_order + sorted(present - set(configured_order))
-  return [method for method in PLOTTED_METHODS if method in present]
+  return [method for method in methods if method in present]
 
 
 @dataclass(frozen=True)
@@ -298,10 +381,49 @@ def _filter_points(
   ]
 
 
-def _filter_methods(points: Sequence[Point]) -> list[Point]:
-  """Keeps only methods explicitly enabled in PLOTTED_METHODS."""
-  enabled = set(PLOTTED_METHODS)
+def _filter_methods(
+    points: Sequence[Point], methods: Sequence[str] = PLOTTED_METHODS
+) -> list[Point]:
+  """Keeps only explicitly selected methods."""
+  enabled = set(methods)
   return [point for point in points if point.method in enabled]
+
+
+def _configured_methods(
+    environment: str, config_root: Path = DEFAULT_PLOT_CONFIG_ROOT
+) -> tuple[bool, tuple[str, ...]]:
+  """Loads whether to plot all methods or an ordered environment subset."""
+  path = config_root / f"{environment}.toml"
+  try:
+    with path.open("rb") as config_file:
+      value = tomllib.load(config_file)
+  except FileNotFoundError:
+    return True, ()
+  except (OSError, tomllib.TOMLDecodeError) as error:
+    raise ValueError(f"Cannot read Pareto plot config {path}: {error}") from error
+  if not isinstance(value, dict) or not isinstance(
+      value.get("all_methods"), bool
+  ):
+    raise ValueError(
+        f"Pareto plot config must contain boolean 'all_methods': {path}"
+    )
+  all_methods = value["all_methods"]
+  methods = value.get("methods", [])
+  if not isinstance(methods, list) or not all(
+      isinstance(method, str) and method for method in methods
+  ):
+    raise ValueError(f"Pareto plot config 'methods' must be a string list: {path}")
+  if len(methods) != len(set(methods)):
+    raise ValueError(f"Pareto plot config contains duplicate methods: {path}")
+  if all_methods and methods:
+    raise ValueError(
+        f"Pareto plot config cannot select methods when 'all_methods' is true: {path}"
+    )
+  if not all_methods and not methods:
+    raise ValueError(
+        f"Pareto plot config must select methods when 'all_methods' is false: {path}"
+    )
+  return all_methods, tuple(methods)
 
 
 def _configured_xlim(environment: str, path: Path) -> tuple[float, None] | None:
@@ -620,15 +742,22 @@ def plot(
     xlim: tuple[float, float | None] | None = None,
     scale_encoding: str = "labels",
     hide_non_pareto: bool = True,
-    y_percent_above_minimum: bool = True,
+    y_percent_above_minimum: bool = False,
+    log_y_axis: bool = False,
     log_percentage_y: bool = True,
     shifted_log_percentage_y: bool = False,
     x_exponential_strength: float = 0.0,
     all_methods: bool = False,
+    methods: Sequence[str] = PLOTTED_METHODS,
 ) -> Path:
   """Plots Pareto fronts with one of several penalty-scale encodings."""
   if scale_encoding not in {"labels", "size", "opacity", "arrows"}:
     raise ValueError(f"Unknown scale encoding: {scale_encoding!r}")
+  if log_y_axis and y_percent_above_minimum:
+    raise ValueError(
+        "A logarithmic absolute y axis cannot be combined with percentage "
+        "y values. Use the percentage-axis options instead."
+    )
   columns = 4
   rows = math.ceil(len(y_metrics) / columns)
   figure, axes = plt.subplots(
@@ -658,14 +787,14 @@ def plot(
       )
     available_methods = sorted({point.method for point in points})
     if not all_methods:
-      points = _filter_methods(points)
+      points = _filter_methods(points, methods)
     if not points:
       raise ValueError(
-          "None of the methods enabled in PLOTTED_METHODS are available. "
+          f"None of the selected methods {list(methods)} are available. "
           f"Report methods: {available_methods}."
       )
     plotted_y = []
-    for method in _method_order(points, all_methods=all_methods):
+    for method in _method_order(points, all_methods=all_methods, methods=methods):
       method_points = [point for point in points if point.method == method]
       method_x = np.asarray([point.x for point in method_points])
       method_y = np.asarray([point.y for point in method_points])
@@ -676,7 +805,13 @@ def plot(
       )
       plotted_y.extend(method_y[visible])
     y_minimum = min(plotted_y)
-    for method in _method_order(points, all_methods=all_methods):
+    if log_y_axis and y_minimum <= 0:
+      raise ValueError(
+          f"Cannot use a logarithmic y axis for {y_metric!r}: its lowest "
+          f"visible value is {y_minimum:g}, but log scaling requires "
+          "strictly positive values."
+      )
+    for method in _method_order(points, all_methods=all_methods, methods=methods):
       method_points = [point for point in points if point.method == method]
       if not method_points:
         continue
@@ -823,6 +958,8 @@ def plot(
         # A strict log scale cannot represent the best point at 0%. Symlog
         # retains it and transitions to logarithmic spacing above 1%.
         axis.set_yscale("symlog", base=10, linthresh=1.0, linscale=1.0)
+    elif log_y_axis:
+      axis.set_yscale("log")
     if x_exponential_strength:
       plotted_x = np.asarray([point.x for point in points])
       axis.set_xscale(
@@ -882,7 +1019,9 @@ def plot(
   if scale_encoding == "opacity":
     methods = [
         method
-        for method in _method_order(points, all_methods=all_methods)
+        for method in _method_order(
+            points, all_methods=all_methods, methods=methods
+        )
         if method in method_scale_ranges
     ]
     bar_width = 0.24
@@ -961,21 +1100,32 @@ def _build_parser() -> argparse.ArgumentParser:
           "local-first discovery."
       ),
   )
-  parser.add_argument(
+  method_selection = parser.add_mutually_exclusive_group()
+  method_selection.add_argument(
       "--all-methods",
       action="store_true",
       help=(
           "Plot every method found in the manifest, including every "
-          "high-pass cutoff/m configuration. By default only methods in "
-          "PLOTTED_METHODS are shown."
+          "high-pass cutoff/m configuration. Overrides the environment "
+          "plot config."
+      ),
+  )
+  method_selection.add_argument(
+      "--method",
+      action="append",
+      dest="methods",
+      help=(
+          "Plot only this method; repeat to select multiple methods. "
+          "Overrides the environment plot config."
       ),
   )
   parser.add_argument(
       "--output",
       type=Path,
       help=(
-          "Defaults to "
-          "evaluations/pareto_results/<environment>/policy_pareto.png."
+          "Base output path. Axis-scaling and representation tags are added "
+          "to its filename. Defaults below evaluations/pareto_results/"
+          "<environment>/."
       ),
   )
   parser.add_argument("--x-metric", default=DEFAULT_X_METRIC)
@@ -1019,17 +1169,25 @@ def _build_parser() -> argparse.ArgumentParser:
       "--y-percent-above-minimum",
       dest="y_percent_above_minimum",
       action="store_true",
-      default=True,
       help=(
           "Scale each y axis as the percentage above its lowest visible "
-          "value (default)."
+          "value instead of showing absolute metric values."
       ),
   )
   y_scale.add_argument(
       "--absolute-y-values",
       dest="y_percent_above_minimum",
       action="store_false",
-      help="Show the absolute y-metric values instead of relative percentages.",
+      default=False,
+      help="Show absolute y-metric values (default).",
+  )
+  y_scale.add_argument(
+      "--log-y-axis",
+      action="store_true",
+      help=(
+          "Show absolute y-metric values on a logarithmic axis. All visible "
+          "values must be strictly positive."
+      ),
   )
   percentage_axis = parser.add_mutually_exclusive_group()
   percentage_axis.add_argument(
@@ -1067,6 +1225,11 @@ def main(argv: Sequence[str] | None = None) -> None:
   environment = (
       args.environment or args.environment_option or DEFAULT_ENVIRONMENT
   )
+  configured_all_methods, configured_methods = _configured_methods(environment)
+  all_methods = args.all_methods or (
+      not args.methods and configured_all_methods
+  )
+  methods = tuple(args.methods or configured_methods)
   if args.manifest is not None or args.evaluation_root is not None:
     if args.cluster:
       raise ValueError(
@@ -1115,28 +1278,20 @@ def main(argv: Sequence[str] | None = None) -> None:
     raise ValueError("--x-exponential-strength must be finite.")
   if args.x_exponential_strength < 0:
     raise ValueError("--x-exponential-strength cannot be negative.")
-  output_path = args.output or (
+  base_output_path = args.output or (
       DEFAULT_RESULTS_ROOT / environment / "policy_pareto.png"
   )
   try:
-    output = plot(
-        manifest,
-        evaluation_root,
-        output_path,
-        args.x_metric,
-        tuple(args.y_metrics or DEFAULT_Y_METRICS),
-        xlim,
-        hide_non_pareto=args.hide_non_pareto,
-        y_percent_above_minimum=args.y_percent_above_minimum,
-        log_percentage_y=args.log_percentage_y,
-        shifted_log_percentage_y=args.shifted_log_percentage_y,
-        x_exponential_strength=args.x_exponential_strength,
-        all_methods=args.all_methods,
-    )
-    outputs = [output]
-    for scale_encoding in ("size", "opacity", "arrows"):
-      variant_output = output_path.with_name(
-          f"{output_path.stem}_{scale_encoding}{output_path.suffix}"
+    outputs = []
+    for scale_encoding in ("labels", "size", "opacity", "arrows"):
+      variant_output = _output_variant_path(
+          base_output_path,
+          scale_encoding,
+          y_percent_above_minimum=args.y_percent_above_minimum,
+          log_y_axis=args.log_y_axis,
+          log_percentage_y=args.log_percentage_y,
+          shifted_log_percentage_y=args.shifted_log_percentage_y,
+          x_exponential_strength=args.x_exponential_strength,
       )
       outputs.append(
           plot(
@@ -1149,10 +1304,12 @@ def main(argv: Sequence[str] | None = None) -> None:
               scale_encoding=scale_encoding,
               hide_non_pareto=args.hide_non_pareto,
               y_percent_above_minimum=args.y_percent_above_minimum,
+              log_y_axis=args.log_y_axis,
               log_percentage_y=args.log_percentage_y,
               shifted_log_percentage_y=args.shifted_log_percentage_y,
               x_exponential_strength=args.x_exponential_strength,
-              all_methods=args.all_methods,
+              all_methods=all_methods,
+              methods=methods,
           )
         )
   except MissingEvaluationMetricsError as error:
@@ -1165,7 +1322,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     raise SystemExit(f"{error}{cluster_hint}") from None
   for generated_output in outputs:
     print(f"Pareto plot: {generated_output.resolve()}")
-  print(f"Pareto table: {output.with_suffix('.csv').resolve()}")
+    print(f"Pareto table: {generated_output.with_suffix('.csv').resolve()}")
 
 
 if __name__ == "__main__":

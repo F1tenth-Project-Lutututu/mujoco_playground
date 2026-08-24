@@ -13,12 +13,26 @@ from learning import plot_policy_pareto
 
 class PlotPolicyParetoTest(absltest.TestCase):
 
-  def test_default_metrics_use_requested_torque_spectral_cutoffs(self):
+  def test_default_metrics_cover_torque_variation_and_savgol_timescales(self):
     for cutoff in (1, 2, 5, 10, 15, 20):
-      self.assertIn(
+      self.assertNotIn(
           f"torque_spectrum/eval/fft_above_{cutoff}hz_energy_per_step",
           plot_policy_pareto.DEFAULT_Y_METRICS,
       )
+    for window, polyorder in ((5, 2), (11, 3), (21, 3), (31, 3)):
+      self.assertIn(
+          f"smoothness/torque/msgfd_w{window}_p{polyorder}_"
+          "mean_absolute_savgol_filter_deviation_per_dof",
+          plot_policy_pareto.DEFAULT_Y_METRICS,
+      )
+    self.assertIn(
+        "smoothness/torque/total_variation",
+        plot_policy_pareto.DEFAULT_Y_METRICS,
+    )
+    self.assertIn(
+        "smoothness/torque/sign_changes_total",
+        plot_policy_pareto.DEFAULT_Y_METRICS,
+    )
     self.assertFalse(
         any(
             metric.startswith("smoothness/base_")
@@ -94,30 +108,64 @@ class PlotPolicyParetoTest(absltest.TestCase):
             expected_evaluation_root,
             plot_policy_pareto.DEFAULT_RESULTS_ROOT
             / "Go1JoystickRoughTerrain"
-            / "policy_pareto.png",
+            / "policy_pareto_x-linear_y-absolute-linear_repr-labels.png",
         ),
     )
-    self.assertEqual(plot.call_args_list[0].args[5], (31.0, None))
+    self.assertEqual(plot.call_args_list[0].args[5], (29.7, None))
+    self.assertTrue(
+        all(call.kwargs["all_methods"] for call in plot.call_args_list)
+    )
     self.assertEqual(
         [call.args[2].name for call in plot.call_args_list],
         [
-            "policy_pareto.png",
-            "policy_pareto_size.png",
-            "policy_pareto_opacity.png",
-            "policy_pareto_arrows.png",
+            "policy_pareto_x-linear_y-absolute-linear_repr-labels.png",
+            "policy_pareto_x-linear_y-absolute-linear_repr-size.png",
+            "policy_pareto_x-linear_y-absolute-linear_repr-opacity.png",
+            "policy_pareto_x-linear_y-absolute-linear_repr-arrows.png",
         ],
     )
     self.assertTrue(
         all(call.kwargs["hide_non_pareto"] for call in plot.call_args_list)
     )
-    self.assertTrue(
-        all(
+    self.assertFalse(
+        any(
             call.kwargs["y_percent_above_minimum"]
             for call in plot.call_args_list
         )
     )
     self.assertTrue(
         all(call.kwargs["log_percentage_y"] for call in plot.call_args_list)
+    )
+    self.assertFalse(
+        any(call.kwargs["log_y_axis"] for call in plot.call_args_list)
+    )
+
+  def test_output_names_describe_axes_and_representation(self):
+    base = Path("custom.png")
+
+    self.assertEqual(
+        plot_policy_pareto._output_variant_path(
+            base,
+            "labels",
+            y_percent_above_minimum=False,
+            log_y_axis=True,
+            log_percentage_y=True,
+            shifted_log_percentage_y=False,
+            x_exponential_strength=1.5,
+        ),
+        Path("custom_x-exp-1p5_y-absolute-log_repr-labels.png"),
+    )
+    self.assertEqual(
+        plot_policy_pareto._output_variant_path(
+            base,
+            "arrows",
+            y_percent_above_minimum=True,
+            log_y_axis=False,
+            log_percentage_y=False,
+            shifted_log_percentage_y=True,
+            x_exponential_strength=0.0,
+        ),
+        Path("custom_x-linear_y-percent-shifted-log_repr-arrows.png"),
     )
 
   def test_xlim_is_forwarded_to_plot(self):
@@ -191,14 +239,34 @@ class PlotPolicyParetoTest(absltest.TestCase):
 
   def test_configured_high_pass_variants_have_distinct_colors(self):
     methods = (
+        "action_smoothness",
+        "baseline",
+        "torque_rate",
+        "torque_smoothness",
+        "high_pass",
+        "high_pass_f2_m1",
+        "high_pass_f3_m1",
         "high_pass_f4_m1",
         "high_pass_f5_m0p5",
         "high_pass_f5_m1p5",
+        "high_pass_f5_m2",
         "high_pass_f6_m1",
     )
 
     colors = [plot_policy_pareto._method_color(method) for method in methods]
     self.assertLen(set(colors), len(methods))
+
+    f5_rgb = np.asarray(
+        plot_policy_pareto.matplotlib_colors.to_rgb(
+            plot_policy_pareto._method_color("high_pass")
+        )
+    )
+    f6_rgb = np.asarray(
+        plot_policy_pareto.matplotlib_colors.to_rgb(
+            plot_policy_pareto._method_color("high_pass_f6_m1")
+        )
+    )
+    self.assertGreater(np.linalg.norm(f5_rgb - f6_rgb), 0.5)
 
   def test_cluster_cli_accepts_only_environment_and_flag(self):
     arguments = plot_policy_pareto._build_parser().parse_args([
@@ -215,6 +283,42 @@ class PlotPolicyParetoTest(absltest.TestCase):
     self.assertFalse(parser.parse_args([]).all_methods)
     self.assertTrue(parser.parse_args(["--all-methods"]).all_methods)
 
+  def test_method_cli_accepts_an_ordered_subset(self):
+    arguments = plot_policy_pareto._build_parser().parse_args([
+        "--method",
+        "baseline",
+        "--method",
+        "torque_rate",
+    ])
+
+    self.assertEqual(arguments.methods, ["baseline", "torque_rate"])
+
+  def test_environment_plot_config_can_select_a_method_subset(self):
+    with tempfile.TemporaryDirectory() as directory:
+      root = Path(directory)
+      (root / "Environment.toml").write_text(
+          """all_methods = false
+methods = [
+  "baseline",
+  # Temporarily omitted methods can remain visible here as comments.
+  "high_pass_f6_m1",
+]
+""",
+          encoding="utf-8",
+      )
+
+      self.assertEqual(
+          plot_policy_pareto._configured_methods("Environment", root),
+          (False, ("baseline", "high_pass_f6_m1")),
+      )
+
+  def test_environment_plot_config_defaults_to_all_when_missing(self):
+    with tempfile.TemporaryDirectory() as directory:
+      self.assertEqual(
+          plot_policy_pareto._configured_methods("Unknown", Path(directory)),
+          (True, ()),
+      )
+
   def test_non_pareto_policies_are_hidden_by_default(self):
     parser = plot_policy_pareto._build_parser()
 
@@ -222,7 +326,7 @@ class PlotPolicyParetoTest(absltest.TestCase):
     self.assertFalse(
         parser.parse_args(["--no-hide-non-pareto"]).hide_non_pareto
     )
-    self.assertTrue(parser.parse_args([]).y_percent_above_minimum)
+    self.assertFalse(parser.parse_args([]).y_percent_above_minimum)
     self.assertTrue(
         parser.parse_args(["--y-percent-above-minimum"])
         .y_percent_above_minimum
@@ -231,12 +335,46 @@ class PlotPolicyParetoTest(absltest.TestCase):
         parser.parse_args(["--absolute-y-values"])
         .y_percent_above_minimum
     )
+    self.assertFalse(parser.parse_args([]).log_y_axis)
+    logarithmic = parser.parse_args(["--log-y-axis"])
+    self.assertTrue(logarithmic.log_y_axis)
+    self.assertFalse(logarithmic.y_percent_above_minimum)
     self.assertTrue(parser.parse_args([]).log_percentage_y)
     self.assertFalse(
         parser.parse_args(["--linear-percentage-y-axis"]).log_percentage_y
     )
     shifted = parser.parse_args(["--shifted-log-percentage-y-axis"])
     self.assertTrue(shifted.shifted_log_percentage_y)
+
+  def test_log_y_axis_is_forwarded_and_named_for_every_representation(self):
+    with mock.patch.object(
+        plot_policy_pareto, "plot", return_value=Path("result.png")
+    ) as plot, mock.patch.object(
+        plot_policy_pareto,
+        "_default_source",
+        return_value=(Path("manifest"), Path("evaluations")),
+    ):
+      plot_policy_pareto.main([
+          "Go1JoystickRoughTerrain",
+          "--log-y-axis",
+          "--x-exponential-strength",
+          "2",
+          "--output",
+          "custom.png",
+      ])
+
+    self.assertTrue(
+        all(call.kwargs["log_y_axis"] for call in plot.call_args_list)
+    )
+    self.assertEqual(
+        [call.args[2].name for call in plot.call_args_list],
+        [
+            "custom_x-exp-2_y-absolute-log_repr-labels.png",
+            "custom_x-exp-2_y-absolute-log_repr-size.png",
+            "custom_x-exp-2_y-absolute-log_repr-opacity.png",
+            "custom_x-exp-2_y-absolute-log_repr-arrows.png",
+        ],
+    )
 
   def test_default_source_prefers_complete_local_evaluations(self):
     local = (Path("local-manifest"), Path("local-root"))
@@ -344,6 +482,24 @@ class PlotPolicyParetoTest(absltest.TestCase):
     self.assertEqual(int(second[0]["seed_count"]), 1)
     self.assertEqual(int(second[0]["expected_seed_count"]), 2)
     self.assertEqual(second[0]["missing_seeds"], "1")
+
+  def test_logarithmic_absolute_y_axis_renders(self):
+    manifest, evaluation_root, _ = self._evaluation_fixture()
+    output = evaluation_root / "logarithmic.png"
+
+    actual = plot_policy_pareto.plot(
+        manifest,
+        evaluation_root,
+        output,
+        plot_policy_pareto.DEFAULT_X_METRIC,
+        ("metric",),
+        log_y_axis=True,
+        all_methods=True,
+    )
+
+    self.assertEqual(actual, output)
+    self.assertTrue(output.is_file())
+    self.assertTrue(output.with_suffix(".csv").is_file())
 
   def test_no_xlim_keeps_all_points(self):
     points = [

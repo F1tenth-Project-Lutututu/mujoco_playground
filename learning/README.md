@@ -404,10 +404,14 @@ After evaluation, generate the Pareto-front figure and its CSV table:
 python -m learning.plot_policy_pareto Go1JoystickFlatTerrain
 ```
 
-By default the figure and CSV table are written to
-`evaluations/pareto/<environment>/policy_pareto.png` and
-`policy_pareto.csv`. Use `--output` only when a different destination is
-needed. The older `--environment Go1JoystickFlatTerrain` form remains
+By default the figures and CSV tables are written below
+`evaluations/pareto_results/<environment>/`. Every filename records the x-axis
+scaling, y-axis values and scaling, and penalty-scale representation. For
+example, the default labeled plot is
+`policy_pareto_x-linear_y-absolute-linear_repr-labels.png`; its other
+representations end in `repr-size`, `repr-opacity`, and `repr-arrows`.
+`--output custom.png` changes the base name while retaining these descriptive
+suffixes. The older `--environment Go1JoystickFlatTerrain` form remains
 supported.
 
 Use `--xlim MIN` to change the lower reward cutoff while allowing Matplotlib
@@ -430,14 +434,46 @@ Without `--xlim`, the lower bound is read from `learning/pareto_xlim.json`.
 Environments without an entry use the full available x range. Matplotlib
 chooses the upper limit automatically.
 
+Method selection is read from
+`learning/pareto_plot_configs/<environment>.toml`. Set `all_methods = true`
+to plot everything in the reports, or set it to `false` and provide an ordered
+`methods` list. TOML supports `#` comments, so individual method lines can be
+commented out without deleting them. A missing environment config defaults to
+all methods. For a
+one-off override, use `--all-methods` or repeat `--method`, for example:
+
+```bash
+python -m learning.plot_policy_pareto Go1JoystickFlatTerrain \
+  --method baseline --method torque_rate --method high_pass
+```
+
 Each point pools all random-task rollouts and seeds for one method and penalty
 scale. The default x-axis is
 `eval_reward_means/total_without_regularization`, which is maximized. The
 default panels minimize torque MSSD, torque MSGFD, total torque spectral
-energy, and absolute mechanical energy. Points with reward below 31 are
-excluded. Solid lines connect the nondominated points separately for each
-method and each high-pass cutoff/`m` configuration, and point labels show the
-decoded penalty scale.
+deviation at four fixed Savitzky–Golay settings, episode-integrated torque
+total variation, total torque sign changes, total torque spectral energy, and
+absolute mechanical energy. Above-cutoff spectral-energy panels remain
+available through `--y-metric` but are not plotted by default. Points with
+reward below 31 are excluded. Solid lines connect the nondominated points
+separately for each method and each high-pass cutoff/`m` configuration, and
+point labels show the decoded penalty scale.
+
+Y axes show absolute metric values on linear axes by default. Pass
+`--log-y-axis` to put the absolute values on logarithmic axes; all visible
+values must then be strictly positive:
+
+```bash
+python -m learning.plot_policy_pareto Go1JoystickFlatTerrain \
+  --log-y-axis
+```
+
+Pass `--y-percent-above-minimum` to express each metric relative to its lowest
+visible value. Percentage mode uses a symmetric-log axis by default so its
+0% minimum remains visible; `--linear-percentage-y-axis` and
+`--shifted-log-percentage-y-axis` select its other axis transformations. These
+modes also receive distinct filename tags, so running several variants does
+not overwrite earlier plots.
 
 Use a custom reward metric or repeat `--y-metric` to select plot panels:
 
