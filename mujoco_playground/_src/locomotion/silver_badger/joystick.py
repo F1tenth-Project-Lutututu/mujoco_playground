@@ -386,6 +386,15 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
     )
     self._post_init()
 
+  def _initialize_command(self, info: dict[str, Any]) -> None:
+    """Hook for command processes that need reset-time state."""
+
+  def _advance_command(self, info: dict[str, Any]) -> None:
+    """Hook for command processes that evolve every control step."""
+
+  def _resample_command(self, rng: jax.Array, command: jax.Array) -> jax.Array:
+    return self.sample_command(rng, command)
+
   @property
   def action_size(self) -> int:
     """Number of policy-controlled leg joints (the spine stays locked)."""
@@ -627,6 +636,7 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
         "pert_dir": jp.zeros(3),
         "pert_mag": pert_mag,
     }
+    self._initialize_command(info)
     self._torque_penalty.reset(info, data.actuator_force)
 
     metrics = {}
@@ -733,6 +743,7 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
             torque_high_freq_cost, highpass_disturbance
         )
     )
+    self._advance_command(state.info)
     obs = self._get_obs(data, state.info)
 
     rewards = self._get_reward(
@@ -774,7 +785,7 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
     state.info["rng"], key1, key2 = jax.random.split(state.info["rng"], 3)
     state.info["command"] = jp.where(
         state.info["steps_until_next_cmd"] <= 0,
-        self.sample_command(key1, state.info["command"]),
+        self._resample_command(key1, state.info["command"]),
         state.info["command"],
     )
     state.info["steps_until_next_cmd"] = jp.where(

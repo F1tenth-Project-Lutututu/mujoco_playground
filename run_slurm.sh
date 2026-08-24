@@ -75,6 +75,11 @@ for P in 2e-5 4e-5 6e-5 8e-5; do
   #sbatch slurm.sh ts $P Go1JoystickFlatTerrain
   #sbatch slurm.sh hp $P Go1JoystickFlatTerrain 5.0 1.0
 
+  #sbatch slurm.sh ar $P Go1JoystickBandLimited
+  #sbatch slurm.sh tr $P Go1JoystickBandLimited
+  #sbatch slurm.sh ts $P Go1JoystickBandLimited
+  #sbatch slurm.sh hp $P Go1JoystickBandLimited 5.0 1.0
+
   #sbatch slurm.sh ar $P Go1JoystickRoughTerrain
   #sbatch slurm.sh tr $P Go1JoystickRoughTerrain 
   #sbatch slurm.sh ts $P Go1JoystickRoughTerrain
@@ -89,6 +94,11 @@ for P in 2e-5 4e-5 6e-5 8e-5; do
   #sbatch slurm.sh tr $P SpotFlatTerrainJoystick
   #sbatch slurm.sh ts $P SpotFlatTerrainJoystick
   #sbatch slurm.sh hp $P SpotFlatTerrainJoystick 5.0 1.0
+
+  #sbatch slurm.sh ar $P SpotJoystickBandLimited
+  #sbatch slurm.sh tr $P SpotJoystickBandLimited
+  #sbatch slurm.sh ts $P SpotJoystickBandLimited
+  #sbatch slurm.sh hp $P SpotJoystickBandLimited 5.0 1.0
 
   #sbatch slurm.sh ar $P SpotFlatTerrainJoystickPushesAndDomainRandomization
   #sbatch slurm.sh tr $P SpotFlatTerrainJoystickPushesAndDomainRandomization
@@ -115,6 +125,16 @@ for P in 2e-5 4e-5 6e-5 8e-5; do
   #sbatch slurm.sh tr $P SilverBadgerJoystickFlatTerrain
   #sbatch slurm.sh ts $P SilverBadgerJoystickFlatTerrain
   #sbatch slurm.sh hp $P SilverBadgerJoystickFlatTerrain 5.0 1.0
+
+  #sbatch slurm.sh ar $P SilverBadgerJoystickBandLimited
+  #sbatch slurm.sh tr $P SilverBadgerJoystickBandLimited
+  #sbatch slurm.sh ts $P SilverBadgerJoystickBandLimited
+  #sbatch slurm.sh hp $P SilverBadgerJoystickBandLimited 5.0 1.0
+
+  #sbatch slurm.sh ar $P SilverBadgerBandLimitedPushesAndDomainRandomization
+  #sbatch slurm.sh tr $P SilverBadgerBandLimitedPushesAndDomainRandomization
+  #sbatch slurm.sh ts $P SilverBadgerBandLimitedPushesAndDomainRandomization
+  #sbatch slurm.sh hp $P SilverBadgerBandLimitedPushesAndDomainRandomization 5.0 1.0
 
   #sbatch slurm.sh ar $P SilverBadgerJoystickRoughTerrain
   #sbatch slurm.sh tr $P SilverBadgerJoystickRoughTerrain

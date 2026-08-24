@@ -28,6 +28,7 @@ from mujoco_playground._src.locomotion.berkeley_humanoid import joystick as berk
 from mujoco_playground._src.locomotion.berkeley_humanoid import randomize as berkeley_humanoid_randomize
 from mujoco_playground._src.locomotion.g1 import joystick as g1_joystick
 from mujoco_playground._src.locomotion.g1 import randomize as g1_randomize
+from mujoco_playground._src.locomotion.go1 import band_limited_joystick as go1_band_limited_joystick
 from mujoco_playground._src.locomotion.go1 import getup as go1_getup
 from mujoco_playground._src.locomotion.go1 import handstand as go1_handstand
 from mujoco_playground._src.locomotion.go1 import joystick as go1_joystick
@@ -35,12 +36,14 @@ from mujoco_playground._src.locomotion.go1 import randomize as go1_randomize
 from mujoco_playground._src.locomotion.h1 import inplace_gait_tracking as h1_inplace_gait_tracking
 from mujoco_playground._src.locomotion.h1 import joystick_gait_tracking as h1_joystick_gait_tracking
 from mujoco_playground._src.locomotion.op3 import joystick as op3_joystick
+from mujoco_playground._src.locomotion.silver_badger import band_limited_joystick as silver_badger_band_limited_joystick
 from mujoco_playground._src.locomotion.silver_badger import (
     joystick as silver_badger_joystick,
 )
 from mujoco_playground._src.locomotion.silver_badger import (
     randomize as silver_badger_randomize,
 )
+from mujoco_playground._src.locomotion.spot import band_limited_joystick as spot_band_limited_joystick
 from mujoco_playground._src.locomotion.spot import getup as spot_getup
 from mujoco_playground._src.locomotion.spot import joystick as spot_joystick
 from mujoco_playground._src.locomotion.spot import joystick_gait_tracking as spot_joystick_gait_tracking
@@ -72,6 +75,9 @@ _envs = {
     "Go1JoystickFlatTerrain": functools.partial(
         go1_joystick.Joystick, task="flat_terrain"
     ),
+    "Go1JoystickBandLimited": functools.partial(
+        go1_band_limited_joystick.BandLimitedJoystick, task="flat_terrain"
+    ),
     "Go1JoystickFlatTerrain25": functools.partial(
         go1_joystick.Joystick, task="flat_terrain"
     ),
@@ -93,6 +99,9 @@ _envs = {
     "SilverBadgerJoystickFlatTerrain": functools.partial(
         silver_badger_joystick.Joystick, task="flat_terrain"
     ),
+    "SilverBadgerJoystickBandLimited": functools.partial(
+        silver_badger_band_limited_joystick.BandLimitedJoystick, task="flat_terrain"
+    ),
     "SilverBadgerJoystickFlatTerrain25": functools.partial(
         silver_badger_joystick.Joystick, task="flat_terrain"
     ),
@@ -110,6 +119,9 @@ _envs = {
     ),
     "SpotFlatTerrainJoystick": functools.partial(
         spot_joystick.Joystick, task="flat_terrain"
+    ),
+    "SpotJoystickBandLimited": functools.partial(
+        spot_band_limited_joystick.BandLimitedJoystick, task="flat_terrain"
     ),
     "SpotFlatTerrainJoystick25": functools.partial(
         spot_joystick.Joystick, task="flat_terrain"
@@ -139,6 +151,7 @@ _cfgs = {
     "G1JoystickFlatTerrain": g1_joystick.default_config,
     "G1JoystickRoughTerrain": g1_joystick.default_config,
     "Go1JoystickFlatTerrain": go1_joystick.default_config,
+    "Go1JoystickBandLimited": go1_band_limited_joystick.default_config,
     "Go1JoystickFlatTerrain25": go1_joystick.flat_terrain_25_config,
     "Go1JoystickFlatTerrain35": go1_joystick.flat_terrain_35_config,
     "Go1JoystickRoughTerrain": go1_joystick.default_config,
@@ -150,6 +163,7 @@ _cfgs = {
     "H1JoystickGaitTracking": h1_joystick_gait_tracking.default_config,
     "Op3Joystick": op3_joystick.default_config,
     "SilverBadgerJoystickFlatTerrain": silver_badger_joystick.default_config,
+    "SilverBadgerJoystickBandLimited": silver_badger_band_limited_joystick.default_config,
     "SilverBadgerJoystickFlatTerrain25": (
         silver_badger_joystick.velocity_25_config
     ),
@@ -166,6 +180,7 @@ _cfgs = {
         silver_badger_joystick.no_linear_velocity_config
     ),
     "SpotFlatTerrainJoystick": spot_joystick.default_config,
+    "SpotJoystickBandLimited": spot_band_limited_joystick.default_config,
     "SpotFlatTerrainJoystick25": spot_joystick.velocity_25_config,
     "SpotGetup": spot_getup.default_config,
     "SpotJoystickGaitTracking": spot_joystick_gait_tracking.default_config,
@@ -183,6 +198,7 @@ _randomizer = {
     "G1JoystickFlatTerrain": g1_randomize.domain_randomize,
     "G1JoystickRoughTerrain": g1_randomize.domain_randomize,
     "Go1JoystickFlatTerrain": go1_randomize.domain_randomize,
+    "Go1JoystickBandLimited": go1_randomize.domain_randomize,
     "Go1JoystickFlatTerrain25": go1_randomize.domain_randomize,
     "Go1JoystickFlatTerrain35": go1_randomize.domain_randomize,
     "Go1JoystickRoughTerrain": go1_randomize.domain_randomize,
@@ -191,6 +207,9 @@ _randomizer = {
     "Go1Handstand": go1_randomize.domain_randomize,
     "Go1Footstand": go1_randomize.domain_randomize,
     "SilverBadgerJoystickFlatTerrain": (
+        silver_badger_randomize.domain_randomize
+    ),
+    "SilverBadgerJoystickBandLimited": (
         silver_badger_randomize.domain_randomize
     ),
     "SilverBadgerJoystickFlatTerrain25": (
@@ -209,6 +228,7 @@ _randomizer = {
         silver_badger_randomize.domain_randomize
     ),
     "SpotFlatTerrainJoystick": spot_randomize.domain_randomize,
+    "SpotJoystickBandLimited": spot_randomize.domain_randomize,
     "SpotFlatTerrainJoystick25": spot_randomize.domain_randomize,
     "T1JoystickFlatTerrain": t1_randomize.domain_randomize,
     "T1JoystickRoughTerrain": t1_randomize.domain_randomize,
@@ -264,6 +284,25 @@ for _base_name, (
         domain_randomization=_domain_randomization,
     )
     _randomizer[_variant_name] = silver_badger_randomize.domain_randomize
+
+# The band-limited command process is paired with the robustness setting used
+# for the planned regularization comparison.  Keep its concise public name as
+# requested instead of adding every robustness suffix for this new task.
+_silver_badger_band_limited_robust_name = (
+    "SilverBadgerBandLimitedPushesAndDomainRandomization"
+)
+_envs[_silver_badger_band_limited_robust_name] = functools.partial(
+    silver_badger_band_limited_joystick.BandLimitedJoystick, task="flat_terrain"
+)
+_cfgs[_silver_badger_band_limited_robust_name] = functools.partial(
+    silver_badger_joystick.variant_config,
+    silver_badger_band_limited_joystick.default_config,
+    pushes=True,
+    domain_randomization=True,
+)
+_randomizer[_silver_badger_band_limited_robust_name] = (
+    silver_badger_randomize.domain_randomize
+)
 
 # Go1 joystick robustness variants.
 _go1_joystick_bases = {
