@@ -6,17 +6,27 @@ import numpy as np
 from absl.testing import absltest, parameterized
 
 from mujoco_playground import registry
+from mujoco_playground.config import locomotion_params
 
 
 class BandLimitedJoystickTest(parameterized.TestCase):
 
   def test_silver_badger_robust_variant_configuration(self):
+    env_name = "SilverBadgerBandLimitedPushesAndDomainRandomization"
     config = registry.get_default_config(
-        "SilverBadgerBandLimitedPushesAndDomainRandomization"
+        env_name
     )
     self.assertTrue(config.pert_config.enable)
     self.assertTrue(config.domain_randomization)
     self.assertIn("band_limited_command_config", config)
+    self.assertEqual(
+        locomotion_params.brax_ppo_config(env_name).num_timesteps,
+        200_000_000,
+    )
+
+  def test_spot_band_limited_variant_has_ppo_config(self):
+    config = locomotion_params.brax_ppo_config("SpotJoystickBandLimited")
+    self.assertEqual(config.num_timesteps, 100_000_000)
 
   @parameterized.parameters(
       "Go1JoystickBandLimited",

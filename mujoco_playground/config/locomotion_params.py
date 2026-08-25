@@ -148,7 +148,7 @@ def brax_ppo_config(
       value_obs_key="privileged_state",
     )
 
-  elif env_name.startswith("SilverBadgerJoystick"):
+  elif env_name.startswith(("SilverBadgerJoystick", "SilverBadgerBandLimited")):
     rl_config.num_timesteps = 200_000_000
     rl_config.num_evals = 10
     rl_config.network_factory = config_dict.create(
@@ -166,6 +166,7 @@ def brax_ppo_config(
     pass  # use default config
   elif env_name.startswith((
       "SpotFlatTerrainJoystick",
+      "SpotJoystickBandLimited",
       "SpotGetup",
       "SpotJoystickGaitTracking",
   )):
