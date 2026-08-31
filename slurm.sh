@@ -22,7 +22,7 @@
 
 # Usage:
 #   sbatch slurm.sh <ar|as|tr|ts|hp> <penalty-strength> [environment] \
-#     [cutoff-hz] [difference-order] [num-timesteps]
+#     [cutoff-hz] [difference-order] [num-timesteps] [butterworth-order]
 #
 # Examples:
 #   sbatch slurm.sh ar 1e-1 BarkourJoystick
@@ -32,10 +32,11 @@
 #   sbatch slurm.sh hp 8e-3 SpotFlatTerrainJoystick
 #   sbatch slurm.sh hp 8e-3 SpotFlatTerrainJoystick 10.0 2.0
 #   sbatch slurm.sh hp 8e-3 SpotFlatTerrainJoystick 10.0 2.0 800M
+#   sbatch slurm.sh hp 8e-3 SpotFlatTerrainJoystick 10.0 2.0 800M 3
 #
 # The corresponding environment variables can also be used:
 #   METHOD=hp PENALTY_STRENGTH=1e-3 CUTOFF_HZ=10 \
-#     DIFFERENCE_ORDER=2 NUM_TIMESTEPS=800M \
+#     DIFFERENCE_ORDER=2 NUM_TIMESTEPS=800M HIGHPASS_ORDER=3 \
 #     ENV_NAME=Go1JoystickFlatTerrain sbatch slurm.sh
 METHOD=${1:-${METHOD:-ar}}
 PENALTY_STRENGTH=${2:-${PENALTY_STRENGTH:-1e-1}}
@@ -43,8 +44,8 @@ ENV_NAME=${3:-${ENV_NAME:-BarkourJoystick}}
 CUTOFF_HZ=${4:-${CUTOFF_HZ:-5.0}}
 DIFFERENCE_ORDER=${5:-${DIFFERENCE_ORDER:-1.0}}
 NUM_TIMESTEPS_INPUT=${6:-${NUM_TIMESTEPS:-400M}}
+HIGHPASS_ORDER=${7:-${HIGHPASS_ORDER:-${HIGH_PASS_ORDER:-1}}}
 SEED=${SLURM_ARRAY_TASK_ID:-0}
-HIGHPASS_ORDER=1
 
 NUMBER_PATTERN='^[+]?[0-9]*\.?[0-9]+([eE][+-]?[0-9]+)?$'
 for value_name in PENALTY_STRENGTH CUTOFF_HZ DIFFERENCE_ORDER; do
@@ -62,6 +63,13 @@ elif [[ $NUM_TIMESTEPS_INPUT =~ ^[1-9][0-9]*$ ]]; then
 else
   echo "NUM_TIMESTEPS must be a positive integer or use an M suffix (for example, 400M), got: $NUM_TIMESTEPS_INPUT" >&2
   exit 2
+fi
+
+if [[ $METHOD == hp ]]; then
+  if ! [[ $HIGHPASS_ORDER =~ ^[1-8]$ ]]; then
+    echo "HIGHPASS_ORDER must be an integer from 1 through 8, got: $HIGHPASS_ORDER" >&2
+    exit 2
+  fi
 fi
 
 LOG_INTERVAL_TIMESTEPS=25000000
@@ -276,6 +284,7 @@ echo "Number of timesteps: $NUM_TIMESTEPS"
 echo "Number of evaluations/logs: $NUM_EVALS (every 25M timesteps)"
 if [[ $METHOD == hp ]]; then
   echo "High-pass cutoff: $CUTOFF_HZ Hz"
+  echo "High-pass Butterworth order: $HIGHPASS_ORDER"
   echo "High-pass difference order: $DIFFERENCE_ORDER"
 fi
 echo "Experiment: $EXP_NAME"

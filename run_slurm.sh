@@ -1,9 +1,10 @@
-#sbatch slurm.sh <method> <strength> [environment] [cutoff-hz] [difference-order]
+#sbatch slurm.sh <method> <strength> [environment] [cutoff-hz] [difference-order] [num-timesteps] [butterworth-order]
 #sbatch slurm.sh ar 1e-1 BarkourJoystick
 #sbatch slurm.sh as 1e-1 BarkourJoystick
 #sbatch slurm.sh tr 8e-4 BerkeleyHumanoidJoystickFlatTerrain
 #sbatch slurm.sh ts 8e-4 Go1JoystickFlatTerrain
 #sbatch slurm.sh hp 8e-3 SpotFlatTerrainJoystick
+#sbatch slurm.sh hp 8e-3 SpotFlatTerrainJoystick 5.0 1.0 400M 3
 
 
 #--env_name Go1JoystickFlatTerrain25 \
