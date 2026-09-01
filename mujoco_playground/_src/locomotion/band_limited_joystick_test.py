@@ -30,7 +30,9 @@ class BandLimitedJoystickTest(parameterized.TestCase):
 
   @parameterized.parameters(
       "Go1JoystickBandLimited",
+      "Go1JoystickRoughTerrainBandLimited",
       "SilverBadgerJoystickBandLimited",
+      "SilverBadgerJoystickRoughTerrainBandLimited",
       "SpotJoystickBandLimited",
   )
   def test_registry_reset_step_and_torque_penalties(self, env_name):

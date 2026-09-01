@@ -87,6 +87,9 @@ _envs = {
     "Go1JoystickRoughTerrain": functools.partial(
         go1_joystick.Joystick, task="rough_terrain"
     ),
+    "Go1JoystickRoughTerrainBandLimited": functools.partial(
+        go1_band_limited_joystick.BandLimitedJoystick, task="rough_terrain"
+    ),
     "Go1JoystickRoughTerrain25": functools.partial(
         go1_joystick.Joystick, task="rough_terrain"
     ),
@@ -113,6 +116,10 @@ _envs = {
     ),
     "SilverBadgerJoystickRoughTerrain": functools.partial(
         silver_badger_joystick.Joystick, task="rough_terrain"
+    ),
+    "SilverBadgerJoystickRoughTerrainBandLimited": functools.partial(
+        silver_badger_band_limited_joystick.BandLimitedJoystick,
+        task="rough_terrain",
     ),
     "SilverBadgerJoystickRoughTerrainNoLinearVelocity": functools.partial(
         silver_badger_joystick.Joystick, task="rough_terrain"
@@ -155,6 +162,9 @@ _cfgs = {
     "Go1JoystickFlatTerrain25": go1_joystick.flat_terrain_25_config,
     "Go1JoystickFlatTerrain35": go1_joystick.flat_terrain_35_config,
     "Go1JoystickRoughTerrain": go1_joystick.default_config,
+    "Go1JoystickRoughTerrainBandLimited": (
+        go1_band_limited_joystick.default_config
+    ),
     "Go1JoystickRoughTerrain25": go1_joystick.velocity_25_config,
     "Go1Getup": go1_getup.default_config,
     "Go1Handstand": go1_handstand.default_config,
@@ -176,6 +186,9 @@ _cfgs = {
         silver_badger_joystick.no_linear_velocity_config
     ),
     "SilverBadgerJoystickRoughTerrain": silver_badger_joystick.default_config,
+    "SilverBadgerJoystickRoughTerrainBandLimited": (
+        silver_badger_band_limited_joystick.default_config
+    ),
     "SilverBadgerJoystickRoughTerrainNoLinearVelocity": (
         silver_badger_joystick.no_linear_velocity_config
     ),
@@ -202,6 +215,7 @@ _randomizer = {
     "Go1JoystickFlatTerrain25": go1_randomize.domain_randomize,
     "Go1JoystickFlatTerrain35": go1_randomize.domain_randomize,
     "Go1JoystickRoughTerrain": go1_randomize.domain_randomize,
+    "Go1JoystickRoughTerrainBandLimited": go1_randomize.domain_randomize,
     "Go1JoystickRoughTerrain25": go1_randomize.domain_randomize,
     "Go1Getup": go1_randomize.domain_randomize,
     "Go1Handstand": go1_randomize.domain_randomize,
@@ -222,6 +236,9 @@ _randomizer = {
         silver_badger_randomize.domain_randomize
     ),
     "SilverBadgerJoystickRoughTerrain": (
+        silver_badger_randomize.domain_randomize
+    ),
+    "SilverBadgerJoystickRoughTerrainBandLimited": (
         silver_badger_randomize.domain_randomize
     ),
     "SilverBadgerJoystickRoughTerrainNoLinearVelocity": (

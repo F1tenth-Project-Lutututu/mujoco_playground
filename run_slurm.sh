@@ -86,6 +86,11 @@ for P in 2e-5 4e-5 6e-5 8e-5; do
   #sbatch slurm.sh ts $P Go1JoystickRoughTerrain
   #sbatch slurm.sh hp $P Go1JoystickRoughTerrain 5.0 1.0
 
+  #sbatch slurm.sh ar $P Go1JoystickRoughTerrainBandLimited
+  #sbatch slurm.sh tr $P Go1JoystickRoughTerrainBandLimited
+  #sbatch slurm.sh ts $P Go1JoystickRoughTerrainBandLimited
+  #sbatch slurm.sh hp $P Go1JoystickRoughTerrainBandLimited 5.0 1.0
+
   #sbatch slurm.sh ar $P Go1JoystickRoughTerrainPushesAndDomainRandomization
   #sbatch slurm.sh tr $P Go1JoystickRoughTerrainPushesAndDomainRandomization 
   #sbatch slurm.sh ts $P Go1JoystickRoughTerrainPushesAndDomainRandomization
@@ -141,6 +146,11 @@ for P in 2e-5 4e-5 6e-5 8e-5; do
   #sbatch slurm.sh tr $P SilverBadgerJoystickRoughTerrain
   #sbatch slurm.sh ts $P SilverBadgerJoystickRoughTerrain
   #sbatch slurm.sh hp $P SilverBadgerJoystickRoughTerrain 5.0 1.0
+
+  #sbatch slurm.sh ar $P SilverBadgerJoystickRoughTerrainBandLimited
+  #sbatch slurm.sh tr $P SilverBadgerJoystickRoughTerrainBandLimited
+  #sbatch slurm.sh ts $P SilverBadgerJoystickRoughTerrainBandLimited
+  #sbatch slurm.sh hp $P SilverBadgerJoystickRoughTerrainBandLimited 5.0 1.0
 
   #sbatch slurm.sh ar $P SilverBadgerJoystickFlatTerrainNoLinearVelocity
   #sbatch slurm.sh tr $P SilverBadgerJoystickFlatTerrainNoLinearVelocity
