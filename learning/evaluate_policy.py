@@ -998,6 +998,8 @@ def _load_policy_and_environment(args):
   _apply_torque_normalization_override(
       env_config, args.torque_highpass_normalize_by_capacity
   )
+  if args.environment_impl is not None:
+    env_config.impl = args.environment_impl
   if args.disable_perturbations and "pert_config" in env_config:
     env_config.pert_config.enable = False
   if (
@@ -1452,6 +1454,14 @@ def _build_parser() -> argparse.ArgumentParser:
           "Load the shared evaluation environment configuration from this "
           "checkpoint instead of from the policy checkpoint. Requires "
           "--use_saved_environment_config."
+      ),
+  )
+  parser.add_argument(
+      "--environment_impl",
+      choices=("jax", "warp"),
+      help=(
+          "Override only the MuJoCo computational backend. This does not "
+          "change the environment task or reward configuration."
       ),
   )
   parser.add_argument(

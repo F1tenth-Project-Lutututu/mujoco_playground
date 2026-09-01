@@ -408,7 +408,7 @@ By default the figures and CSV tables are written below
 `evaluations/pareto_results/<environment>/`. Every filename records the x-axis
 scaling, y-axis values and scaling, and penalty-scale representation. For
 example, the default labeled plot is
-`policy_pareto_x-linear_y-absolute-linear_repr-labels.png`; its other
+`policy_pareto_x-linear_y-absolute-linear_repr-labels_agg-mean.png`; its other
 representations end in `repr-size`, `repr-opacity`, and `repr-arrows`.
 `--output custom.png` changes the base name while retaining these descriptive
 suffixes. The older `--environment Go1JoystickFlatTerrain` form remains
@@ -458,6 +458,16 @@ available through `--y-metric` but are not plotted by default. Points with
 reward below 31 are excluded. Solid lines connect the nondominated points
 separately for each method and each high-pass cutoff/`m` configuration, and
 point labels show the decoded penalty scale.
+
+Pooling uses the mean by default. Use `--aggregation median` for the median,
+or `--aggregation interquartile_mean` to average the middle 50% of sorted
+rollout values (reducing sensitivity to outliers). The selected statistic is
+used consistently for both the reward and cost axes:
+
+```bash
+python -m learning.plot_policy_pareto Go1JoystickFlatTerrain \
+  --aggregation interquartile_mean
+```
 
 Y axes show absolute metric values on linear axes by default. Pass
 `--log-y-axis` to put the absolute values on logarithmic axes; all visible

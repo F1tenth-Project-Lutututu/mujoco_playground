@@ -87,6 +87,17 @@ class ParetoPolicyPipelineTest(absltest.TestCase):
     self.assertEqual(configured.cutoff_hz, 2.5)
     self.assertEqual(configured.difference_order, 0.5)
 
+  def test_select_runs_separates_high_pass_filter_orders(self):
+    runs = pareto_policy_pipeline.select_runs([
+        "260729-highpass-400M-hp1em4-f5o1m10-seed0",
+        "260731-highpass-400M-hp1em4-f5o2m10-seed0",
+    ])
+
+    self.assertEqual(
+        {(run.method, run.filter_order) for run in runs},
+        {("high_pass", 1), ("high_pass_f5_o2_m1", 2)},
+    )
+
   def test_select_runs_can_restrict_experiment_date(self):
     runs = pareto_policy_pipeline.select_runs(
         [

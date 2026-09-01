@@ -120,7 +120,7 @@ def high_pass_method(
     cutoff_hz: float, difference_order: float, filter_order: int = 1
 ) -> str:
   """Returns the stable series name for one high-pass configuration."""
-  if cutoff_hz == 5.0 and difference_order == 1.0:
+  if cutoff_hz == 5.0 and difference_order == 1.0 and filter_order == 1:
     return "high_pass"
   cutoff = format(cutoff_hz, "g").replace(".", "p")
   difference = format(difference_order, "g").replace(".", "p")
