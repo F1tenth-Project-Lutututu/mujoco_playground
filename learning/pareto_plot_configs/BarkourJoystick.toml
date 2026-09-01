@@ -1,1 +1,10 @@
-all_methods = true
+all_methods = false
+methods = [
+  "baseline",
+  "torque_rate",
+  "action_smoothness",
+  "high_pass",
+  #"high_pass_f5_m1p5",
+  #"high_pass_f5_m2",
+  #"high_pass_f6_m1",
+]
