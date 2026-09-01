@@ -85,13 +85,18 @@ class JoystickTorqueHighpassTest(absltest.TestCase):
         delta=0.02,
     )
 
-  def test_legacy_frequency_normalization_remains_default(self):
+  def test_cluster_tfr_settings_are_defaults(self):
     config = joystick.default_config()
 
     self.assertEqual(
         config.reward_config.torque_highpass_frequency_normalization,
-        "legacy",
+        "white_spectrum",
     )
+    self.assertEqual(config.reward_config.torque_highpass_difference_order, 1.0)
+    self.assertFalse(
+        config.reward_config.torque_highpass_normalize_by_capacity
+    )
+    self.assertTrue(config.reward_config.torque_highpass_observe_state)
     self.assertEqual(
         joystick._validate_highpass_frequency_normalization(  # pylint: disable=protected-access
             "white_spectrum"

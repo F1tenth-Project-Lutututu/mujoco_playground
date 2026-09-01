@@ -89,11 +89,11 @@ def default_config() -> config_dict.ConfigDict:
           base_height_target=0.5,
           torque_highpass_cutoff_hz=5.0,
           torque_highpass_order=1,
-          torque_highpass_difference_order=0.0,
-          torque_highpass_frequency_normalization="legacy",
+          torque_highpass_difference_order=1.0,
+          torque_highpass_frequency_normalization="white_spectrum",
           torque_highpass_signal="torque",
-          torque_highpass_normalize_by_capacity=True,
-          torque_highpass_observe_state=False,
+          torque_highpass_normalize_by_capacity=False,
+          torque_highpass_observe_state=True,
           torque_rate_observe_state=False,
           torque_rate_use_second_difference=False,
           torque_highpass_adaptive_weight=False,
@@ -253,6 +253,7 @@ class Joystick(berkeley_humanoid_base.BerkeleyHumanoidEnv):
         go1_joystick._validate_observe_highpass_state(  # pylint: disable=protected-access
             self._config.reward_config.torque_highpass_observe_state
         )
+        and self._config.reward_config.scales.torque_high_freq != 0.0
     )
     self._torque_rate_observe_state = (
         go1_joystick._validate_observe_torque_rate_state(  # pylint: disable=protected-access

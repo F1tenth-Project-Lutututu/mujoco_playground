@@ -90,6 +90,25 @@ class TorquePenaltyTest(absltest.TestCase):
 
     self.assertEqual(self.config.scales.action_rate, 0.0)
 
+  def test_default_tfr_memory_does_not_change_baseline_observation(self):
+    info = {}
+    torque = jp.array([1.0, 2.0])
+    self.penalty.reset(info, torque)
+
+    self.assertEqual(self.penalty.observation(info, torque).shape, (0,))
+
+  def test_default_tfr_memory_is_observed_when_tfr_is_enabled(self):
+    self.config.scales.torque_high_freq = -1e-5
+    model = SimpleNamespace(
+        actuator_forcerange=np.array([[-10.0, 10.0], [-20.0, 20.0]])
+    )
+    penalty = torque_penalty.TorquePenalty(self.config, model, 0.02)
+    info = {}
+    torque = jp.array([1.0, 2.0])
+    penalty.reset(info, torque)
+
+    self.assertGreater(penalty.observation(info, torque).size, 0)
+
   def test_uses_joint_force_limits_when_actuator_limits_are_unset(self):
     model = SimpleNamespace(
         actuator_forcerange=np.zeros((2, 2)),

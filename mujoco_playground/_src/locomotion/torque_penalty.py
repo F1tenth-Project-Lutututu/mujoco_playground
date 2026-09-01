@@ -40,11 +40,11 @@ def add_config(config: Any) -> None:
   config.scales.torque_rate = 0.0
   config.torque_highpass_cutoff_hz = 5.0
   config.torque_highpass_order = 1
-  config.torque_highpass_difference_order = 0.0
-  config.torque_highpass_frequency_normalization = "legacy"
+  config.torque_highpass_difference_order = 1.0
+  config.torque_highpass_frequency_normalization = "white_spectrum"
   config.torque_highpass_signal = "torque"
-  config.torque_highpass_normalize_by_capacity = True
-  config.torque_highpass_observe_state = False
+  config.torque_highpass_normalize_by_capacity = False
+  config.torque_highpass_observe_state = True
   config.torque_rate_observe_state = False
   config.torque_rate_use_second_difference = False
   config.torque_highpass_adaptive_weight = False
@@ -247,7 +247,10 @@ class TorquePenalty:
 
   def observation(self, info: dict[str, Any], torque: jax.Array) -> jax.Array:
     values = []
-    if self.config.torque_highpass_observe_state:
+    if (
+        self.config.torque_highpass_observe_state
+        and self.config.scales.torque_high_freq != 0.0
+    ):
       values.extend((
           jp.ravel(info["torque_highpass_state"]),
           jp.ravel(info["torque_difference_inputs"]),
