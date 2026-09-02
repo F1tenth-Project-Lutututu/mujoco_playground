@@ -245,6 +245,7 @@ def default_config() -> config_dict.ConfigDict:
       episode_length=1000,
       Kp=20.0,
       Kd=0.5,
+      motor_damping=0.5,
       action_repeat=1,
       action_scale=1.0,
       policy_observes_linear_velocity=True,
@@ -363,6 +364,32 @@ def variant_config(
   config.policy_observes_linear_velocity = not no_linear_velocity
   config.pert_config.enable = pushes
   config.domain_randomization = domain_randomization
+  return config
+
+
+def rlx_hard_no_motor_damping_config() -> config_dict.ConfigDict:
+  """Silver Badger robustness config aligned with RL-X's hard DR preset.
+
+  The corresponding randomizer is registered separately.  Keeping these
+  values in the task config makes the absence of both joint and actuator
+  derivative damping explicit, rather than relying on XML defaults.
+  """
+  config = variant_config(
+      default_config,
+      no_linear_velocity=True,
+      pushes=True,
+      domain_randomization=True,
+  )
+  # RL-X integrates at 200 Hz while the policy remains at 50 Hz.
+  config.sim_dt = 0.005
+  config.Kd = 0.0
+  config.motor_damping = 0.0
+  # Match RL-X's full-curriculum policy-observation noise magnitudes.
+  config.noise_config.scales.joint_pos = 0.01
+  config.noise_config.scales.joint_vel = 1.5
+  config.noise_config.scales.gyro = 0.2
+  config.noise_config.scales.gravity = 0.05
+  config.exclude_fixed_spine_from_policy_observation = True
   return config
 
 
@@ -879,12 +906,21 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
         if self._config.policy_observes_linear_velocity
         else jp.zeros((0,))
     )
+    policy_joint_angles = noisy_joint_angles
+    policy_joint_vel = noisy_joint_vel
+    policy_default_pose = self._default_pose
+    if self._config.get("exclude_fixed_spine_from_policy_observation", False):
+      # The spine is fixed at its nominal target and RL-X does not expose it.
+      policy_joint_angles = policy_joint_angles[1:]
+      policy_joint_vel = policy_joint_vel[1:]
+      policy_default_pose = policy_default_pose[1:]
+
     state = jp.hstack([
         policy_linear_velocity,  # 3 when enabled, otherwise omitted.
         noisy_gyro,  # 3
         noisy_gravity,  # 3
-        noisy_joint_angles - self._default_pose,  # 13
-        noisy_joint_vel,  # 13
+        policy_joint_angles - policy_default_pose,
+        policy_joint_vel,
         info["last_act"],  # 12 leg actions; the spine is locked.
         info["command"],  # 3
     ])

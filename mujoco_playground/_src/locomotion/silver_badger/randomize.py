@@ -15,6 +15,7 @@
 """Domain randomization for the SilverBadger environment."""
 
 import jax
+import jax.numpy as jp
 from mujoco import mjx
 
 FLOOR_GEOM_ID = 0
@@ -111,3 +112,80 @@ def domain_randomize(model: mjx.Model, rng: jax.Array):
   })
 
   return model, in_axes
+
+
+def domain_randomize_rlx_hard(model: mjx.Model, rng: jax.Array):
+  """Reset-time subset of RL-X's hardest Silver Badger model randomization.
+
+  RL-X additionally changes stateful quantities during an episode (delayed
+  actions, joint dropout, and curriculum-scaled perturbations).  The Brax
+  randomization callback only receives a model at reset, so those parts are
+  implemented by the task's existing velocity-kick mechanism where possible
+  and are deliberately not simulated here.
+  """
+  @jax.vmap
+  def rand_dynamics(key):
+    keys = jax.random.split(key, 12)
+    # RL-X randomizes all three contact-friction dimensions by +/- 100%.
+    friction = model.geom_friction * (
+        1.0 + jax.random.uniform(
+            keys[0], model.geom_friction.shape, minval=-1.0, maxval=1.0
+        )
+    )
+    # Contact stiffness/damping, impedance, gravity, and fluid parameters.
+    solref = model.geom_solref.at[:, 0].set(
+        model.geom_solref[:, 0]
+        * jax.random.uniform(keys[1], model.geom_solref[:, 0].shape,
+                             minval=0.5, maxval=1.5)
+    )
+    solref = solref.at[:, 1].set(
+        model.geom_solref[:, 1]
+        * jax.random.uniform(keys[2], model.geom_solref[:, 1].shape,
+                             minval=0.4, maxval=1.6)
+    )
+    solimp = model.geom_solimp * jax.random.uniform(
+        keys[3], model.geom_solimp.shape, minval=0.2, maxval=1.8
+    )
+    solimp = jp.clip(solimp, 0.0, 6.0)
+    gravity = model.opt.gravity.at[:2].set(
+        jax.random.uniform(keys[4], (2,), minval=-0.5, maxval=0.5)
+    )
+    gravity = gravity.at[2].set(
+        model.opt.gravity[2] * jax.random.uniform(keys[5], minval=0.9, maxval=1.1)
+    )
+    body_mass = model.body_mass * jax.random.uniform(
+        keys[6], model.body_mass.shape, minval=0.85, maxval=1.15
+    )
+    body_inertia = model.body_inertia * jax.random.uniform(
+        keys[7], model.body_inertia.shape, minval=0.80, maxval=1.20
+    )
+    body_ipos = model.body_ipos + jax.random.uniform(
+        keys[8], model.body_ipos.shape, minval=-0.005, maxval=0.005
+    )
+    armature = model.dof_armature * jax.random.uniform(
+        keys[9], model.dof_armature.shape, minval=0.5, maxval=1.5
+    )
+    frictionloss = model.dof_frictionloss * jax.random.uniform(
+        keys[10], model.dof_frictionloss.shape, minval=0.0, maxval=2.0
+    )
+    force_range = model.actuator_forcerange * jax.random.uniform(
+        keys[11], model.actuator_forcerange.shape, minval=0.85, maxval=1.15
+    )
+    return (friction, solref, solimp, gravity, body_mass, body_inertia,
+            body_ipos, armature, frictionloss, force_range)
+
+  (friction, solref, solimp, gravity, body_mass, body_inertia, body_ipos,
+   armature, frictionloss, force_range) = rand_dynamics(rng)
+  in_axes = jax.tree_util.tree_map(lambda x: None, model).tree_replace({
+      "geom_friction": 0, "geom_solref": 0, "geom_solimp": 0,
+      "opt.gravity": 0, "body_mass": 0, "body_inertia": 0,
+      "body_ipos": 0, "dof_armature": 0, "dof_frictionloss": 0,
+      "actuator_forcerange": 0,
+  })
+  return model.tree_replace({
+      "geom_friction": friction, "geom_solref": solref, "geom_solimp": solimp,
+      "opt.gravity": gravity, "body_mass": body_mass,
+      "body_inertia": body_inertia, "body_ipos": body_ipos,
+      "dof_armature": armature, "dof_frictionloss": frictionloss,
+      "actuator_forcerange": force_range,
+  }), in_axes

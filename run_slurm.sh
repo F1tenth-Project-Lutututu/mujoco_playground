@@ -169,6 +169,16 @@ for P in 2e-5 4e-5 6e-5 8e-5; do
   #sbatch slurm.sh ts $P SilverBadgerJoystickRoughTerrainNoLinearVelocityPushesAndDomainRandomization
   #sbatch slurm.sh hp $P SilverBadgerJoystickRoughTerrainNoLinearVelocityPushesAndDomainRandomization 5.0 1.0
 
+  #sbatch slurm.sh ar $P SilverBadgerJoystickRoughTerrainRLXHard
+  #sbatch slurm.sh tr $P SilverBadgerJoystickRoughTerrainRLXHard
+  #sbatch slurm.sh ts $P SilverBadgerJoystickRoughTerrainRLXHard
+  #sbatch slurm.sh hp $P SilverBadgerJoystickRoughTerrainRLXHard 5.0 1.0
+
+  #sbatch slurm.sh ar $P SilverBadgerJoystickFlatTerrainRLXHard
+  #sbatch slurm.sh tr $P SilverBadgerJoystickFlatTerrainRLXHard
+  #sbatch slurm.sh ts $P SilverBadgerJoystickFlatTerrainRLXHard
+  #sbatch slurm.sh hp $P SilverBadgerJoystickFlatTerrainRLXHard 5.0 1.0
+
   #sbatch slurm.sh ar $P BerkeleyHumanoidJoystickRoughTerrain
   #sbatch slurm.sh tr $P BerkeleyHumanoidJoystickRoughTerrain
   #sbatch slurm.sh hp 2e-3 BerkeleyHumanoidJoystickRoughTerrain $P 1.0

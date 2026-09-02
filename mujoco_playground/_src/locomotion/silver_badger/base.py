@@ -59,6 +59,7 @@ class SilverBadgerEnv(mjx_env.MjxEnv):
     self._mj_model.dof_damping[6:] = config.Kd
     self._mj_model.actuator_gainprm[:, 0] = config.Kp
     self._mj_model.actuator_biasprm[:, 1] = -config.Kp
+    self._mj_model.actuator_biasprm[:, 2] = -config.motor_damping
 
     # Increase offscreen framebuffer size to render at higher resolutions.
     self._mj_model.vis.global_.offwidth = 3840
