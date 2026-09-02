@@ -57,6 +57,19 @@ class PlotPolicyParetoTest(absltest.TestCase):
         "Mean foot error",
     )
 
+  def test_rollout_aggregations_include_mean_median_and_iqm(self):
+    aggregates = plot_policy_pareto._aggregate_values([1.0, 2.0, 3.0, 100.0])
+
+    self.assertEqual(aggregates["mean"], 26.5)
+    self.assertEqual(aggregates["median"], 2.5)
+    self.assertEqual(aggregates["interquartile_mean"], 2.5)
+
+  def test_nonmean_aggregation_uses_a_distinct_cache_column(self):
+    self.assertEqual(
+        plot_policy_pareto._aggregation_column("metric", "median"),
+        "metric__median",
+    )
+
   def test_percent_above_minimum_scaling(self):
     np.testing.assert_allclose(
         plot_policy_pareto._percent_above_minimum(
@@ -108,7 +121,7 @@ class PlotPolicyParetoTest(absltest.TestCase):
             expected_evaluation_root,
             plot_policy_pareto.DEFAULT_RESULTS_ROOT
             / "Go1JoystickRoughTerrain"
-            / "policy_pareto_x-linear_y-absolute-linear_repr-labels.png",
+            / "policy_pareto_x-linear_y-absolute-linear_repr-labels_agg-mean.png",
         ),
     )
     self.assertEqual(plot.call_args_list[0].args[5], (29.7, None))
@@ -118,10 +131,10 @@ class PlotPolicyParetoTest(absltest.TestCase):
     self.assertEqual(
         [call.args[2].name for call in plot.call_args_list],
         [
-            "policy_pareto_x-linear_y-absolute-linear_repr-labels.png",
-            "policy_pareto_x-linear_y-absolute-linear_repr-size.png",
-            "policy_pareto_x-linear_y-absolute-linear_repr-opacity.png",
-            "policy_pareto_x-linear_y-absolute-linear_repr-arrows.png",
+            "policy_pareto_x-linear_y-absolute-linear_repr-labels_agg-mean.png",
+            "policy_pareto_x-linear_y-absolute-linear_repr-size_agg-mean.png",
+            "policy_pareto_x-linear_y-absolute-linear_repr-opacity_agg-mean.png",
+            "policy_pareto_x-linear_y-absolute-linear_repr-arrows_agg-mean.png",
         ],
     )
     self.assertTrue(
@@ -153,7 +166,7 @@ class PlotPolicyParetoTest(absltest.TestCase):
             shifted_log_percentage_y=False,
             x_exponential_strength=1.5,
         ),
-        Path("custom_x-exp-1p5_y-absolute-log_repr-labels.png"),
+        Path("custom_x-exp-1p5_y-absolute-log_repr-labels_agg-mean.png"),
     )
     self.assertEqual(
         plot_policy_pareto._output_variant_path(
@@ -165,7 +178,7 @@ class PlotPolicyParetoTest(absltest.TestCase):
             shifted_log_percentage_y=True,
             x_exponential_strength=0.0,
         ),
-        Path("custom_x-linear_y-percent-shifted-log_repr-arrows.png"),
+        Path("custom_x-linear_y-percent-shifted-log_repr-arrows_agg-mean.png"),
     )
 
   def test_xlim_is_forwarded_to_plot(self):
@@ -277,6 +290,19 @@ class PlotPolicyParetoTest(absltest.TestCase):
     self.assertEqual(arguments.environment, "Go1JoystickFlatTerrain")
     self.assertTrue(arguments.cluster)
 
+  def test_aggregation_cli_accepts_median_and_interquartile_mean(self):
+    parser = plot_policy_pareto._build_parser()
+
+    self.assertEqual(parser.parse_args([]).aggregation, "mean")
+    self.assertEqual(
+        parser.parse_args(["--aggregation", "median"]).aggregation, "median"
+    )
+    self.assertEqual(
+        parser.parse_args(["--aggregation", "interquartile_mean"])
+        .aggregation,
+        "interquartile_mean",
+    )
+
   def test_all_methods_cli_is_opt_in(self):
     parser = plot_policy_pareto._build_parser()
 
@@ -369,10 +395,10 @@ methods = [
     self.assertEqual(
         [call.args[2].name for call in plot.call_args_list],
         [
-            "custom_x-exp-2_y-absolute-log_repr-labels.png",
-            "custom_x-exp-2_y-absolute-log_repr-size.png",
-            "custom_x-exp-2_y-absolute-log_repr-opacity.png",
-            "custom_x-exp-2_y-absolute-log_repr-arrows.png",
+            "custom_x-exp-2_y-absolute-log_repr-labels_agg-mean.png",
+            "custom_x-exp-2_y-absolute-log_repr-size_agg-mean.png",
+            "custom_x-exp-2_y-absolute-log_repr-opacity_agg-mean.png",
+            "custom_x-exp-2_y-absolute-log_repr-arrows_agg-mean.png",
         ],
     )
 
@@ -482,6 +508,22 @@ methods = [
     self.assertEqual(int(second[0]["seed_count"]), 1)
     self.assertEqual(int(second[0]["expected_seed_count"]), 2)
     self.assertEqual(second[0]["missing_seeds"], "1")
+    self.assertEqual(float(second[0]["metric__median"]), 3.0)
+    self.assertEqual(float(second[0]["metric__interquartile_mean"]), 3.0)
+
+  def test_load_points_uses_requested_aggregation(self):
+    manifest, evaluation_root, _ = self._evaluation_fixture()
+
+    points = plot_policy_pareto.load_points(
+        manifest,
+        evaluation_root,
+        plot_policy_pareto.DEFAULT_X_METRIC,
+        "metric",
+        aggregation="median",
+    )
+
+    self.assertEqual(points[0].x, 33.0)
+    self.assertEqual(points[0].y, 3.0)
 
   def test_logarithmic_absolute_y_axis_renders(self):
     manifest, evaluation_root, _ = self._evaluation_fixture()

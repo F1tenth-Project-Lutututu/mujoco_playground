@@ -19,7 +19,8 @@ Example:
   python -m learning.plot_policy_pareto Go1JoystickFlatTerrain
 
 Each point pools all random-task rollouts and seeds for one method/penalty
-scale.  Reward is maximized and every configured y-axis metric is minimized.
+scale using a selectable mean, median, or interquartile mean. Reward is
+maximized and every configured y-axis metric is minimized.
 Local evaluations are preferred when complete; downloaded cluster evaluations
 are used automatically otherwise.  Plots from either source share one results
 directory.
@@ -54,7 +55,8 @@ DEFAULT_ENVIRONMENT = "Go1JoystickFlatTerrain"
 DEFAULT_X_METRIC = "eval_reward_means/total_without_regularization"
 AGGREGATE_CACHE_NAME = "pareto_aggregates.csv"
 AGGREGATE_CACHE_MANIFEST_NAME = "pareto_aggregates_cache.json"
-AGGREGATE_CACHE_VERSION = 3
+AGGREGATE_CACHE_VERSION = 4
+AGGREGATIONS = ("mean", "median", "interquartile_mean")
 DEFAULT_Y_METRICS = (
     "smoothness/torque/mssd_mean_squared_second_difference_per_dof",
     "smoothness/torque/msgfd_w5_p2_mean_absolute_savgol_filter_deviation_per_dof",
@@ -103,6 +105,7 @@ PLOTTED_METHODS = (
     "torque_smoothness",
     "high_pass",
     "high_pass_f4_m1",
+    "high_pass_f5_o2_m1",
     #"high_pass_f5_m0p5",
     "high_pass_f5_m1p5",
     #"high_pass_f6_m1",
@@ -126,6 +129,7 @@ METHOD_COLORS = {
     "high_pass_f2_m1": "#9467BD",
     "high_pass_f3_m1": "#17BECF",
     "high_pass_f4_m1": "#8C564B",
+    "high_pass_f5_o2_m1": "#FF9DA6",
     "high_pass_f5_m0p5": "#E377C2",
     "high_pass_f5_m1p5": "#BCBD22",
     "high_pass_f5_m2": "#7F7F7F",
@@ -252,6 +256,7 @@ def _output_variant_path(
     log_percentage_y: bool,
     shifted_log_percentage_y: bool,
     x_exponential_strength: float,
+    aggregation: str = "mean",
 ) -> Path:
   """Adds axis-scaling and penalty-representation tags to an output path."""
   axis_tag = _axis_scaling_tag(
@@ -261,8 +266,10 @@ def _output_variant_path(
       shifted_log_percentage_y=shifted_log_percentage_y,
       x_exponential_strength=x_exponential_strength,
   )
+  aggregation_tag = f"_agg-{aggregation}"
   return base_output.with_name(
       f"{base_output.stem}_{axis_tag}_repr-{scale_encoding}"
+      f"{aggregation_tag}"
       f"{base_output.suffix}"
   )
 
@@ -364,6 +371,31 @@ def _float(row: dict[str, str], metric: str) -> float:
   if not math.isfinite(value):
     raise ValueError(f"Metric {metric!r} is not finite: {value}")
   return value
+
+
+def _aggregation_column(metric: str, aggregation: str) -> str:
+  """Returns the cache column containing a metric's selected aggregate."""
+  if aggregation not in AGGREGATIONS:
+    raise ValueError(
+        f"Unknown aggregation: {aggregation!r}. "
+        f"Choose one of {', '.join(AGGREGATIONS)}."
+    )
+  return metric if aggregation == "mean" else f"{metric}__{aggregation}"
+
+
+def _aggregate_values(values: Sequence[float]) -> dict[str, float]:
+  """Computes mean, median, and the middle-half (IQM) mean of values."""
+  array = np.asarray(values, dtype=float)
+  if not len(array):
+    raise ValueError("Cannot aggregate an empty metric value sequence.")
+  ordered = np.sort(array)
+  trim = int(len(ordered) * 0.25)
+  middle_half = ordered[trim : len(ordered) - trim] if trim else ordered
+  return {
+      "mean": float(np.mean(array)),
+      "median": float(np.median(array)),
+      "interquartile_mean": float(np.mean(middle_half)),
+  }
 
 
 def _filter_points(
@@ -615,8 +647,7 @@ def _build_aggregates(
             "sample_count": 0,
             "seeds": set(),
             "expected_seeds": set(run.get("_expected_seeds", [])),
-            "sums": {},
-            "counts": {},
+            "values": {},
         },
     )
     group["expected_seeds"].update(run.get("_expected_seeds", []))
@@ -625,10 +656,8 @@ def _build_aggregates(
     with report.open(newline="", encoding="utf-8") as file:
       for row in csv.DictReader(file):
         group["sample_count"] = int(group["sample_count"]) + 1
-        sums = group["sums"]
-        counts = group["counts"]
-        assert isinstance(sums, dict)
-        assert isinstance(counts, dict)
+        values = group["values"]
+        assert isinstance(values, dict)
         for metric, raw_value in row.items():
           try:
             value = float(raw_value)
@@ -636,15 +665,12 @@ def _build_aggregates(
             continue
           if not math.isfinite(value):
             continue
-          sums[metric] = sums.get(metric, 0.0) + value
-          counts[metric] = counts.get(metric, 0) + 1
+          values.setdefault(metric, []).append(value)
 
   rows = []
   for (method, scale_tag), group in sorted(grouped.items()):
-    sums = group["sums"]
-    counts = group["counts"]
-    assert isinstance(sums, dict)
-    assert isinstance(counts, dict)
+    values = group["values"]
+    assert isinstance(values, dict)
     seeds = sorted(group["seeds"])
     expected_seeds = sorted(group["expected_seeds"])
     missing_seeds = sorted(set(expected_seeds) - set(seeds))
@@ -658,8 +684,10 @@ def _build_aggregates(
         "missing_seeds": ",".join(str(seed) for seed in missing_seeds),
         "all_seeds_considered": not missing_seeds,
         **{
-            metric: total / counts[metric]
-            for metric, total in sums.items()
+            column: value
+            for metric, metric_values in values.items()
+            for aggregation, value in _aggregate_values(metric_values).items()
+            for column in (_aggregation_column(metric, aggregation),)
         },
     })
   return rows
@@ -702,6 +730,7 @@ def _points_from_aggregates(
     aggregates: Sequence[dict[str, str]],
     x_metric: str,
     y_metric: str,
+    aggregation: str = "mean",
 ) -> list[Point]:
   points = []
   for row in aggregates:
@@ -710,8 +739,8 @@ def _points_from_aggregates(
             method=row["method"],
             scale=float(row["scale"]),
             scale_tag=row["scale_tag"],
-            x=_float(row, x_metric),
-            y=_float(row, y_metric),
+            x=_float(row, _aggregation_column(x_metric, aggregation)),
+            y=_float(row, _aggregation_column(y_metric, aggregation)),
             sample_count=int(row["sample_count"]),
             seed_count=int(row.get("seed_count", 0)),
             expected_seed_count=int(row.get("expected_seed_count", 0)),
@@ -726,10 +755,11 @@ def load_points(
     evaluation_root: Path,
     x_metric: str,
     y_metric: str,
+    aggregation: str = "mean",
 ) -> list[Point]:
   """Returns points from the persistent all-metric rollout aggregate cache."""
   return _points_from_aggregates(
-      load_aggregates(manifest, evaluation_root), x_metric, y_metric
+      load_aggregates(manifest, evaluation_root), x_metric, y_metric, aggregation
   )
 
 
@@ -749,6 +779,7 @@ def plot(
     x_exponential_strength: float = 0.0,
     all_methods: bool = False,
     methods: Sequence[str] = PLOTTED_METHODS,
+    aggregation: str = "mean",
 ) -> Path:
   """Plots Pareto fronts with one of several penalty-scale encodings."""
   if scale_encoding not in {"labels", "size", "opacity", "arrows"}:
@@ -764,12 +795,15 @@ def plot(
       rows, columns, figsize=(7.0 * columns, 5.2 * rows), squeeze=False
   )
   aggregates = load_aggregates(manifest, evaluation_root)
-  _require_metrics(aggregates, (x_metric, *y_metrics))
+  _require_metrics(
+      aggregates,
+      tuple(_aggregation_column(metric, aggregation) for metric in (x_metric, *y_metrics)),
+  )
   csv_rows = []
   method_scale_ranges: dict[str, tuple[float, float]] = {}
   for axis, y_metric in zip(axes.flat, y_metrics):
     points = list(
-        _points_from_aggregates(aggregates, x_metric, y_metric)
+        _points_from_aggregates(aggregates, x_metric, y_metric, aggregation)
     )
     points = _filter_points(points, xlim)
     if not points:
@@ -914,6 +948,7 @@ def plot(
             "scale": point.scale,
             "scale_tag": point.scale_tag,
             "x_metric": x_metric,
+            "aggregation": aggregation,
             "x": point.x,
             "y_metric": y_metric,
             "y": point.y,
@@ -988,7 +1023,9 @@ def plot(
           else "Regularization method"
       ),
   )
-  figure.suptitle("Penalty-scale Pareto fronts", y=0.995)
+  figure.suptitle(
+      f"Penalty-scale Pareto fronts ({aggregation.replace('_', ' ')})", y=0.995
+  )
   encoding_notes = {
       "size": "Marker size increases with penalty scale within each method.",
       "opacity": "Marker darkness increases with penalty scale within each method.",
@@ -1129,6 +1166,16 @@ def _build_parser() -> argparse.ArgumentParser:
       ),
   )
   parser.add_argument("--x-metric", default=DEFAULT_X_METRIC)
+  parser.add_argument(
+      "--aggregation",
+      choices=AGGREGATIONS,
+      default="mean",
+      help=(
+          "Pool rollout values using this statistic for both axes "
+          "(default: mean). 'interquartile_mean' averages the middle 50%% "
+          "after sorting."
+      ),
+  )
   parser.add_argument(
       "--x-exponential-strength",
       type=float,
@@ -1292,6 +1339,7 @@ def main(argv: Sequence[str] | None = None) -> None:
           log_percentage_y=args.log_percentage_y,
           shifted_log_percentage_y=args.shifted_log_percentage_y,
           x_exponential_strength=args.x_exponential_strength,
+          aggregation=args.aggregation,
       )
       outputs.append(
           plot(
@@ -1310,6 +1358,7 @@ def main(argv: Sequence[str] | None = None) -> None:
               x_exponential_strength=args.x_exponential_strength,
               all_methods=all_methods,
               methods=methods,
+              aggregation=args.aggregation,
           )
         )
   except MissingEvaluationMetricsError as error:

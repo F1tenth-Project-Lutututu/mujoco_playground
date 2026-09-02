@@ -12,6 +12,7 @@ Example:
 from __future__ import annotations
 
 import csv
+import subprocess
 from collections import defaultdict
 from dataclasses import asdict
 from pathlib import Path
@@ -33,19 +34,20 @@ ENVIRONMENTS = (
     "Go1JoystickRoughTerrain",
     "SilverBadgerJoystickFlatTerrain",
     "SilverBadgerJoystickRoughTerrain",
-    "SpotFlatTerrainJoystick",
+    #"SpotFlatTerrainJoystick",
     "SpotJoystickGaitTracking",
 )
 SMOOTHNESS_METRICS = (
     (
         "smoothness/torque/mssd_mean_squared_second_difference_per_dof",
-        "MSSD",
+        "Torque MSSD",
     ),
     #("smoothness/torque/total_variation", r"Torque total variation ($\times 10^4$)"),
     (
         "smoothness/torque/msgfd_w5_p2_"
         "mean_absolute_savgol_filter_deviation_per_dof",
-        "Savitzky–Golay deviation \n (window 5, order 2)",
+        "Torque Savitzky–Golay deviation",
+        #"Torque Savitzky–Golay deviation \n (window 5, order 2)",
     ),
 )
 METHODS = (
@@ -60,12 +62,37 @@ EVALUATION_ROOT = PROJECT_ROOT / "evaluations" / "pareto_cluster"
 RESULTS_ROOT = PROJECT_ROOT / "evaluations" / "pareto_results"
 CACHE_PATH = RESULTS_ROOT / "multi_environment_pareto_iqm.csv"
 OUTPUT_PATH = RESULTS_ROOT / "multi_environment_pareto_iqm.png"
+PDF_OUTPUT_PATH = OUTPUT_PATH.with_suffix(".pdf")
+IMPROVEMENT_TABLE_PATH = RESULTS_ROOT / "multi_environment_pareto_improvements.csv"
 REWARD_METRIC = pareto.DEFAULT_X_METRIC
 LOG_Y_AXIS = True
-X_EXPONENTIAL_STRENGTH = 2.0
+X_EXPONENTIAL_STRENGTH = 1.0
+# IEEE two-column text width is approximately 7.16 inches.  Keeping the
+# Matplotlib canvas at its final publication size prevents LaTeX from scaling
+# otherwise reasonable fonts down to unreadable sizes.
+FIGURE_WIDTH_INCHES = 13.
+PANEL_HEIGHT_INCHES = 2.2
+TITLE_FONT_SIZE = 10.0
+LABEL_FONT_SIZE = 10.0
+TICK_FONT_SIZE = 8.0
+LEGEND_FONT_SIZE = 10.0
 METRIC_DISPLAY_SCALES = {
     "smoothness/torque/total_variation": 1e4,
 }
+
+
+def _plain_tick_label(value: float, _position: float | None = None) -> str:
+  """Formats plot ticks without scientific notation or redundant zeros."""
+  return np.format_float_positional(
+      value, precision=3, unique=False, fractional=False, trim="-"
+  )
+
+
+def _plain_y_tick_label(value: float, _position: float | None = None) -> str:
+  """Formats y ticks with two significant digits and no exponent notation."""
+  return np.format_float_positional(
+      value, precision=2, unique=False, fractional=False, trim="-"
+  )
 
 
 def _iqm(values: Iterable[float]) -> float:
@@ -189,11 +216,207 @@ def _load_or_build_cache() -> list[dict[str, str]]:
   return _cache_rows()
 
 
+def _crop_pdf(path: Path) -> None:
+  """Crops a generated PDF to its visible page content using pdfcrop."""
+  cropped_path = path.with_name(f"{path.stem}.cropped{path.suffix}")
+  cropped_path.unlink(missing_ok=True)
+  try:
+    subprocess.run(
+        ["pdfcrop", "--margins", "0", str(path), str(cropped_path)],
+        check=True,
+    )
+    cropped_path.replace(path)
+  finally:
+    cropped_path.unlink(missing_ok=True)
+
+
+def _front_xy(
+    rows: Sequence[dict[str, str]], metric: str, xlim: tuple[float, float | None] | None
+) -> tuple[np.ndarray, np.ndarray]:
+  """Returns one method's visible Pareto front, sorted by reward.
+
+  Duplicate reward values are reduced to their least-cost point so that the
+  resulting curve is suitable for interpolation.
+  """
+  x = np.asarray([float(row[REWARD_METRIC]) for row in rows], dtype=float)
+  y = np.asarray([float(row[metric]) for row in rows], dtype=float)
+  if xlim is not None:
+    visible = x >= xlim[0]
+    if xlim[1] is not None:
+      visible &= x <= xlim[1]
+    x, y = x[visible], y[visible]
+  if not len(x):
+    return x, y
+  front = pareto.pareto_mask(x, y)
+  x, y = x[front], y[front]
+  order = np.argsort(x)
+  x, y = x[order], y[order]
+  unique_x, first = np.unique(x, return_index=True)
+  return unique_x, np.minimum.reduceat(y, first)
+
+
+def _mean_smoothness_improvement(
+    reference_x: np.ndarray,
+    reference_y: np.ndarray,
+    candidate_x: np.ndarray,
+    candidate_y: np.ndarray,
+) -> tuple[float, float, float] | None:
+  """Returns candidate's reward-weighted percentage reduction over overlap."""
+  if len(reference_x) < 2 or len(candidate_x) < 2:
+    return None
+  lower = max(float(np.min(reference_x)), float(np.min(candidate_x)))
+  upper = min(float(np.max(reference_x)), float(np.max(candidate_x)))
+  if lower >= upper:
+    return None
+  grid = np.unique(np.concatenate((
+      np.asarray([lower, upper]),
+      reference_x[(reference_x > lower) & (reference_x < upper)],
+      candidate_x[(candidate_x > lower) & (candidate_x < upper)],
+  )))
+  reference = np.interp(grid, reference_x, reference_y)
+  candidate = np.interp(grid, candidate_x, candidate_y)
+  if np.any(reference <= 0):
+    return None
+  improvement = 100.0 * (reference - candidate) / reference
+  mean_improvement = float(np.trapezoid(improvement, grid) / (upper - lower))
+  return mean_improvement, lower, upper
+
+
+def _write_improvement_table(rows: Sequence[dict[str, str]]) -> list[dict[str, object]]:
+  """Writes TFR's smoothness improvement relative to every configured baseline."""
+  ours = "high_pass"
+  table_rows = []
+  for environment in ENVIRONMENTS:
+    environment_rows = [row for row in rows if row["environment"] == environment]
+    xlim = pareto._configured_xlim(environment, pareto.DEFAULT_XLIM_CONFIG)
+    ours_rows = [row for row in environment_rows if row["method"] == ours]
+    for metric, metric_label in SMOOTHNESS_METRICS:
+      ours_x, ours_y = _front_xy(ours_rows, metric, xlim)
+      for baseline, baseline_label in METHODS:
+        if baseline == ours:
+          continue
+        baseline_rows = [
+            row for row in environment_rows if row["method"] == baseline
+        ]
+        baseline_x, baseline_y = _front_xy(baseline_rows, metric, xlim)
+        result = _mean_smoothness_improvement(
+            baseline_x, baseline_y, ours_x, ours_y
+        )
+        row = {
+            "environment": environment,
+            "smoothness_metric": metric,
+            "smoothness_label": metric_label,
+            "reference_method": baseline,
+            "reference_label": baseline_label,
+            "candidate_method": ours,
+            "candidate_label": dict(METHODS)[ours],
+            "mean_smoothness_improvement_percent": "",
+            "overlap_reward_min": "",
+            "overlap_reward_max": "",
+            "status": "insufficient_or_nonoverlapping_fronts",
+        }
+        if result is not None:
+          improvement, lower, upper = result
+          row.update({
+              "mean_smoothness_improvement_percent": improvement,
+              "overlap_reward_min": lower,
+              "overlap_reward_max": upper,
+              "status": "ok",
+          })
+        table_rows.append(row)
+  IMPROVEMENT_TABLE_PATH.parent.mkdir(parents=True, exist_ok=True)
+  with IMPROVEMENT_TABLE_PATH.open("w", newline="", encoding="utf-8") as file:
+    writer = csv.DictWriter(file, fieldnames=tuple(table_rows[0]))
+    writer.writeheader()
+    writer.writerows(table_rows)
+  print(f"Pareto smoothness-improvement table: {IMPROVEMENT_TABLE_PATH}")
+  return table_rows
+
+
+def _print_improvement_table(rows: Sequence[dict[str, object]]) -> None:
+  """Prints the saved comparison table in a concise, readable layout."""
+  headers = ("Environment", "Metric", "Reference", "TFR improvement", "Overlap")
+  body = []
+  for row in rows:
+    if row["status"] == "ok":
+      improvement = f"{float(row['mean_smoothness_improvement_percent']):+.2f}%"
+      overlap = (
+          f"{float(row['overlap_reward_min']):.2f}–"
+          f"{float(row['overlap_reward_max']):.2f}"
+      )
+    else:
+      improvement, overlap = "n/a", "n/a"
+    body.append((
+        str(row["environment"]),
+        " ".join(str(row["smoothness_label"]).split()),
+        str(row["reference_label"]),
+        improvement,
+        overlap,
+    ))
+  widths = [
+      max(len(header), *(len(row[index]) for row in body))
+      for index, header in enumerate(headers)
+  ]
+  separator = "+" + "+".join("-" * (width + 2) for width in widths) + "+"
+  def format_row(row: Sequence[str]) -> str:
+    return "|" + "|".join(
+        f" {value:<{width}} " for value, width in zip(row, widths)
+    ) + "|"
+  print("\nTFR smoothness improvement over overlapping Pareto-front ranges")
+  print(separator)
+  print(format_row(headers))
+  print(separator)
+  for row in body:
+    print(format_row(row))
+  print(separator)
+
+
+def _print_average_improvements(rows: Sequence[dict[str, object]]) -> None:
+  """Prints unweighted mean gains across the environments in the table."""
+  grouped: dict[tuple[str, str], list[float]] = defaultdict(list)
+  for row in rows:
+    if row["status"] != "ok":
+      continue
+    key = (str(row["smoothness_label"]), str(row["reference_label"]))
+    grouped[key].append(float(row["mean_smoothness_improvement_percent"]))
+  headers = ("Metric", "Reference", "Mean TFR improvement", "Environments")
+  body = [
+      (
+          " ".join(metric.split()),
+          reference,
+          f"{np.mean(improvements):+.2f}%",
+          str(len(improvements)),
+      )
+      for (metric, reference), improvements in grouped.items()
+  ]
+  widths = [
+      max(len(header), *(len(row[index]) for row in body))
+      for index, header in enumerate(headers)
+  ]
+  separator = "+" + "+".join("-" * (width + 2) for width in widths) + "+"
+
+  def format_row(row: Sequence[str]) -> str:
+    return "|" + "|".join(
+        f" {value:<{width}} " for value, width in zip(row, widths)
+    ) + "|"
+
+  print("\nMean TFR smoothness improvement across environments (unweighted)")
+  print(separator)
+  print(format_row(headers))
+  print(separator)
+  for row in body:
+    print(format_row(row))
+  print(separator)
+
+
 def _plot(rows: Sequence[dict[str, str]]) -> None:
   figure, axes = plt.subplots(
       len(SMOOTHNESS_METRICS),
       len(ENVIRONMENTS),
-      figsize=(3.35 * len(ENVIRONMENTS), 3.0 * len(SMOOTHNESS_METRICS)),
+      figsize=(
+          FIGURE_WIDTH_INCHES,
+          PANEL_HEIGHT_INCHES * len(SMOOTHNESS_METRICS),
+      ),
       squeeze=False,
       sharex=False,
       sharey=False,
@@ -226,16 +449,19 @@ def _plot(rows: Sequence[dict[str, str]]) -> None:
         front = pareto.pareto_mask(x, y)
         visible_y.extend(y[front])
         color = pareto._method_color(method)
-        scatter = axis.scatter(x[front], y[front], color=color, s=34, label=label)
+        scatter = axis.scatter(x[front], y[front], color=color, s=10, label=label)
         order = np.argsort(x[front])
-        axis.plot(x[front][order], y[front][order], color=color, linewidth=1.8)
+        axis.plot(x[front][order], y[front][order], color=color, linewidth=1.2)
         legend_handles.setdefault(method, scatter)
       if row_index == 0:
-        axis.set_title(environment.replace("Joystick", "\nJoystick"), fontsize=10)
+        axis.set_title(
+            environment.replace("Joystick", "\nJoystick"),
+            fontsize=TITLE_FONT_SIZE,
+        )
       if column == 0:
-        axis.set_ylabel(metric_label)
-      if row_index == len(SMOOTHNESS_METRICS) - 1:
-        axis.set_xlabel("Task reward")
+        axis.set_ylabel(metric_label, fontsize=LABEL_FONT_SIZE)
+      #if row_index == len(SMOOTHNESS_METRICS) - 1:
+      #  axis.set_xlabel("Task reward", fontsize=LABEL_FONT_SIZE)
       if LOG_Y_AXIS:
         axis.set_yscale("log")
         if visible_y:
@@ -247,12 +473,19 @@ def _plot(rows: Sequence[dict[str, str]]) -> None:
           axis.yaxis.set_major_locator(
               ticker.FixedLocator(np.geomspace(lower, upper, num=3))
           )
-          axis.yaxis.set_major_formatter(ticker.StrMethodFormatter("{x:.2g}"))
+          axis.yaxis.set_major_formatter(
+              ticker.FuncFormatter(_plain_y_tick_label)
+          )
           axis.yaxis.set_minor_locator(ticker.NullLocator())
-          axis.tick_params(axis="y", labelsize=7)
+      axis.tick_params(axis="both", labelsize=TICK_FONT_SIZE)
+      axis.tick_params(axis="y", pad=1.0)
       environment_x = np.asarray(
           [float(row[REWARD_METRIC]) for row in environment_rows], dtype=float
       )
+      if xlim is not None:
+        environment_x = environment_x[environment_x >= xlim[0]]
+        if xlim[1] is not None:
+          environment_x = environment_x[environment_x <= xlim[1]]
       if (
           X_EXPONENTIAL_STRENGTH
           and len(environment_x)
@@ -268,6 +501,8 @@ def _plot(rows: Sequence[dict[str, str]]) -> None:
         )
       if xlim is not None:
         axis.set_xlim(left=xlim[0], right=xlim[1])
+      axis.xaxis.set_major_locator(ticker.MaxNLocator(nbins=3))
+      axis.xaxis.set_major_formatter(ticker.FuncFormatter(_plain_tick_label))
       axis.grid(alpha=0.25)
 
   figure.legend(
@@ -277,16 +512,30 @@ def _plot(rows: Sequence[dict[str, str]]) -> None:
       ncol=len(METHODS),
       frameon=False,
       bbox_to_anchor=(0.5, -0.01),
+      fontsize=LEGEND_FONT_SIZE,
   )
-  figure.subplots_adjust(bottom=0.15, wspace=0.24, hspace=0.20)
+  figure.subplots_adjust(
+      left=0.075,
+      right=0.995,
+      top=0.90,
+      bottom=0.10,
+      wspace=0.22,
+      hspace=0.18,
+  )
   OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-  figure.savefig(OUTPUT_PATH, dpi=220, bbox_inches="tight")
+  figure.savefig(OUTPUT_PATH, dpi=300, bbox_inches="tight")
+  figure.savefig(PDF_OUTPUT_PATH, bbox_inches="tight")
   plt.close(figure)
-  print(f"Pareto figure: {OUTPUT_PATH}")
+  _crop_pdf(PDF_OUTPUT_PATH)
+  print(f"Pareto figures: {OUTPUT_PATH}, {PDF_OUTPUT_PATH}")
 
 
 def main() -> None:
-  _plot(_load_or_build_cache())
+  rows = _load_or_build_cache()
+  improvement_rows = _write_improvement_table(rows)
+  _plot(rows)
+  _print_improvement_table(improvement_rows)
+  _print_average_improvements(improvement_rows)
 
 
 if __name__ == "__main__":
