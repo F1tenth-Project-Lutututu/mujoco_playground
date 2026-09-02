@@ -68,7 +68,7 @@ class ParetoClusterTest(unittest.TestCase):
 
     preparation, array_submission = [call.args[1] for call in ssh.call_args_list]
     self.assertIn("--wait", preparation)
-    self.assertIn("prepare-only", preparation)
+    self.assertIn("slurm_pareto_prepare.sh", preparation)
     self.assertIn("--array=0-3", array_submission)
     self.assertIn("pareto_pending_manifest.json", array_submission)
 

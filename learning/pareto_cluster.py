@@ -190,19 +190,16 @@ def submit(args: argparse.Namespace) -> None:
   output_root = args.remote_output_root
   script = args.remote_project_root / "slurm_pareto_evaluate.sh"
   if args.shards > 1 and args.manifest is None:
+    preparation_script = args.remote_project_root / "slurm_pareto_prepare.sh"
     preparation = shlex.join([
         "sbatch",
         "--wait",
         "--parsable",
-        str(script),
+        str(preparation_script),
         str(source),
         str(args.remote_models_root),
         str(output_root),
-        str(args.num_random_tasks),
-        str(args.task_seed),
         str(args.run_date or ""),
-        "1",
-        "prepare-only",
     ])
     prepare_id = _ssh(
         args.host,
