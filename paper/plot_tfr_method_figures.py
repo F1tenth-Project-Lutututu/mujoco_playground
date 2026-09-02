@@ -69,6 +69,25 @@ from scipy import signal
 
 EPS = 1e-12
 
+# These two panels are intended to be placed side-by-side in one IEEE column.
+# Design them at close to their final aspect ratio and use deliberately large
+# type, so that shrinking the PDFs to half-column width leaves 6--7 pt text.
+SWEEP_FIGSIZE = (5., 5.)
+SWEEP_TITLE_SIZE = 14
+SWEEP_LABEL_SIZE = 14
+SWEEP_TICK_SIZE = 14
+SWEEP_LEGEND_SIZE = 14
+SWEEP_CURVE_LINEWIDTH = 2.4
+SWEEP_GUIDE_LINEWIDTH = 1.8
+
+
+def _style_compact_sweep(ax: plt.Axes) -> None:
+    """Apply IEEE-readable typography to the paired sweep panels."""
+    ax.tick_params(axis="both", labelsize=SWEEP_TICK_SIZE)
+    ax.xaxis.label.set_size(SWEEP_LABEL_SIZE)
+    ax.yaxis.label.set_size(SWEEP_LABEL_SIZE)
+    ax.title.set_size(SWEEP_TITLE_SIZE)
+
 
 def butterworth_highpass_sos(
     cutoff_hz: float,
@@ -475,18 +494,24 @@ def plot_cutoff_sweep(
     candidates = [2.0, 5.0, 10.0]
     candidates = [fc for fc in candidates if fc < 0.5 * fs]
 
-    _, ax = plt.subplots(figsize=(6.4, 4.0))
+    _, ax = plt.subplots(figsize=SWEEP_FIGSIZE)
     for fc in candidates:
         w = tfr_frequency_weight(
             f, fs, fc, order, m, normalization="cutoff"
         )
         y = 10.0 * np.log10(np.maximum(w, 1e-8)) if decibels else np.maximum(w, EPS)
         (curve,) = (ax.plot if decibels else ax.semilogy)(
-            f, y, label=fr"$f_c={fc:g}$ Hz"
+            f, y, label=fr"$f_c={fc:g}$ Hz", linewidth=SWEEP_CURVE_LINEWIDTH
         )
-        ax.axvline(fc, color=curve.get_color(), linestyle="--", linewidth=1.0)
+        ax.axvline(
+            fc, color=curve.get_color(), linestyle="--",
+            linewidth=SWEEP_GUIDE_LINEWIDTH,
+        )
     ax.axhline(
-        0.0 if decibels else 1.0, color="0.35", linestyle=":", linewidth=1.0,
+        0.0 if decibels else 1.0,
+        color="0.35",
+        linestyle=":",
+        linewidth=SWEEP_GUIDE_LINEWIDTH,
     )
     ax.set_xlabel("Frequency [Hz]")
     ax.set_ylabel(
@@ -496,8 +521,9 @@ def plot_cutoff_sweep(
     )
     plt.xlim(right=15.)
     ax.set_title(fr"Effect of cutoff frequency ($n={order}$, $m={m}$)")
+    _style_compact_sweep(ax)
     ax.grid(True, which="both", alpha=0.25)
-    ax.legend()
+    ax.legend(fontsize=SWEEP_LEGEND_SIZE)
     suffix = "_db" if decibels else ""
     savefig(out_dir / f"tfr_cutoff_sweep{suffix}.pdf")
 
@@ -547,28 +573,47 @@ def plot_filter_order_sweep(
     f = frequency_grid(fs)
     candidates = [1, 2, 4, 8]
 
-    plt.figure(figsize=(6.4, 4.0))
+    _, ax = plt.subplots(figsize=SWEEP_FIGSIZE)
     for n in candidates:
         w = tfr_frequency_weight(
             f, fs, cutoff, n, m, normalization="cutoff"
         )
-        _plot_positive_semilogy(f, w, label=fr"$n={n}$", decibels=decibels)
-    plt.axvline(cutoff, linestyle="--", linewidth=1.0)
-    plt.axhline(0.0 if decibels else 1.0, color="0.35", linestyle=":", linewidth=1.0)
-    plt.xlabel("Frequency [Hz]")
+        if decibels:
+            ax.plot(
+                f,
+                10.0 * np.log10(np.maximum(w, 1e-8)),
+                label=fr"$n={n}$",
+                linewidth=SWEEP_CURVE_LINEWIDTH,
+            )
+        else:
+            ax.semilogy(
+                f, np.maximum(w, EPS), label=fr"$n={n}$",
+                linewidth=SWEEP_CURVE_LINEWIDTH,
+            )
+    ax.axvline(
+        cutoff, color="black", linestyle="--", linewidth=SWEEP_GUIDE_LINEWIDTH
+    )
+    ax.axhline(
+        0.0 if decibels else 1.0,
+        color="0.35",
+        linestyle=":",
+        linewidth=SWEEP_GUIDE_LINEWIDTH,
+    )
+    ax.set_xlabel("Frequency [Hz]")
     #plt.ylabel(
     #    "Penalty weight relative to cutoff [dB]"
     #    if decibels
     #    else "Cutoff-normalized penalty weight"
     #)
-    plt.xlim(right=10.)
-    plt.title(
+    ax.set_xlim(right=10.0)
+    ax.set_title(
         fr"Effect of Butterworth order ($f_c={cutoff:g}$ Hz, $m={m}$)"
     )
-    plt.grid(True, which="both", alpha=0.25)
+    _style_compact_sweep(ax)
+    ax.grid(True, which="both", alpha=0.25)
     if not decibels:
-        plt.ylim(bottom=1e-10)
-    plt.legend()
+        ax.set_ylim(bottom=1e-10)
+    ax.legend(fontsize=SWEEP_LEGEND_SIZE)
     suffix = "_db" if decibels else ""
     savefig(out_dir / f"tfr_filter_order_sweep{suffix}.pdf")
 

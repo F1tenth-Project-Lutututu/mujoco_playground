@@ -39,14 +39,15 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_ROBOT_PATH = SCRIPT_DIR / "robot.png"
 DEFAULT_PARETO_CSV = SCRIPT_DIR / "pareto.csv"
 DEFAULT_OUTPUT_PREFIX = SCRIPT_DIR / "fig1_tfr"
-ROBOT_IMAGE_SIZE = 1.8
+ROBOT_IMAGE_SIZE = 2.0
 ROBOT_BLOCK_CENTER_X = 0.52
 #ROBOT_IMAGE_Y = 0.35
-ROBOT_IMAGE_Y = 0.30
+ROBOT_IMAGE_Y = 0.28
 ROBOT_IMAGE_BASE_WIDTH = 0.62
 ROBOT_IMAGE_BASE_HEIGHT = 0.245
-ROBOT_CAPTION_GAP = 0.035
-ROBOT_BLOCK_HORIZONTAL_PADDING = -0.08
+ROBOT_IMAGE_CAPTION_SPACING = 0.04
+ROBOT_BLOCK_HORIZONTAL_PADDING = -0.15
+ROBOT_BLOCK_FONT_PADDING_GROWTH = 0.40
 ROBOT_BLOCK_VERTICAL_PADDING = 0.02
 LEFT_PANEL_TOP_PLOT_Y = 0.90
 LEFT_PANEL_BOTTOM_PLOT_Y = -0.08
@@ -54,11 +55,28 @@ LEFT_PANEL_PLOT_HEIGHT = 0.15
 LEFT_PANEL_PLOT_CAPTION_SPACING = 0.04
 LEFT_PANEL_BOTTOM_ARROW_CAPTION_SPACING = 0.01
 LEFT_PANEL_BOTTOM_ARROW_BOX_SPACING = 0.02
-FIGURE_FONT_SCALE = 1.0
+LEFT_PANEL_TOP_ARROW_PLOT_SPACING = 0.02
+LEFT_PANEL_TOP_ARROW_BOX_SPACING = 0.01
+LEFT_PANEL_CONTENT_Y_OFFSET = 0.03
+SHOW_GRID = True
+FIGURE_FONT_SCALE = 1.4
+FIGURE_WIDTH = 7.05
+FIGURE_BASE_HEIGHT = 2.90
+LEFT_PANEL_WIDTH = 1.20
+CENTER_PANEL_WIDTH = 1.04
+RIGHT_PANEL_WIDTH = 1.04
+LEFT_CENTER_PANEL_SPACING = 0.45
+CENTER_RIGHT_PANEL_SPACING = 0.30
+FREQUENCY_PANEL_YLABEL_PAD = 1.0
+FREQUENCY_PANEL_LEGEND_X = 1.03
+FREQUENCY_CUTOFF_LABEL_Y = -0.02
+PARETO_PANEL_YLABEL_PAD = 1.0
+Y_TICK_LABEL_PAD = 1.0
+PANEL_TITLE_Y = 1.28
 
 METHOD_LABELS = {
     "baseline": "Action rate",
-    "action_smoothness": "Action smoothness",
+    "action_smoothness": "Action smooth.",
     "torque_rate": "Torque rate",
     "torque_smoothness": "Torque smoothness",
     "high_pass": "TFR (ours)",
@@ -83,6 +101,19 @@ COLORS = {
 def _font(size):
     """Scale a base font size consistently across the complete figure."""
     return size * FIGURE_FONT_SCALE
+
+
+def _layout_scale():
+    """Return a bounded scale used for font-dependent figure geometry."""
+    return min(max(FIGURE_FONT_SCALE, 0.75), 1.5)
+
+
+def _configure_grid(ax):
+    """Apply the shared optional grid without implicitly enabling it."""
+    if SHOW_GRID:
+        ax.grid(True, alpha=0.25, linewidth=0.5)
+    else:
+        ax.grid(False)
 
 
 def tfr_weight(f, dt, fc, butter_order=2, diff_order=1):
@@ -170,31 +201,38 @@ def add_pipeline_panel(ax, robot_path=None):
     ax.set_title(
         r"(a) Smooth actions $\ne$ smooth torque",
         fontsize=_font(8.2),
-        y=1.18,
+        y=PANEL_TITLE_Y,
         pad=0,
+        verticalalignment="top",
     )
 
-    # Spread the two traces vertically so the transformation block can sit
-    # clearly between them without arrows touching either plot.
+    image_width = ROBOT_IMAGE_BASE_WIDTH * ROBOT_IMAGE_SIZE
+    image_height = ROBOT_IMAGE_BASE_HEIGHT * ROBOT_IMAGE_SIZE
+    image_x = ROBOT_BLOCK_CENTER_X - 0.5 * image_width
+    top_plot_y = LEFT_PANEL_TOP_PLOT_Y + LEFT_PANEL_CONTENT_Y_OFFSET
+    bottom_plot_y = LEFT_PANEL_BOTTOM_PLOT_Y + LEFT_PANEL_CONTENT_Y_OFFSET
+    robot_image_y = ROBOT_IMAGE_Y + LEFT_PANEL_CONTENT_Y_OFFSET
+
+    # Match both trace widths and centers to the scaled robot image.
     top = ax.inset_axes([
-        0.11,
-        LEFT_PANEL_TOP_PLOT_Y,
-        0.82,
+        image_x,
+        top_plot_y,
+        image_width,
         LEFT_PANEL_PLOT_HEIGHT,
     ])
     bottom = ax.inset_axes([
-        0.11,
-        LEFT_PANEL_BOTTOM_PLOT_Y,
-        0.82,
+        image_x,
+        bottom_plot_y,
+        image_width,
         LEFT_PANEL_PLOT_HEIGHT,
     ])
     top_caption_y = (
-        LEFT_PANEL_TOP_PLOT_Y
+        top_plot_y
         + LEFT_PANEL_PLOT_HEIGHT
         + LEFT_PANEL_PLOT_CAPTION_SPACING
     )
     bottom_caption_y = (
-        LEFT_PANEL_BOTTOM_PLOT_Y
+        bottom_plot_y
         + LEFT_PANEL_PLOT_HEIGHT
         + LEFT_PANEL_PLOT_CAPTION_SPACING
     )
@@ -213,7 +251,13 @@ def add_pipeline_panel(ax, robot_path=None):
     for a in (top, bottom):
         a.set_yticks([])
         a.set_xlim(0.0, 0.8)
-        a.tick_params(axis="x", labelsize=_font(5.9), pad=1.0, length=2.3)
+        a.tick_params(
+            axis="x",
+            labelsize=_font(5.9),
+            pad=_font(1.0),
+            length=_font(2.3),
+        )
+        _configure_grid(a)
         a.spines[["top", "right"]].set_visible(False)
 
     # Both traces retain a visible time axis.  The upper trace uses only the
@@ -222,11 +266,17 @@ def add_pipeline_panel(ax, robot_path=None):
     bottom.set_xticks([0.0, 0.4, 0.8])
 
     top.plot(t, action, lw=1.6)
-    top.set_ylabel(r"$q^{des}$", rotation=0, labelpad=12, fontsize=_font(8))
+    top.set_ylabel(
+        r"$q^{des}$", rotation=0, labelpad=_font(12), fontsize=_font(8)
+    )
 
     bottom.plot(t, torque, lw=1.25)
-    bottom.set_ylabel(r"$\tau$", rotation=0, labelpad=12, fontsize=_font(8))
-    bottom.set_xlabel("Time [s]", fontsize=_font(6.4), labelpad=1.0)
+    bottom.set_ylabel(
+        r"$\tau$", rotation=0, labelpad=_font(12), fontsize=_font(8)
+    )
+    bottom.set_xlabel(
+        "Time [s]", fontsize=_font(6.8), labelpad=_font(1.0)
+    )
 
     ax.text(
         ROBOT_BLOCK_CENTER_X,
@@ -237,16 +287,17 @@ def add_pipeline_panel(ax, robot_path=None):
     )
 
     # Size the physical-system block around the centered robot and caption.
-    image_width = ROBOT_IMAGE_BASE_WIDTH * ROBOT_IMAGE_SIZE
-    image_height = ROBOT_IMAGE_BASE_HEIGHT * ROBOT_IMAGE_SIZE
-    image_x = ROBOT_BLOCK_CENTER_X - 0.5 * image_width
-    caption_y = ROBOT_IMAGE_Y - ROBOT_CAPTION_GAP
-    box_x = image_x - ROBOT_BLOCK_HORIZONTAL_PADDING
+    caption_y = robot_image_y - ROBOT_IMAGE_CAPTION_SPACING
+    effective_horizontal_padding = (
+        ROBOT_BLOCK_HORIZONTAL_PADDING
+        + ROBOT_BLOCK_FONT_PADDING_GROWTH * (FIGURE_FONT_SCALE - 1.0)
+    )
+    box_w = image_width + 2 * effective_horizontal_padding
+    box_x = ROBOT_BLOCK_CENTER_X - 0.5 * box_w
     box_y = caption_y - ROBOT_BLOCK_VERTICAL_PADDING
     box_top = (
-        ROBOT_IMAGE_Y + image_height + ROBOT_BLOCK_VERTICAL_PADDING
+        robot_image_y + image_height + ROBOT_BLOCK_VERTICAL_PADDING
     )
-    box_w = image_width + 2 * ROBOT_BLOCK_HORIZONTAL_PADDING
     box_h = box_top - box_y
     block = FancyBboxPatch(
         (box_x, box_y),
@@ -269,7 +320,7 @@ def add_pipeline_panel(ax, robot_path=None):
         photo = ax.inset_axes(
             [
                 image_x,
-                ROBOT_IMAGE_Y,
+                robot_image_y,
                 image_width,
                 image_height,
             ],
@@ -292,8 +343,14 @@ def add_pipeline_panel(ax, robot_path=None):
     # Arrows live entirely in the blank spaces between plots and the box.
     ax.annotate(
         "",
-        xy=(ROBOT_BLOCK_CENTER_X, box_top),
-        xytext=(ROBOT_BLOCK_CENTER_X, 0.86),
+        xy=(
+            ROBOT_BLOCK_CENTER_X,
+            box_top + LEFT_PANEL_TOP_ARROW_BOX_SPACING,
+        ),
+        xytext=(
+            ROBOT_BLOCK_CENTER_X,
+            top_plot_y - LEFT_PANEL_TOP_ARROW_PLOT_SPACING,
+        ),
         xycoords="axes fraction",
         textcoords="axes fraction",
         arrowprops=dict(arrowstyle="->", lw=1.0),
@@ -327,10 +384,11 @@ def add_pipeline_panel(ax, robot_path=None):
 
 def add_frequency_panel(ax, dt, fc, butter_order, diff_order):
     ax.set_title(
-        "(b) Frequency-selective regularization",
+        "(b) Frequency-selective\nregularization",
         fontsize=_font(8.2),
-        y=1.18,
+        y=PANEL_TITLE_Y,
         pad=0,
+        verticalalignment="top",
     )
 
     nyquist = 0.5 / dt
@@ -354,14 +412,14 @@ def add_frequency_panel(ax, dt, fc, butter_order, diff_order):
     # Preserve-gait message outside the axes, with an arrow into the shaded
     # low-frequency region.
     ax.annotate(
-        "preserve\ngait band",
+        "preserve gait band",
         xy=(0.10, 0.78),
         xycoords="axes fraction",
         xytext=(0.15, 1.035),
         #xytext=(0.15, 0.88),
         textcoords="axes fraction",
         ha="center", va="bottom",
-        fontsize=_font(6.1),
+        fontsize=_font(6.5),
         color=COLORS["high_pass"],
         arrowprops=dict(
             arrowstyle="->",
@@ -374,13 +432,13 @@ def add_frequency_panel(ax, dt, fc, butter_order, diff_order):
     # Keep this message inside the plot, but place it in otherwise empty
     # lower-right space and point toward the high-frequency TFR response.
     ax.annotate(
-        "suppress torque\noscillations",
+        "suppress\nhigh-frequency\ntorque oscillations",
         xy=(0.77, 0.75),
         xycoords="axes fraction",
-        xytext=(0.7, 0.75),
+        xytext=(0.62, 0.71),
         textcoords="axes fraction",
         ha="center", va="center",
-        fontsize=_font(6.1),
+        fontsize=_font(6.5),
         color=COLORS["high_pass"],
         #arrowprops=dict(
         #    arrowstyle="->",
@@ -390,24 +448,44 @@ def add_frequency_panel(ax, dt, fc, butter_order, diff_order):
     )
 
     ax.text(
-        fc, 1.55e-4, r"$f_c$",
-        ha="center", va="bottom", fontsize=_font(8),
+        fc,
+        FREQUENCY_CUTOFF_LABEL_Y,
+        r"$f_c$",
+        color=COLORS["high_pass"],
+        transform=ax.get_xaxis_transform(),
+        ha="center",
+        va="top",
+        fontsize=_font(8),
+        clip_on=False,
     )
 
     ax.set_xlim(0, nyquist)
     ax.set_ylim(1e-4, max(40, np.nanmax(w_tfr) * 1.15))
     ax.set_xlabel("Frequency [Hz]", fontsize=_font(7.5))
-    ax.set_ylabel("Penalty weight", fontsize=_font(7.5))
+    ax.set_ylabel(
+        "Penalty weight",
+        fontsize=_font(7.5),
+        labelpad=_font(FREQUENCY_PANEL_YLABEL_PAD),
+    )
     ax.tick_params(labelsize=_font(6.8))
-    ax.legend(frameon=False, fontsize=_font(6.7), loc="lower right")
+    ax.tick_params(axis="y", pad=_font(Y_TICK_LABEL_PAD))
+    _configure_grid(ax)
+    ax.legend(
+        frameon=False,
+        fontsize=_font(6.7),
+        loc="lower right",
+        bbox_to_anchor=(FREQUENCY_PANEL_LEGEND_X, 0.0),
+        borderaxespad=0.0,
+    )
 
 
 def add_pareto_panel(ax, pareto_df, robot_path=None):
     ax.set_title(
-        "(c) Performance–smoothness trade-off",
+        "(c) Performance–smoothness\ntrade-off",
         fontsize=_font(8.2),
-        y=1.18,
+        y=PANEL_TITLE_Y,
         pad=0,
+        verticalalignment="top",
     )
 
     # Fig.-7-like presentation: solid Pareto curves with compact point markers,
@@ -440,16 +518,22 @@ def add_pareto_panel(ax, pareto_df, robot_path=None):
     ax.set_ylim(ymin / 1.25, ymax * 1.18)
 
     ax.set_xlabel("Task reward  ↑", fontsize=_font(7.5))
-    ax.set_ylabel("Torque MSSD  ↓", fontsize=_font(7.5))
+    ax.set_ylabel(
+        "Torque MSSD  ↓",
+        fontsize=_font(7.5),
+        labelpad=_font(PARETO_PANEL_YLABEL_PAD),
+    )
     ax.tick_params(labelsize=_font(6.8))
+    ax.tick_params(axis="y", pad=_font(Y_TICK_LABEL_PAD))
+    _configure_grid(ax)
 
     # Place legend where the Pareto curves leave the most whitespace.
     ax.legend(
         frameon=False,
-        fontsize=_font(5.2),
+        fontsize=_font(6.5),
         loc="lower center",
-        bbox_to_anchor=(0.5, 1.025),
-        ncol=4,
+        bbox_to_anchor=(0.5, 1.0),
+        ncol=2,
         handlelength=1.8,
         columnspacing=0.65,
         labelspacing=0.25,
@@ -492,16 +576,26 @@ def build_figure(
         "ps.fonttype": 42,
     })
 
-    fig = plt.figure(figsize=(7.05, 2.90))
+    layout_scale = _layout_scale()
+    fig = plt.figure(
+        figsize=(FIGURE_WIDTH, FIGURE_BASE_HEIGHT * layout_scale)
+    )
     gs = fig.add_gridspec(
-        1, 3,
-        width_ratios=[1.00, 1.04, 1.20],
-        wspace=0.43,
+        1,
+        5,
+        width_ratios=[
+            LEFT_PANEL_WIDTH,
+            LEFT_CENTER_PANEL_SPACING * layout_scale,
+            CENTER_PANEL_WIDTH,
+            CENTER_RIGHT_PANEL_SPACING * layout_scale,
+            RIGHT_PANEL_WIDTH,
+        ],
+        wspace=0.0,
     )
 
     ax0 = fig.add_subplot(gs[0, 0])
-    ax1 = fig.add_subplot(gs[0, 1])
-    ax2 = fig.add_subplot(gs[0, 2])
+    ax1 = fig.add_subplot(gs[0, 2])
+    ax2 = fig.add_subplot(gs[0, 4])
 
     add_pipeline_panel(ax0, robot_path=robot_path)
     add_frequency_panel(ax1, dt, fc, butter_order, diff_order)
@@ -511,7 +605,8 @@ def build_figure(
     # labels now live above the axes rather than on top of the data.
     fig.subplots_adjust(
         left=0.045, right=0.995,
-        top=0.76, bottom=0.16,
+        top=0.76 - 0.025 * (layout_scale - 1.0),
+        bottom=0.16 + 0.02 * (layout_scale - 1.0),
     )
     return fig
 

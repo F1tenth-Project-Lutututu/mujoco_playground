@@ -5,6 +5,7 @@ methods = [
   "action_smoothness",
   "high_pass",
   #"high_pass_f5_m1p5",
-  #"high_pass_f5_m2",
-  #"high_pass_f6_m1",
+  "high_pass_f5_m2",
+  "high_pass_f6_m1",
+  "high_pass_f5_o2_m1",
 ]
