@@ -14,7 +14,7 @@ if [[ $# -lt 1 || $# -gt 2 ]]; then
 fi
 
 environment=$1
-evaluations_root=\${2:-/mnt/storage_3/home/pkicki/pl0467-01/scratch/pkicki/spectral_playground/evaluations/pareto_cluster}
+evaluations_root=${2:-/mnt/storage_3/home/pkicki/pl0467-01/scratch/pkicki/spectral_playground/evaluations/pareto_cluster}
 environment_root=$evaluations_root/$environment
 raw_torque=$environment_root/raw_torque
 manifest=$environment_root/pareto_manifest.json
