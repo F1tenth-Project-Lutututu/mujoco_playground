@@ -22,8 +22,12 @@ MODELS_ROOT=$2
 OUTPUT_ROOT=$3
 RUN_DATE=${4:-}
 
+# Conda's activation hook references optional toolchain variables that may be
+# unset on a clean Slurm node, so do not run it under ``set -u``.
+set +u
 eval "$(/mnt/storage_6/project_data/pl0467-01/soft/miniconda3/bin/conda shell.bash hook)"
 conda activate spectral_fixed
+set -u
 
 RUN_DATE_ARGUMENT=()
 if [[ -n "$RUN_DATE" ]]; then
