@@ -188,22 +188,51 @@ def submit(args: argparse.Namespace) -> None:
     )
     source = environment
   output_root = args.remote_output_root
-  submission = shlex.join([
+  script = args.remote_project_root / "slurm_pareto_evaluate.sh"
+  if args.shards > 1 and args.manifest is None:
+    preparation = shlex.join([
+        "sbatch",
+        "--wait",
+        "--parsable",
+        str(script),
+        str(source),
+        str(args.remote_models_root),
+        str(output_root),
+        str(args.num_random_tasks),
+        str(args.task_seed),
+        str(args.run_date or ""),
+        "1",
+        "prepare-only",
+    ])
+    prepare_id = _ssh(
+        args.host,
+        f"cd {shlex.quote(str(args.remote_project_root))} && {preparation}",
+    ).split(";", maxsplit=1)[0]
+    print(f"Prepared merged Pareto manifest in Eagle job {prepare_id}.")
+    source = output_root / environment / "pareto_pending_manifest.json"
+  submission_arguments = [
       "sbatch",
       "--parsable",
-      str(args.remote_project_root / "slurm_pareto_evaluate.sh"),
+  ]
+  if args.shards > 1:
+    submission_arguments.append(f"--array=0-{args.shards - 1}")
+  submission_arguments.extend([
+      str(script),
       str(source),
       str(args.remote_models_root),
       str(output_root),
       str(args.num_random_tasks),
       str(args.task_seed),
       str(args.run_date or ""),
+      str(args.shards),
   ])
+  submission = shlex.join(submission_arguments)
   job_id = _ssh(
       args.host,
       f"cd {shlex.quote(str(args.remote_project_root))} && {submission}",
   ).split(";", maxsplit=1)[0]
-  print(f"Submitted Eagle Pareto evaluation job {job_id}.")
+  label = "array" if args.shards > 1 else "job"
+  print(f"Submitted Eagle Pareto evaluation {label} {job_id}.")
   print(f"Environment: {environment}")
   print(f"Remote output: {output_root / environment}")
   print(f"Status: ssh {args.host} squeue -j {job_id}")
@@ -369,6 +398,15 @@ def _build_parser() -> argparse.ArgumentParser:
   )
   submit_parser.add_argument("--num-random-tasks", type=int, default=1024)
   submit_parser.add_argument("--task-seed", type=int, default=0)
+  submit_parser.add_argument(
+      "--shards",
+      type=_positive_int,
+      default=1,
+      help=(
+          "Evaluate disjoint policy subsets in this many one-GPU Slurm array "
+          "tasks. Existing evaluated policies remain in the merged manifest."
+      ),
+  )
   submit_parser.add_argument(
       "--run-date",
       type=int,

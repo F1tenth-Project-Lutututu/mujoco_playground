@@ -15,7 +15,7 @@
 #set -euo pipefail
 
 if (( $# < 3 )); then
-  echo "Usage: sbatch $0 <environment-or-manifest> <models-root> <output-root> [num-random-tasks] [task-seed] [run-date]" >&2
+  echo "Usage: sbatch $0 <environment-or-manifest> <models-root> <output-root> [num-random-tasks] [task-seed] [run-date] [shard-count] [prepare-only]" >&2
   exit 2
 fi
 
@@ -25,6 +25,9 @@ OUTPUT_ROOT=$3
 NUM_RANDOM_TASKS=${4:-1024}
 TASK_SEED=${5:-0}
 RUN_DATE=${6:-}
+SHARD_COUNT=${7:-1}
+SHARD_INDEX=${SLURM_ARRAY_TASK_ID:-0}
+PREPARE_ONLY=${8:-}
 
 eval "$(/mnt/storage_6/project_data/pl0467-01/soft/miniconda3/bin/conda shell.bash hook)"
 conda activate spectral_fixed
@@ -36,7 +39,7 @@ export MUJOCO_GL=egl
 echo "Host: $(hostname --fqdn)"
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
-if ! srun --ntasks=1 --gpus-per-task=1 python - <<'PY'
+if [[ "$PREPARE_ONLY" != "prepare-only" ]] && ! srun --ntasks=1 --gpus-per-task=1 python - <<'PY'
 import jax
 
 devices = jax.devices()
@@ -64,10 +67,17 @@ RUN_DATE_ARGUMENT=()
 if [[ -n "$RUN_DATE" ]]; then
   RUN_DATE_ARGUMENT=(--run-date "$RUN_DATE")
 fi
+PREPARE_ARGUMENT=()
+if [[ "$PREPARE_ONLY" == "prepare-only" ]]; then
+  PREPARE_ARGUMENT=(--prepare-only)
+fi
 srun --ntasks=1 --gpus-per-task=1 python -m learning.evaluate_pareto_on_cluster \
   "${SOURCE_ARGUMENT[@]}" \
   --models-root "$MODELS_ROOT" \
   --output-root "$OUTPUT_ROOT" \
   --num-random-tasks "$NUM_RANDOM_TASKS" \
   --task-seed "$TASK_SEED" \
-  "${RUN_DATE_ARGUMENT[@]}"
+  --shard-count "$SHARD_COUNT" \
+  --shard-index "$SHARD_INDEX" \
+  "${RUN_DATE_ARGUMENT[@]}" \
+  "${PREPARE_ARGUMENT[@]}"

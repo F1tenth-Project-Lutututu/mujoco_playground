@@ -2,6 +2,7 @@
 
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from learning import evaluate_pareto_on_cluster, pareto_cluster
@@ -38,6 +39,38 @@ class ParetoClusterTest(unittest.TestCase):
     self.assertEqual(arguments.environment, "Go1JoystickFlatTerrain")
     self.assertIsNone(arguments.manifest)
     self.assertEqual(arguments.run_date, 260729)
+
+  def test_submit_accepts_parallel_policy_shards(self):
+    arguments = pareto_cluster._build_parser().parse_args([
+        "submit",
+        "BarkourJoystick",
+        "--run-date",
+        "260902",
+        "--shards",
+        "8",
+    ])
+
+    self.assertEqual(arguments.shards, 8)
+
+  def test_sharded_submit_prepares_then_submits_an_array(self):
+    arguments = pareto_cluster._build_parser().parse_args([
+        "submit",
+        "BarkourJoystick",
+        "--run-date",
+        "260902",
+        "--shards",
+        "4",
+    ])
+    with mock.patch.object(
+        pareto_cluster, "_ssh", side_effect=("10", "11")
+    ) as ssh:
+      pareto_cluster.submit(arguments)
+
+    preparation, array_submission = [call.args[1] for call in ssh.call_args_list]
+    self.assertIn("--wait", preparation)
+    self.assertIn("prepare-only", preparation)
+    self.assertIn("--array=0-3", array_submission)
+    self.assertIn("pareto_pending_manifest.json", array_submission)
 
   def test_fetch_defaults_to_cluster_result_roots(self):
     arguments = pareto_cluster._build_parser().parse_args([
