@@ -19,6 +19,8 @@ import fnmatch
 import json
 import os
 import shlex
+import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -124,25 +126,30 @@ for rollouts in raw_torque.glob("*/*/rollouts.csv"):
     else:
       settings = cache.get("evaluation_settings", {})
       metadata = summary.get("metadata", {})
-      expected = {
-          "env_name": config.get("environment"),
-          "num_random_tasks": config.get("num_random_tasks"),
-          "task_seed": config.get("task_seed"),
-          "episode_length": config.get("episode_length"),
-          "save_signals": config.get("save_signals"),
-          "torque_highpass_normalize_by_capacity": False,
-      }
-      valid = all(settings.get(key) == value for key, value in expected.items())
-      valid &= metadata.get("schema_version") == config.get(
-          "evaluation_schema_version"
-      )
-      valid &= metadata.get("num_random_tasks") == config.get(
-          "num_random_tasks"
-      )
-      valid &= metadata.get("signals_saved") == config.get("save_signals")
-      valid &= cache.get("checkpoint") == output.name
-      valid &= bool(cache.get("checkpoint_sha256"))
-      valid &= bool(cache.get("evaluation_code_sha256"))
+      if not isinstance(settings, dict) or not isinstance(metadata, dict):
+        valid = False
+      else:
+        expected = {
+            "env_name": config.get("environment"),
+            "num_random_tasks": config.get("num_random_tasks"),
+            "task_seed": config.get("task_seed"),
+            "episode_length": config.get("episode_length"),
+            "save_signals": config.get("save_signals"),
+            "torque_highpass_normalize_by_capacity": False,
+        }
+        valid = all(
+            settings.get(key) == value for key, value in expected.items()
+        )
+        valid &= metadata.get("schema_version") == config.get(
+            "evaluation_schema_version"
+        )
+        valid &= metadata.get("num_random_tasks") == config.get(
+            "num_random_tasks"
+        )
+        valid &= metadata.get("signals_saved") == config.get("save_signals")
+        valid &= cache.get("checkpoint") == output.name
+        valid &= bool(cache.get("checkpoint_sha256"))
+        valid &= bool(cache.get("evaluation_code_sha256"))
   if valid:
     print("C\t" + output.parent.name)
 
@@ -559,14 +566,24 @@ def main(argv: Sequence[str] | None = None) -> int:
   parser = _build_parser()
   args = parser.parse_args(argv)
   host = downloader._validate_name(args.host, "SSH host")
-  rows = collect_coverage_cached(
-      host,
-      args.remote_logs,
-      args.remote_evaluations,
-      args.environment_pattern,
-      cache_file=args.cache_file,
-      refresh=args.refresh_cache,
-  )
+  try:
+    rows = collect_coverage_cached(
+        host,
+        args.remote_logs,
+        args.remote_evaluations,
+        args.environment_pattern,
+        cache_file=args.cache_file,
+        refresh=args.refresh_cache,
+    )
+  except subprocess.CalledProcessError as error:
+    # _ssh_lines captures stderr, which default subprocess tracebacks omit.
+    detail = (error.stderr or "").strip()
+    print(
+        f"Cluster query failed ({error.returncode}): "
+        f"{detail or shlex.join(map(str, error.cmd))}",
+        file=sys.stderr,
+    )
+    return error.returncode or 1
   if not rows:
     print("No matching quadruped locomotion environments found.")
     return 0
