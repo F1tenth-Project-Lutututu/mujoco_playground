@@ -466,6 +466,11 @@ class Joystick(spot_base.SpotEnv):
         info["feet_air_time"],
         data.xfrc_applied[self._torso_body_id, :3],
     ])
+    if not self._config.reward_config.torque_highpass_observe_state_in_policy:
+      privileged_state = jp.hstack([
+          privileged_state,
+          self._torque_penalty.highpass_observation(info),
+      ])
 
     return {
         "state": state,

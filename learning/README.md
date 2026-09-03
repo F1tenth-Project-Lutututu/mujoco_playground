@@ -758,6 +758,14 @@ evaluator restores this structural option from new checkpoints automatically,
 including when `evaluate_all_models.py` otherwise uses a shared registry
 configuration.
 
+The `hpp` launcher method uses the same high-pass configuration as `hp`, but
+hides this memory from the actor while retaining it in the privileged critic
+observation. It is useful for testing an actor without filter-state access:
+
+```sh
+sbatch slurm.sh hpp 8e-3 SpotFlatTerrainJoystick
+```
+
 The `torque_highpass_difference_order` parameter, denoted by `m`, controls how
 strongly the penalty grows with frequency after the Butterworth high-pass
 filter. It accepts any finite number from 0 through 8. For integer `m`, the

@@ -4,6 +4,7 @@
 #sbatch slurm.sh tr 8e-4 BerkeleyHumanoidJoystickFlatTerrain
 #sbatch slurm.sh ts 8e-4 Go1JoystickFlatTerrain
 #sbatch slurm.sh hp 8e-3 SpotFlatTerrainJoystick
+#sbatch slurm.sh hpp 8e-3 SpotFlatTerrainJoystick  # actor hides filter state; critic retains it.
 #sbatch slurm.sh hp 8e-3 SpotFlatTerrainJoystick 5.0 1.0 400M 3
 
 

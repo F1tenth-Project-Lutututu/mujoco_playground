@@ -97,6 +97,9 @@ class JoystickTorqueHighpassTest(absltest.TestCase):
         config.reward_config.torque_highpass_normalize_by_capacity
     )
     self.assertTrue(config.reward_config.torque_highpass_observe_state)
+    self.assertTrue(
+        config.reward_config.torque_highpass_observe_state_in_policy
+    )
     self.assertEqual(
         joystick._validate_highpass_frequency_normalization(  # pylint: disable=protected-access
             "white_spectrum"

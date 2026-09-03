@@ -45,6 +45,9 @@ def add_config(config: Any) -> None:
   config.torque_highpass_signal = "torque"
   config.torque_highpass_normalize_by_capacity = False
   config.torque_highpass_observe_state = True
+  # The critic can retain causal reward memory while the actor remains
+  # memoryless.  This defaults to the historical behavior, where both see it.
+  config.torque_highpass_observe_state_in_policy = True
   config.torque_rate_observe_state = False
   config.torque_rate_use_second_difference = False
   config.torque_highpass_adaptive_weight = False
@@ -245,16 +248,24 @@ class TorquePenalty:
     info["torque_for_spectrum"] = torque
     return high_freq, torque_rate
 
-  def observation(self, info: dict[str, Any], torque: jax.Array) -> jax.Array:
-    values = []
+  def highpass_observation(self, info: dict[str, Any]) -> jax.Array:
+    """Returns the causal memory required to make the high-pass cost Markov."""
     if (
         self.config.torque_highpass_observe_state
         and self.config.scales.torque_high_freq != 0.0
     ):
-      values.extend((
+      return jp.concatenate((
           jp.ravel(info["torque_highpass_state"]),
           jp.ravel(info["torque_difference_inputs"]),
       ))
+    return jp.zeros((0,))
+
+  def observation(self, info: dict[str, Any], torque: jax.Array) -> jax.Array:
+    values = []
+    if (
+        self.config.torque_highpass_observe_state_in_policy
+    ):
+      values.append(self.highpass_observation(info))
     if self.config.torque_rate_observe_state:
       values.append(torque)
       if self.config.torque_rate_use_second_difference:

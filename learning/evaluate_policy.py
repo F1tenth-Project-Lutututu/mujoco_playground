@@ -44,7 +44,7 @@ from learning import train_jax_ppo as train_utils
 
 
 EVALUATOR_COMPATIBILITY_VERSION = 3
-EVALUATION_SCHEMA_VERSION = 7
+EVALUATION_SCHEMA_VERSION = 8
 
 
 DEFAULT_COMMANDS = {
@@ -537,6 +537,21 @@ def _episode_rows(
             savgol_polyorder,
         ).items()
     })
+    episode_command = (
+        episodes["command"][rollout_index]
+        if "command" in episodes
+        else np.broadcast_to(command, (length, 3))
+    )
+    row.update({
+        f"smoothness/command/{key}": value
+        for key, value in _smoothness_metrics(
+            episode_command,
+            sample_period,
+            cutoffs_hz,
+            savgol_window_length,
+            savgol_polyorder,
+        ).items()
+    })
     row.update({
         f"smoothness/motor_target/{key}": value
         for key, value in _smoothness_metrics(
@@ -884,6 +899,7 @@ def _restore_checkpoint_observation_structure(
     return
   options = (
       "torque_highpass_observe_state",
+      "torque_highpass_observe_state_in_policy",
       "torque_highpass_cutoff_hz",
       "torque_highpass_order",
       "torque_highpass_difference_order",
@@ -906,7 +922,10 @@ def _apply_torque_normalization_override(
   if "reward_config" not in env_config:
     raise ValueError("The environment has no reward_config to override.")
   reward_config = env_config.reward_config
-  if reward_config.get("torque_highpass_observe_state", False):
+  if (
+      reward_config.get("torque_highpass_observe_state", False)
+      and reward_config.get("scales", {}).get("torque_high_freq", -1.0) != 0.0
+  ):
     current = reward_config.torque_highpass_normalize_by_capacity
     if requested != current:
       print(

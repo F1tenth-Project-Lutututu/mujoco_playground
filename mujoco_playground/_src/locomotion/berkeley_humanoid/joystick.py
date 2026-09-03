@@ -94,6 +94,7 @@ def default_config() -> config_dict.ConfigDict:
           torque_highpass_signal="torque",
           torque_highpass_normalize_by_capacity=False,
           torque_highpass_observe_state=True,
+          torque_highpass_observe_state_in_policy=True,
           torque_rate_observe_state=False,
           torque_rate_use_second_difference=False,
           torque_highpass_adaptive_weight=False,
@@ -254,6 +255,11 @@ class Joystick(berkeley_humanoid_base.BerkeleyHumanoidEnv):
             self._config.reward_config.torque_highpass_observe_state
         )
         and self._config.reward_config.scales.torque_high_freq != 0.0
+    )
+    self._torque_highpass_observe_state_in_policy = (
+        go1_joystick._validate_observe_highpass_state(  # pylint: disable=protected-access
+            self._config.reward_config.torque_highpass_observe_state_in_policy
+        )
     )
     self._torque_rate_observe_state = (
         go1_joystick._validate_observe_torque_rate_state(  # pylint: disable=protected-access
@@ -717,7 +723,10 @@ class Joystick(berkeley_humanoid_base.BerkeleyHumanoidEnv):
         info["last_act"],  # 12
         phase,
     ])
-    if self._torque_highpass_observe_state:
+    if (
+        self._torque_highpass_observe_state
+        and self._torque_highpass_observe_state_in_policy
+    ):
       state = jp.hstack([
           state,
           go1_joystick._highpass_memory_observation(  # pylint: disable=protected-access
@@ -749,6 +758,16 @@ class Joystick(berkeley_humanoid_base.BerkeleyHumanoidEnv):
         feet_vel,  # 4*3
         info["feet_air_time"],  # 2
     ])
+    if (
+        self._torque_highpass_observe_state
+        and not self._torque_highpass_observe_state_in_policy
+    ):
+      privileged_state = jp.hstack([
+          privileged_state,
+          go1_joystick._highpass_memory_observation(  # pylint: disable=protected-access
+              info
+          ),
+      ])
 
     return {
         "state": state,

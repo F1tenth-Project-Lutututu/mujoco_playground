@@ -299,6 +299,7 @@ def default_config() -> config_dict.ConfigDict:
           torque_highpass_signal="torque",
           torque_highpass_normalize_by_capacity=False,
           torque_highpass_observe_state=True,
+          torque_highpass_observe_state_in_policy=True,
           torque_rate_observe_state=False,
           torque_rate_use_second_difference=False,
           torque_highpass_adaptive_weight=False,
@@ -949,6 +950,11 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
         data.xfrc_applied[self._torso_body_id, :3],  # 3
         info["steps_since_last_pert"] >= info["steps_until_next_pert"],  # 1
     ])
+    if not self._config.reward_config.torque_highpass_observe_state_in_policy:
+      privileged_state = jp.hstack([
+          privileged_state,
+          self._torque_penalty.highpass_observation(info),
+      ])
 
     return {
         "state": state,

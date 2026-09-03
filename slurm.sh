@@ -21,7 +21,7 @@
 #set -euo pipefail
 
 # Usage:
-#   sbatch slurm.sh <ar|as|tr|ts|hp> <penalty-strength> [environment] \
+#   sbatch slurm.sh <ar|as|tr|ts|hp|hpp> <penalty-strength> [environment] \
 #     [cutoff-hz] [difference-order] [num-timesteps] [butterworth-order]
 #
 # Examples:
@@ -30,6 +30,7 @@
 #   sbatch slurm.sh tr 8e-4 BerkeleyHumanoidJoystickFlatTerrain
 #   sbatch slurm.sh ts 8e-4 Go1JoystickFlatTerrain
 #   sbatch slurm.sh hp 8e-3 SpotFlatTerrainJoystick
+#   sbatch slurm.sh hpp 8e-3 SpotFlatTerrainJoystick
 #   sbatch slurm.sh hp 8e-3 SpotFlatTerrainJoystick 10.0 2.0
 #   sbatch slurm.sh hp 8e-3 SpotFlatTerrainJoystick 10.0 2.0 800M
 #   sbatch slurm.sh hp 8e-3 SpotFlatTerrainJoystick 10.0 2.0 800M 3
@@ -65,7 +66,7 @@ else
   exit 2
 fi
 
-if [[ $METHOD == hp ]]; then
+if [[ $METHOD == hp || $METHOD == hpp ]]; then
   if ! [[ $HIGHPASS_ORDER =~ ^[1-8]$ ]]; then
     echo "HIGHPASS_ORDER must be an integer from 1 through 8, got: $HIGHPASS_ORDER" >&2
     exit 2
@@ -265,8 +266,23 @@ case "$METHOD" in
       "$PENALTY_STRENGTH" "$CUTOFF_HZ" "$HIGHPASS_ORDER" \
       "$DIFFERENCE_ORDER")
     ;;
+  hpp)
+    METHOD_NAME=highpass
+    CUTOFF_TAG=$(sed -E \
+      -e 's/\.0+$//' \
+      -e 's/\.//g' \
+      <<< "${CUTOFF_HZ,,}")
+    DIFFERENCE_ORDER_TAG=$(sed -E \
+      -e 's/\.//g' \
+      <<< "${DIFFERENCE_ORDER,,}")
+    EXP_NAME_SUFFIX="-f${CUTOFF_TAG}o${HIGHPASS_ORDER}m${DIFFERENCE_ORDER_TAG}"
+    PLAYGROUND_OVERRIDES=$(printf \
+      '{"reward_config.scales.torque_high_freq": -%s, "reward_config.torque_highpass_cutoff_hz": %s, "reward_config.torque_highpass_order": %s, "reward_config.torque_highpass_difference_order": %s, "reward_config.torque_highpass_normalize_by_capacity": false, "reward_config.torque_highpass_frequency_normalization": "white_spectrum", "reward_config.torque_highpass_observe_state": true, "reward_config.torque_highpass_observe_state_in_policy": false}' \
+      "$PENALTY_STRENGTH" "$CUTOFF_HZ" "$HIGHPASS_ORDER" \
+      "$DIFFERENCE_ORDER")
+    ;;
   *)
-    echo "Unknown method '$METHOD'. Choose one of: ar, as, tr, ts, hp." >&2
+    echo "Unknown method '$METHOD'. Choose one of: ar, as, tr, ts, hp, hpp." >&2
     exit 2
     ;;
 esac
