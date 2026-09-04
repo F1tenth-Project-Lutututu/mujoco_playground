@@ -37,8 +37,12 @@ OUTPUT_ROOT="$ROOT/evaluations/pareto_cross_eval/SilverBadgerJoystickFlatTerrain
 EVAL_ENV="SilverBadgerJoystickFlatTerrainRLXHard"
 CHECKPOINT="000417792000"
 
+# Conda's activation hook references optional toolchain variables that may be
+# unset on clean Slurm nodes, so do not activate it under ``set -u``.
+set +u
 eval "$(/mnt/storage_6/project_data/pl0467-01/soft/miniconda3/bin/conda shell.bash hook)"
 conda activate spectral_fixed
+set -u
 
 mapfile -t RUNS < <(
   find "$MODELS" -mindepth 1 -maxdepth 1 -type d \

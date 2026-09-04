@@ -70,6 +70,47 @@ class JoystickTest(absltest.TestCase):
     # The critic still receives the ground-truth local linear velocity.
     self.assertEqual(state.obs["privileged_state"].shape, (125,))
 
+  def test_noisy_highpass_memory_is_capacity_relative(self):
+    info = {
+        "torque_highpass_state": jp.ones((1, 2, 3)),
+        "torque_difference_inputs": jp.ones((1, 3)),
+    }
+    capacity = jp.array([10.0, 20.0, 30.0])
+
+    unchanged = joystick._noisy_highpass_memory_observation(  # pylint: disable=protected-access
+        info, capacity, 0.0, 0.0, jax.random.PRNGKey(0)
+    )
+    noised = joystick._noisy_highpass_memory_observation(  # pylint: disable=protected-access
+        info, capacity, 0.01, 0.01, jax.random.PRNGKey(0)
+    )
+
+    np.testing.assert_allclose(unchanged, np.ones(9))
+    self.assertFalse(np.allclose(noised, unchanged))
+    self.assertLessEqual(np.max(np.abs(noised - unchanged)), 0.3)
+
+  def test_noisy_highpass_rlx_hard_variant_is_registered(self):
+    name = "SilverBadgerJoystickFlatTerrainRLXHardNoisyHighpassObservation"
+    self.assertIn(name, registry.ALL_ENVS)
+    config = registry.get_default_config(name)
+
+    self.assertEqual(config.noise_config.scales.highpass_filter_state, 0.01)
+    self.assertEqual(
+        config.noise_config.scales.highpass_difference_inputs, 0.01
+    )
+
+  def test_5_percent_noisy_highpass_rlx_hard_variant_is_registered(self):
+    name = (
+        "SilverBadgerJoystickFlatTerrainRLXHard"
+        "NoisyHighpassObservation5Percent"
+    )
+    self.assertIn(name, registry.ALL_ENVS)
+    config = registry.get_default_config(name)
+
+    self.assertEqual(config.noise_config.scales.highpass_filter_state, 0.05)
+    self.assertEqual(
+        config.noise_config.scales.highpass_difference_inputs, 0.05
+    )
+
   def test_rough_terrain_uses_height_field(self):
     config = joystick.default_config()
     config.impl = "jax"
