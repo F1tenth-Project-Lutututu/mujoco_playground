@@ -291,6 +291,7 @@ def fetch(args: argparse.Namespace) -> None:
       cpus=args.archive_cpus,
   )
   _ssh(args.host, f"mkdir -p {shlex.quote(str(remote_transfer))}")
+  completed = False
   try:
     if _ssh(
         args.host,
@@ -355,15 +356,22 @@ def fetch(args: argparse.Namespace) -> None:
         "downloaded to: "
         f"{(args.local_output_root / environment).resolve()}"
     )
+    completed = True
   finally:
-    subprocess.run(
-        (
-            "ssh",
-            args.host,
-            f"rm -rf -- {shlex.quote(str(remote_transfer))}",
-        ),
-        check=False,
-    )
+    if completed:
+      subprocess.run(
+          (
+              "ssh",
+              args.host,
+              f"rm -rf -- {shlex.quote(str(remote_transfer))}",
+          ),
+          check=False,
+      )
+    else:
+      print(
+          "Fetch failed; retaining Eagle diagnostics at "
+          f"{remote_transfer}."
+      )
 
 
 def _build_parser() -> argparse.ArgumentParser:

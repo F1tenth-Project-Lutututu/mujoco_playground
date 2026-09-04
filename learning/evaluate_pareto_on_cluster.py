@@ -73,15 +73,39 @@ def _prepare_manifest(args: argparse.Namespace) -> tuple[Path, dict]:
 
   environment = str(args.environment)
   model_environment = args.models_root / environment
+  model_run_names = [
+      path.name for path in model_environment.iterdir() if path.is_dir()
+  ]
   selected = pareto_policy_pipeline.select_runs(
-      [path.name for path in model_environment.iterdir() if path.is_dir()],
+      model_run_names,
       run_date=args.run_date,
       training_steps_millions=(
           1000
           if environment == pareto_policy_pipeline.LONG_HORIZON_ENVIRONMENT
           else None
       ),
+      keep_all=True,
   )
+  selected_names = {run.run_name for run in selected}
+  unrecognized_trained = []
+  for run_name in model_run_names:
+    checkpoints = model_environment / run_name / "checkpoints"
+    has_numeric_checkpoint = (
+        checkpoints.is_dir()
+        and any(
+            path.is_dir() and path.name.isdigit()
+            for path in checkpoints.iterdir()
+        )
+    )
+    if has_numeric_checkpoint and run_name not in selected_names:
+      unrecognized_trained.append(run_name)
+  if unrecognized_trained:
+    names = "\n  ".join(sorted(unrecognized_trained))
+    raise ValueError(
+        "Refusing to silently omit trained policies with unrecognized run "
+        "names. Add their naming pattern to RUN_PATTERNS before submitting:\n"
+        f"  {names}"
+    )
   default_target_step = pareto_policy_pipeline.evaluation_target_step(
       environment
   )

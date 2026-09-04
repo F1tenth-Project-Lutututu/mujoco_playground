@@ -86,6 +86,14 @@ RUN_PATTERNS = {
         r"m(?P<difference_order>[0-9]+(?:p[0-9]+)?)"
         r"-seed(?P<seed>\d+)"
     ),
+    "high_pass_policy": re.compile(
+        r"(?P<date>\d{6})-highpass-(?P<steps>\d+)M-"
+        r"hpp(?P<scale>[0-9]+e[mp][0-9]+)"
+        r"-f(?P<cutoff>[0-9]+(?:p[0-9]+)?)"
+        r"o(?P<filter_order>[0-9]+)"
+        r"m(?P<difference_order>[0-9]+(?:p[0-9]+)?)"
+        r"-seed(?P<seed>\d+)"
+    ),
 }
 
 
@@ -130,7 +138,7 @@ def high_pass_method(
 
 def base_method(method: str) -> str:
   """Returns the reward family for a possibly configured method name."""
-  return "high_pass" if method.startswith("high_pass_f") else method
+  return "high_pass" if method.startswith("high_pass") else method
 
 
 def decode_scale(tag: str) -> float:
@@ -146,8 +154,15 @@ def select_runs(
     run_names: Sequence[str],
     run_date: int | None = None,
     training_steps_millions: int | None = None,
+    keep_all: bool = False,
 ) -> list[PolicyRun]:
-  """Selects runs for one date, or the newest per method, scale, and seed."""
+  """Selects matching runs, optionally retaining every dated run.
+
+  The default keeps the newest run for a method/configuration/seed, which is
+  useful for local Pareto plots.  Cluster evaluation uses ``keep_all`` so a
+  successfully trained policy is never silently omitted merely because a
+  newer run has the same configuration.
+  """
   selected: dict[tuple[str, str, int], PolicyRun] = {}
   for run_name in run_names:
     for method, pattern in RUN_PATTERNS.items():
@@ -167,7 +182,7 @@ def select_runs(
       filter_order = None
       difference_order = None
       configured_method = method
-      if method == "high_pass":
+      if method in ("high_pass", "high_pass_policy"):
         cutoff_hz = _decode_decimal_tag(match.group("cutoff"))
         filter_order = int(match.group("filter_order"))
         difference_order = _decode_legacy_difference_order(
@@ -176,6 +191,10 @@ def select_runs(
         configured_method = high_pass_method(
             cutoff_hz, difference_order, filter_order
         )
+        if method == "high_pass_policy":
+          configured_method = configured_method.replace(
+              "high_pass", "high_pass_policy", 1
+          )
       run = PolicyRun(
           method=configured_method,
           scale_tag=match.group("scale"),
@@ -188,7 +207,11 @@ def select_runs(
         difference_order=difference_order,
         training_steps_millions=run_steps_millions,
       )
-      key = (run.method, run.scale_tag, run.seed)
+      key = (
+          (run.run_name, "", 0)
+          if keep_all
+          else (run.method, run.scale_tag, run.seed)
+      )
       if key not in selected or run.date > selected[key].date:
         selected[key] = run
       break

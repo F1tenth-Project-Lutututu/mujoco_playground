@@ -98,6 +98,25 @@ class ParetoPolicyPipelineTest(absltest.TestCase):
         {("high_pass", 1), ("high_pass_f5_o2_m1", 2)},
     )
 
+  def test_select_runs_recognizes_policy_observed_high_pass_sweep(self):
+    runs = pareto_policy_pipeline.select_runs([
+        "260903-highpass-400M-hpp1em4-f5o1m10-seed0",
+    ])
+
+    self.assertEqual(runs[0].method, "high_pass_policy")
+    self.assertEqual(runs[0].run_name,
+                     "260903-highpass-400M-hpp1em4-f5o1m10-seed0")
+
+  def test_select_runs_can_keep_every_matching_run(self):
+    names = [
+        "260902-highpass-400M-hpp1em4-f5o1m10-seed0",
+        "260903-highpass-400M-hpp1em4-f5o1m10-seed0",
+    ]
+
+    runs = pareto_policy_pipeline.select_runs(names, keep_all=True)
+
+    self.assertEqual([run.run_name for run in runs], names)
+
   def test_select_runs_can_restrict_experiment_date(self):
     runs = pareto_policy_pipeline.select_runs(
         [
