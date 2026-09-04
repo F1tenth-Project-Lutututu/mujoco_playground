@@ -130,6 +130,12 @@ _envs = {
     "SilverBadgerJoystickFlatTerrainRLXHard": functools.partial(
         silver_badger_joystick.Joystick, task="flat_terrain"
     ),
+    "SilverBadgerJoystickFlatTerrainRLXHardNoisyHighpassObservation": (
+        functools.partial(silver_badger_joystick.Joystick, task="flat_terrain")
+    ),
+    "SilverBadgerJoystickFlatTerrainRLXHardNoisyHighpassObservation5Percent": (
+        functools.partial(silver_badger_joystick.Joystick, task="flat_terrain")
+    ),
     "SpotFlatTerrainJoystick": functools.partial(
         spot_joystick.Joystick, task="flat_terrain"
     ),
@@ -204,6 +210,14 @@ _cfgs = {
     "SilverBadgerJoystickFlatTerrainRLXHard": (
         silver_badger_joystick.rlx_hard_no_motor_damping_config
     ),
+    "SilverBadgerJoystickFlatTerrainRLXHardNoisyHighpassObservation": (
+        silver_badger_joystick
+        .rlx_hard_no_motor_damping_noisy_highpass_observation_config
+    ),
+    "SilverBadgerJoystickFlatTerrainRLXHardNoisyHighpassObservation5Percent": (
+        silver_badger_joystick
+        .rlx_hard_no_motor_damping_noisy_highpass_observation_5_percent_config
+    ),
     "SpotFlatTerrainJoystick": spot_joystick.default_config,
     "SpotJoystickBandLimited": spot_band_limited_joystick.default_config,
     "SpotFlatTerrainJoystick25": spot_joystick.velocity_25_config,
@@ -260,6 +274,12 @@ _randomizer = {
         silver_badger_randomize.domain_randomize_rlx_hard
     ),
     "SilverBadgerJoystickFlatTerrainRLXHard": (
+        silver_badger_randomize.domain_randomize_rlx_hard
+    ),
+    "SilverBadgerJoystickFlatTerrainRLXHardNoisyHighpassObservation": (
+        silver_badger_randomize.domain_randomize_rlx_hard
+    ),
+    "SilverBadgerJoystickFlatTerrainRLXHardNoisyHighpassObservation5Percent": (
         silver_badger_randomize.domain_randomize_rlx_hard
     ),
     "SpotFlatTerrainJoystick": spot_randomize.domain_randomize,

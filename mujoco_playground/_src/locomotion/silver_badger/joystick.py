@@ -158,6 +158,39 @@ def _highpass_memory_observation(info: dict[str, Any]) -> jax.Array:
   ))
 
 
+def _noisy_highpass_memory_observation(
+    info: dict[str, Any],
+    capacity: jax.Array,
+    filter_state_noise_scale: float,
+    difference_input_noise_scale: float,
+    rng: jax.Array,
+) -> jax.Array:
+  """Returns high-pass memory with bounded, capacity-relative noise.
+
+  The filter and difference states have torque units.  Scaling noise by each
+  actuator's torque capacity keeps the perturbation meaningful when actuator
+  limits differ, rather than relying on one robot-specific absolute value.
+  """
+  filter_rng, difference_rng = jax.random.split(rng)
+  filter_state = info["torque_highpass_state"]
+  difference_inputs = info["torque_difference_inputs"]
+  filter_noise = (
+      (2 * jax.random.uniform(filter_rng, shape=filter_state.shape) - 1)
+      * filter_state_noise_scale
+      * capacity
+  )
+  difference_noise = (
+      (2 * jax.random.uniform(difference_rng, shape=difference_inputs.shape)
+       - 1)
+      * difference_input_noise_scale
+      * capacity
+  )
+  return jp.concatenate((
+      jp.ravel(filter_state + filter_noise),
+      jp.ravel(difference_inputs + difference_noise),
+  ))
+
+
 def _actuator_force_capacities(force_ranges: Any) -> jax.Array:
   """Returns the largest absolute torque allowed for every actuator."""
   force_ranges = np.asarray(force_ranges)
@@ -260,6 +293,10 @@ def default_config() -> config_dict.ConfigDict:
               gyro=0.2,
               gravity=0.05,
               linvel=0.1,
+              # Fractions of per-actuator torque capacity.  They are zero for
+              # existing tasks; the noisy-high-pass RLX variant opts in.
+              highpass_filter_state=0.0,
+              highpass_difference_inputs=0.0,
           ),
       ),
       reward_config=config_dict.create(
@@ -391,6 +428,28 @@ def rlx_hard_no_motor_damping_config() -> config_dict.ConfigDict:
   config.noise_config.scales.gyro = 0.2
   config.noise_config.scales.gravity = 0.05
   config.exclude_fixed_spine_from_policy_observation = True
+  return config
+
+
+def rlx_hard_no_motor_damping_noisy_highpass_observation_config(
+) -> config_dict.ConfigDict:
+  """RLX-hard config with noisy high-pass causal memory for the actor.
+
+  Both values are fractions of each actuator's torque capacity.  Uniform
+  noise is sampled independently per memory element in [-scale, scale].
+  """
+  config = rlx_hard_no_motor_damping_config()
+  config.noise_config.scales.highpass_filter_state = 0.01
+  config.noise_config.scales.highpass_difference_inputs = 0.01
+  return config
+
+
+def rlx_hard_no_motor_damping_noisy_highpass_observation_5_percent_config(
+) -> config_dict.ConfigDict:
+  """RLX-hard config with ±5% capacity noise on high-pass memory."""
+  config = rlx_hard_no_motor_damping_config()
+  config.noise_config.scales.highpass_filter_state = 0.05
+  config.noise_config.scales.highpass_difference_inputs = 0.05
   return config
 
 
@@ -916,6 +975,30 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
       policy_joint_vel = policy_joint_vel[1:]
       policy_default_pose = policy_default_pose[1:]
 
+    highpass_policy_observation = self._torque_penalty.observation(
+        info, data.actuator_force
+    )
+    if (
+        self._config.reward_config.torque_highpass_observe_state
+        and self._config.reward_config.torque_highpass_observe_state_in_policy
+        and self._config.reward_config.scales.torque_high_freq != 0.0
+        and (
+            self._config.noise_config.scales.highpass_filter_state != 0.0
+            or self._config.noise_config.scales.highpass_difference_inputs
+            != 0.0
+        )
+    ):
+      info["rng"], highpass_noise_rng = jax.random.split(info["rng"])
+      highpass_policy_observation = _noisy_highpass_memory_observation(
+          info,
+          self._torque_penalty.capacity,
+          self._config.noise_config.scales.highpass_filter_state
+          * self._config.noise_config.level,
+          self._config.noise_config.scales.highpass_difference_inputs
+          * self._config.noise_config.level,
+          highpass_noise_rng,
+      )
+
     state = jp.hstack([
         policy_linear_velocity,  # 3 when enabled, otherwise omitted.
         noisy_gyro,  # 3
@@ -927,7 +1010,7 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
     ])
     state = jp.hstack([
         state,
-        self._torque_penalty.observation(info, data.actuator_force),
+        highpass_policy_observation,
     ])
 
     accelerometer = self.get_accelerometer(data)
