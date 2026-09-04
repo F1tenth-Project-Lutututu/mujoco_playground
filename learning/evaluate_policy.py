@@ -936,6 +936,30 @@ def _apply_torque_normalization_override(
   reward_config.torque_highpass_normalize_by_capacity = requested
 
 
+def _apply_highpass_observation_noise_overrides(
+    env_config: config_dict.ConfigDict,
+    filter_state_scale: float | None,
+    difference_input_scale: float | None,
+) -> None:
+  """Overrides actor-visible high-pass-memory noise scales when requested."""
+  requested = {
+      "highpass_filter_state": filter_state_scale,
+      "highpass_difference_inputs": difference_input_scale,
+  }
+  if all(value is None for value in requested.values()):
+    return
+  if "noise_config" not in env_config or "scales" not in env_config.noise_config:
+    raise ValueError("The environment has no observation-noise configuration.")
+  for name, value in requested.items():
+    if value is None:
+      continue
+    if value < 0:
+      raise ValueError(f"{name} noise scale must be non-negative.")
+    if name not in env_config.noise_config.scales:
+      raise ValueError(f"The environment has no {name!r} noise scale.")
+    env_config.noise_config.scales[name] = value
+
+
 def _replace_network_observation_size(
     network_config: config_dict.ConfigDict,
     observation_size: Any,
@@ -1016,6 +1040,11 @@ def _load_policy_and_environment(args):
   _restore_checkpoint_observation_structure(env_config, saved)
   _apply_torque_normalization_override(
       env_config, args.torque_highpass_normalize_by_capacity
+  )
+  _apply_highpass_observation_noise_overrides(
+      env_config,
+      args.highpass_filter_state_noise_scale,
+      args.highpass_difference_inputs_noise_scale,
   )
   if args.environment_impl is not None:
     env_config.impl = args.environment_impl
@@ -1490,6 +1519,22 @@ def _build_parser() -> argparse.ArgumentParser:
       help=(
           "Override torque capacity normalization in the evaluation "
           "environment; omit to retain the selected environment config."
+      ),
+  )
+  parser.add_argument(
+      "--highpass_filter_state_noise_scale",
+      type=float,
+      help=(
+          "Override filter-memory observation noise as a fraction of actuator "
+          "capacity."
+      ),
+  )
+  parser.add_argument(
+      "--highpass_difference_inputs_noise_scale",
+      type=float,
+      help=(
+          "Override difference-memory observation noise as a fraction of "
+          "actuator capacity."
       ),
   )
   parser.add_argument("--camera", default="track")

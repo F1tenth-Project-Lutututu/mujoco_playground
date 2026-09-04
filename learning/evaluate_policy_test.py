@@ -294,6 +294,27 @@ class EvaluatePolicyTest(absltest.TestCase):
         env_config.reward_config.torque_highpass_normalize_by_capacity
     )
 
+  def test_highpass_observation_noise_can_be_disabled_for_evaluation(self):
+    env_config = config_dict.ConfigDict(
+        {
+            "noise_config": {
+                "scales": {
+                    "highpass_filter_state": 0.05,
+                    "highpass_difference_inputs": 0.01,
+                }
+            }
+        }
+    )
+
+    evaluate_policy._apply_highpass_observation_noise_overrides(
+        env_config, 0.0, 0.0
+    )
+
+    self.assertEqual(env_config.noise_config.scales.highpass_filter_state, 0.0)
+    self.assertEqual(
+        env_config.noise_config.scales.highpass_difference_inputs, 0.0
+    )
+
   def test_old_checkpoint_keeps_default_observation_structure(self):
     env_config = config_dict.ConfigDict(
         {"reward_config": {"torque_highpass_observe_state": False}}

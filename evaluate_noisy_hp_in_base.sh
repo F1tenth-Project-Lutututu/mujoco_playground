@@ -62,8 +62,10 @@ for ((i=SLURM_ARRAY_TASK_ID; i<${#RUNS[@]}; i+=SLURM_ARRAY_TASK_COUNT)); do
     python -m learning.evaluate_policy \
       --checkpoint "$CKPT" \
       --env_name "$EVAL_ENV" \
-      --no-use_saved_environment_config \
+      --use_saved_environment_config \
       --environment_impl jax \
+      --highpass_filter_state_noise_scale 0 \
+      --highpass_difference_inputs_noise_scale 0 \
       --output_dir "$OUT" \
       --num_random_tasks 1024 \
       --task_seed 0 \
