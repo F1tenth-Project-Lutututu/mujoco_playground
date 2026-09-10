@@ -14,6 +14,10 @@ from learning import plot_policy_pareto
 class PlotPolicyParetoTest(absltest.TestCase):
 
   def test_default_metrics_cover_torque_variation_and_savgol_timescales(self):
+    self.assertIn(
+        "smoothness/torque/rate_rms_per_dof_per_second",
+        plot_policy_pareto.DEFAULT_Y_METRICS,
+    )
     for cutoff in (1, 2, 5, 10, 15, 20):
       self.assertNotIn(
           f"torque_spectrum/eval/fft_above_{cutoff}hz_energy_per_step",
@@ -281,6 +285,16 @@ class PlotPolicyParetoTest(absltest.TestCase):
     )
     self.assertGreater(np.linalg.norm(f5_rgb - f6_rgb), 0.5)
 
+  def test_high_pass_policy_has_a_distinct_explicit_presentation(self):
+    self.assertEqual(
+        plot_policy_pareto._method_label("high_pass_policy"),
+        "High-pass policy (HPP)",
+    )
+    self.assertNotEqual(
+        plot_policy_pareto._method_color("high_pass_policy"),
+        plot_policy_pareto._method_color("high_pass"),
+    )
+
   def test_cluster_cli_accepts_only_environment_and_flag(self):
     arguments = plot_policy_pareto._build_parser().parse_args([
         "Go1JoystickFlatTerrain",
@@ -301,6 +315,17 @@ class PlotPolicyParetoTest(absltest.TestCase):
         parser.parse_args(["--aggregation", "interquartile_mean"])
         .aggregation,
         "interquartile_mean",
+    )
+
+  def test_additional_evaluation_root_cli_parses_method_and_root(self):
+    arguments = plot_policy_pareto._build_parser().parse_args([
+        "--additional-evaluation-root",
+        "high_pass_noisy_observation_1pct=/tmp/noisy-1pct",
+    ])
+
+    self.assertEqual(
+        arguments.additional_evaluation_root,
+        [("high_pass_noisy_observation_1pct", Path("/tmp/noisy-1pct"))],
     )
 
   def test_all_methods_cli_is_opt_in(self):
@@ -457,7 +482,7 @@ methods = [
     report = (
         evaluation_root
         / "raw_torque"
-        / "run-seed0"
+        / "260729-baseline-400M-ar1em2-seed0"
         / "000400000000"
         / "rollouts.csv"
     )
@@ -475,7 +500,7 @@ methods = [
                 "scale": 0.01,
                 "scale_tag": "1em2",
                 "seed": 0,
-                "run_name": "run-seed0",
+                "run_name": "260729-baseline-400M-ar1em2-seed0",
                 "checkpoint": "000400000000",
             }],
             "seed_coverage": [{
@@ -506,8 +531,8 @@ methods = [
     self.assertEqual(first, second)
     self.assertEqual(float(second[0]["metric"]), 3.0)
     self.assertEqual(int(second[0]["seed_count"]), 1)
-    self.assertEqual(int(second[0]["expected_seed_count"]), 2)
-    self.assertEqual(second[0]["missing_seeds"], "1")
+    self.assertEqual(int(second[0]["expected_seed_count"]), 1)
+    self.assertEqual(second[0]["missing_seeds"], "")
     self.assertEqual(float(second[0]["metric__median"]), 3.0)
     self.assertEqual(float(second[0]["metric__interquartile_mean"]), 3.0)
 
@@ -567,7 +592,7 @@ methods = [
           plot_policy_pareto._configured_xlim("Unlisted", path)
       )
 
-  def test_report_paths_use_sole_evaluated_checkpoint_as_fallback(self):
+  def test_report_paths_discovers_completed_checkpoint(self):
     manifest, evaluation_root, report = self._evaluation_fixture()
     expected = report.parent.parent / "000419430400" / "rollouts.csv"
     report.parent.rename(expected.parent)
@@ -576,7 +601,7 @@ methods = [
 
     self.assertEqual(reports[0][1], expected)
 
-  def test_report_paths_reject_ambiguous_checkpoint_fallback(self):
+  def test_report_paths_reject_ambiguous_completed_checkpoints(self):
     manifest, evaluation_root, report = self._evaluation_fixture()
     second = report.parent.parent / "000419430400" / "rollouts.csv"
     second.parent.mkdir()
@@ -585,7 +610,7 @@ methods = [
     value["runs"][0]["checkpoint"] = "000410000000"
     manifest.write_text(json.dumps(value), encoding="utf-8")
 
-    with self.assertRaisesRegex(FileNotFoundError, "ambiguous"):
+    with self.assertRaisesRegex(ValueError, "Multiple completed checkpoints"):
       plot_policy_pareto._report_paths(manifest, evaluation_root)
 
   def test_aggregate_cache_is_invalidated_when_rollout_changes(self):
@@ -611,14 +636,14 @@ methods = [
     second_run = {
         **value["runs"][0],
         "seed": 1,
-        "run_name": "run-seed1",
+        "run_name": "260729-baseline-400M-ar1em2-seed1",
     }
     value["runs"].append(second_run)
     manifest.write_text(json.dumps(value), encoding="utf-8")
     second_report = (
         evaluation_root
         / "raw_torque"
-        / "run-seed1"
+        / "260729-baseline-400M-ar1em2-seed1"
         / "000400000000"
         / "rollouts.csv"
     )

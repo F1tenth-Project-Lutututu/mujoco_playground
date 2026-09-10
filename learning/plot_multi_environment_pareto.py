@@ -37,7 +37,7 @@ ENVIRONMENTS = (
     #"SpotFlatTerrainJoystick",
     "SpotJoystickGaitTracking",
 )
-SMOOTHNESS_METRICS = (
+LEGACY_SMOOTHNESS_METRICS = (
     (
         "smoothness/torque/mssd_mean_squared_second_difference_per_dof",
         "Torque MSSD",
@@ -50,6 +50,22 @@ SMOOTHNESS_METRICS = (
         #"Torque Savitzky–Golay deviation \n (window 5, order 2)",
     ),
 )
+TORQUE_RATE_RMS_SMOOTHNESS_METRICS = (
+    LEGACY_SMOOTHNESS_METRICS[0],
+    (
+        "smoothness/torque/rate_rms_per_dof_per_second",
+        "Torque-rate RMS",
+    ),
+    *LEGACY_SMOOTHNESS_METRICS[1:],
+)
+# Set this to ``"legacy"`` to restore the prior two-row MSSD/Savitzky–Golay
+# figure. Separate artifact names prevent its cache and plots from being
+# overwritten by the three-row layout.
+SMOOTHNESS_METRIC_LAYOUT = "torque_rate_rms"
+SMOOTHNESS_METRICS = {
+    "legacy": LEGACY_SMOOTHNESS_METRICS,
+    "torque_rate_rms": TORQUE_RATE_RMS_SMOOTHNESS_METRICS,
+}[SMOOTHNESS_METRIC_LAYOUT]
 METHODS = (
     ("baseline", "Action rate"),
     ("torque_rate", "Torque rate"),
@@ -60,10 +76,13 @@ METHODS = (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EVALUATION_ROOT = PROJECT_ROOT / "evaluations" / "pareto_cluster"
 RESULTS_ROOT = PROJECT_ROOT / "evaluations" / "pareto_results"
-CACHE_PATH = RESULTS_ROOT / "multi_environment_pareto_iqm.csv"
-OUTPUT_PATH = RESULTS_ROOT / "multi_environment_pareto_iqm.png"
+LAYOUT_SUFFIX = "" if SMOOTHNESS_METRIC_LAYOUT == "legacy" else "_torque_rate_rms"
+CACHE_PATH = RESULTS_ROOT / f"multi_environment_pareto_iqm{LAYOUT_SUFFIX}.csv"
+OUTPUT_PATH = RESULTS_ROOT / f"multi_environment_pareto_iqm{LAYOUT_SUFFIX}.png"
 PDF_OUTPUT_PATH = OUTPUT_PATH.with_suffix(".pdf")
-IMPROVEMENT_TABLE_PATH = RESULTS_ROOT / "multi_environment_pareto_improvements.csv"
+IMPROVEMENT_TABLE_PATH = RESULTS_ROOT / (
+    f"multi_environment_pareto_improvements{LAYOUT_SUFFIX}.csv"
+)
 REWARD_METRIC = pareto.DEFAULT_X_METRIC
 LOG_Y_AXIS = True
 X_EXPONENTIAL_STRENGTH = 1.0

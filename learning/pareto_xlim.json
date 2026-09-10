@@ -16,5 +16,6 @@
   "SpotFlatTerrainJoystick": 33.0,
   "SpotFlatTerrainJoystickPushesAndDomainRandomization": 33.0,
   "SpotJoystickGaitTracking": 40.0,
-  "SpotJoystickGaitTrackingDomainRandomization": 38.0
+  "SpotJoystickGaitTrackingDomainRandomization": 38.0,
+  "SilverBadgerJoystickFlatTerrainRLXHard": 55.0
 }

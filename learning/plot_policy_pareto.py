@@ -21,9 +21,10 @@ Example:
 Each point pools all random-task rollouts and seeds for one method/penalty
 scale using a selectable mean, median, or interquartile mean. Reward is
 maximized and every configured y-axis metric is minimized.
-Local evaluations are preferred when complete; downloaded cluster evaluations
-are used automatically otherwise.  Plots from either source share one results
-directory.
+Every completed report below ``raw_torque`` is discovered directly; manifests
+never decide which policies are plotted. Local evaluations are preferred when
+available; downloaded cluster evaluations are used automatically otherwise.
+Plots from either source share one results directory.
 """
 
 from __future__ import annotations
@@ -55,10 +56,11 @@ DEFAULT_ENVIRONMENT = "Go1JoystickFlatTerrain"
 DEFAULT_X_METRIC = "eval_reward_means/total_without_regularization"
 AGGREGATE_CACHE_NAME = "pareto_aggregates.csv"
 AGGREGATE_CACHE_MANIFEST_NAME = "pareto_aggregates_cache.json"
-AGGREGATE_CACHE_VERSION = 4
+AGGREGATE_CACHE_VERSION = 5
 AGGREGATIONS = ("mean", "median", "interquartile_mean")
 DEFAULT_Y_METRICS = (
     "smoothness/torque/mssd_mean_squared_second_difference_per_dof",
+    "smoothness/torque/rate_rms_per_dof_per_second",
     "smoothness/torque/msgfd_w5_p2_mean_absolute_savgol_filter_deviation_per_dof",
     "smoothness/torque/msgfd_w11_p3_mean_absolute_savgol_filter_deviation_per_dof",
     "smoothness/torque/msgfd_w21_p3_mean_absolute_savgol_filter_deviation_per_dof",
@@ -73,6 +75,9 @@ METRIC_LABELS = {
     "smoothness/torque/mssd_mean_squared_second_difference_per_dof": (
         "Torque smoothness: mean squared second difference\n"
         "(N²·m² per DoF; lower is better)"
+    ),
+    "smoothness/torque/rate_rms_per_dof_per_second": (
+        "Torque-rate RMS\n(N·m/s per DoF; lower is better)"
     ),
     "smoothness/torque/msgfd_mean_absolute_savgol_filter_deviation_per_dof": (
         "Torque smoothness: mean Savitzky–Golay deviation\n"
@@ -117,6 +122,9 @@ METHOD_LABELS = {
     "torque_rate": "Torque rate",
     "torque_smoothness": "Torque smoothness",
     "high_pass": "High-pass torque",
+    "high_pass_policy": "High-pass policy (HPP)",
+    "high_pass_noisy_observation_1pct": "High-pass torque (1% memory noise)",
+    "high_pass_noisy_observation_5pct": "High-pass torque (5% memory noise)",
 }
 METHOD_COLORS = {
     "action_smoothness": "#B279A2",
@@ -124,6 +132,11 @@ METHOD_COLORS = {
     "torque_rate": "#F58518",
     "torque_smoothness": "#E45756",
     "high_pass": "#54A24B",
+    # HPP is a separate regularization family from torque high-pass.  Keep it
+    # visibly distinct from the green torque high-pass series.
+    "high_pass_policy": "#D62728",
+    "high_pass_noisy_observation_1pct": "#9467BD",
+    "high_pass_noisy_observation_5pct": "#8C564B",
     # Keep configured high-pass variants visually separable instead of
     # relying on independently hashed hues, which can land close together.
     "high_pass_f2_m1": "#9467BD",
@@ -481,6 +494,16 @@ def _configured_xlim(environment: str, path: Path) -> tuple[float, None] | None:
   return (lower, None)
 
 
+def _additional_source(value: str) -> tuple[str, Path]:
+  """Parses METHOD=EVALUATION_ROOT for an externally evaluated policy set."""
+  method, separator, raw_path = value.partition("=")
+  if not separator or not method or not raw_path:
+    raise argparse.ArgumentTypeError(
+        "must have the form METHOD=EVALUATION_ROOT"
+    )
+  return method, Path(raw_path)
+
+
 def _manifest_runs(path: Path) -> list[dict]:
   value = json.loads(path.read_text(encoding="utf-8"))
   runs = value.get("runs")
@@ -501,47 +524,70 @@ def _manifest_runs(path: Path) -> list[dict]:
 
 
 def _report_paths(
-    manifest: Path, evaluation_root: Path
+    manifest: Path,
+    evaluation_root: Path,
+    additional_sources: Sequence[tuple[str, Path]] = (),
 ) -> list[tuple[dict, Path]]:
+  """Discovers reports, optionally relabeling reports from extra roots."""
+  del manifest
   reports = []
-  substituted = []
-  for run in _manifest_runs(manifest):
-    run_root = (
-        evaluation_root
-        / "raw_torque"
-        / str(run["run_name"])
+  duplicates: dict[tuple[str, str, int], list[Path]] = {}
+  sources = ((None, evaluation_root), *additional_sources)
+  for method_override, source_root in sources:
+    raw_torque = source_root / "raw_torque"
+    for report in sorted(raw_torque.glob("*/*/rollouts.csv")):
+      if not report.parent.name.isdigit():
+        continue
+      run_name = report.parent.parent.name
+      parsed = pareto_policy_pipeline.select_runs([run_name])
+      if len(parsed) != 1:
+        raise ValueError(
+            f"Cannot infer Pareto method, scale, and seed from report run "
+            f"name: {run_name}"
+        )
+      run = parsed[0]
+      method = method_override or run.method
+      key = (method, run.scale_tag, run.seed)
+      duplicates.setdefault(key, []).append(report)
+      reports.append((
+          {
+              "method": method,
+              "scale": run.scale,
+              "scale_tag": run.scale_tag,
+              "seed": run.seed,
+              "run_name": run_name,
+              "checkpoint": report.parent.name,
+          },
+          report,
+      ))
+  if not reports:
+    raise FileNotFoundError(
+        f"No rollout reports found below {evaluation_root / 'raw_torque'}"
     )
-    report = run_root / str(run["checkpoint"]) / "rollouts.csv"
-    if not report.is_file():
-      alternatives = sorted(
-          candidate
-          for candidate in run_root.glob("*/rollouts.csv")
-          if candidate.parent.name.isdigit()
-      )
-      if len(alternatives) != 1:
-        detail = (
-            "no alternative report exists"
-            if not alternatives
-            else f"{len(alternatives)} alternative reports are ambiguous"
-        )
-        raise FileNotFoundError(
-            f"Evaluation report not found: {report}; {detail}"
-        )
-      substituted.append((report, alternatives[0]))
-      report = alternatives[0]
-    reports.append((run, report))
-  if substituted:
-    print(
-        f"Using the sole completed checkpoint for {len(substituted)} runs "
-        "whose manifest checkpoint was not evaluated."
+  ambiguous = {
+      key: paths for key, paths in duplicates.items() if len(paths) > 1
+  }
+  if ambiguous:
+    key, paths = next(iter(ambiguous.items()))
+    raise ValueError(
+        "Multiple completed checkpoints map to one Pareto sweep point "
+        f"{key}; remove or relocate duplicates before plotting:\n"
+        + "\n".join(f"  {path}" for path in paths)
+    )
+  observed_seeds: dict[tuple[str, str], set[int]] = {}
+  for run, _ in reports:
+    observed_seeds.setdefault(
+        (str(run["method"]), str(run["scale_tag"])), set()
+    ).add(int(run["seed"]))
+  for run, _ in reports:
+    run["_expected_seeds"] = sorted(
+        observed_seeds[(str(run["method"]), str(run["scale_tag"]))]
     )
   return reports
 
 
 def _source_is_available(manifest: Path, evaluation_root: Path) -> bool:
-  """Whether a source has a readable manifest and every referenced report."""
-  if not manifest.is_file():
-    return False
+  """Whether a source has readable, discoverable rollout reports."""
   try:
     _report_paths(manifest, evaluation_root)
   except (OSError, KeyError, TypeError, ValueError):
@@ -581,14 +627,9 @@ def _input_signature(
     manifest: Path, reports: Sequence[tuple[dict, Path]]
 ) -> dict:
   """Returns a fast fingerprint that changes with any selected input file."""
-  manifest_stat = manifest.stat()
+  del manifest
   return {
       "version": AGGREGATE_CACHE_VERSION,
-      "manifest": {
-          "path": str(manifest.resolve()),
-          "size": manifest_stat.st_size,
-          "mtime_ns": manifest_stat.st_mtime_ns,
-      },
       "reports": [
           {
               "path": str(report.resolve()),
@@ -694,10 +735,12 @@ def _build_aggregates(
 
 
 def load_aggregates(
-    manifest: Path, evaluation_root: Path
+    manifest: Path,
+    evaluation_root: Path,
+    additional_sources: Sequence[tuple[str, Path]] = (),
 ) -> list[dict[str, str]]:
   """Loads cached rollout aggregates or rebuilds them when inputs changed."""
-  reports = _report_paths(manifest, evaluation_root)
+  reports = _report_paths(manifest, evaluation_root, additional_sources)
   signature = _input_signature(manifest, reports)
   cache = evaluation_root / AGGREGATE_CACHE_NAME
   cache_manifest = evaluation_root / AGGREGATE_CACHE_MANIFEST_NAME
@@ -756,10 +799,14 @@ def load_points(
     x_metric: str,
     y_metric: str,
     aggregation: str = "mean",
+    additional_sources: Sequence[tuple[str, Path]] = (),
 ) -> list[Point]:
   """Returns points from the persistent all-metric rollout aggregate cache."""
   return _points_from_aggregates(
-      load_aggregates(manifest, evaluation_root), x_metric, y_metric, aggregation
+      load_aggregates(manifest, evaluation_root, additional_sources),
+      x_metric,
+      y_metric,
+      aggregation,
   )
 
 
@@ -780,6 +827,7 @@ def plot(
     all_methods: bool = False,
     methods: Sequence[str] = PLOTTED_METHODS,
     aggregation: str = "mean",
+    additional_sources: Sequence[tuple[str, Path]] = (),
 ) -> Path:
   """Plots Pareto fronts with one of several penalty-scale encodings."""
   if scale_encoding not in {"labels", "size", "opacity", "arrows"}:
@@ -794,7 +842,7 @@ def plot(
   figure, axes = plt.subplots(
       rows, columns, figsize=(7.0 * columns, 5.2 * rows), squeeze=False
   )
-  aggregates = load_aggregates(manifest, evaluation_root)
+  aggregates = load_aggregates(manifest, evaluation_root, additional_sources)
   _require_metrics(
       aggregates,
       tuple(_aggregation_column(metric, aggregation) for metric in (x_metric, *y_metrics)),
@@ -1119,7 +1167,10 @@ def _build_parser() -> argparse.ArgumentParser:
   parser.add_argument(
       "--manifest",
       type=Path,
-      help="Defaults to the pipeline manifest for --environment.",
+      help=(
+          "Legacy source locator. Its run list is ignored; every completed "
+          "report below the colocated raw_torque directory is plotted."
+      ),
   )
   parser.add_argument(
       "--evaluation-root",
@@ -1127,6 +1178,17 @@ def _build_parser() -> argparse.ArgumentParser:
       help=(
           "Evaluation report root. By default complete local evaluations are "
           "preferred, with downloaded cluster evaluations as fallback."
+      ),
+  )
+  parser.add_argument(
+      "--additional-evaluation-root",
+      action="append",
+      type=_additional_source,
+      default=[],
+      metavar="METHOD=ROOT",
+      help=(
+          "Add reports from ROOT/raw_torque under a distinct METHOD label. "
+          "Repeat for externally evaluated policy sets."
       ),
   )
   parser.add_argument(
@@ -1359,6 +1421,7 @@ def main(argv: Sequence[str] | None = None) -> None:
               all_methods=all_methods,
               methods=methods,
               aggregation=args.aggregation,
+              additional_sources=tuple(args.additional_evaluation_root),
           )
         )
   except MissingEvaluationMetricsError as error:
