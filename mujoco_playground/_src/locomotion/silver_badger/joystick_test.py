@@ -98,6 +98,50 @@ class JoystickTest(absltest.TestCase):
         config.noise_config.scales.highpass_difference_inputs, 0.01
     )
 
+  def test_rlx_default_reward_variant_is_registered(self):
+    name = "SilverBadgerJoystickFlatTerrainRLXHardDefaultReward"
+    self.assertIn(name, registry.ALL_ENVS)
+    config = registry.get_default_config(name)
+
+    self.assertEqual(config.reward_config.scales.action_rate, -10.0)
+    self.assertEqual(config.reward_config.scales.base_height, -30.0)
+    self.assertEqual(config.reward_config.tracking_xy_temperature, 0.25)
+    self.assertEqual(config.reward_config.foot_clearance_max_height_m, 0.25)
+    self.assertEqual(config.Kd, 0.0)
+    self.assertTrue(config.pert_config.enable)
+    self.assertTrue(config.domain_randomization)
+
+    config.impl = "jax"
+    env = registry.load(name, config=config)
+    state = env.reset(jax.random.PRNGKey(0))
+    next_state = env.step(state, jp.zeros(env.action_size))
+    self.assertTrue(np.isfinite(next_state.reward))
+    self.assertGreaterEqual(next_state.reward, 0.001)
+
+  def test_rlx_default_reward_uses_standard_smoothness_switches(self):
+    name = "SilverBadgerJoystickFlatTerrainRLXHardDefaultReward"
+    config = registry.get_default_config(name)
+    config.impl = "jax"
+    env = registry.load(name, config=config)
+    action = jp.ones(env.action_size)
+    previous_action = jp.zeros(env.action_size)
+    second_previous_action = jp.ones(env.action_size)
+
+    action_rate = env._cost_action_rate(  # pylint: disable=protected-access
+        action, previous_action, second_previous_action
+    )
+    np.testing.assert_allclose(action_rate, env.action_size)
+
+    env._config.reward_config.action_rate_use_second_difference = True
+    action_smoothness = env._cost_action_rate(  # pylint: disable=protected-access
+        action, previous_action, second_previous_action
+    )
+    # First and second action differences use the same configured weight.
+    np.testing.assert_allclose(action_smoothness, 5 * env.action_size)
+
+    self.assertIn("torque_rate", config.reward_config.scales)
+    self.assertIn("torque_high_freq", config.reward_config.scales)
+
   def test_5_percent_noisy_highpass_rlx_hard_variant_is_registered(self):
     name = (
         "SilverBadgerJoystickFlatTerrainRLXHard"

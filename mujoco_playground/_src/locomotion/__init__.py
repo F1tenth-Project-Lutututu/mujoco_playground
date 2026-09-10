@@ -43,6 +43,9 @@ from mujoco_playground._src.locomotion.silver_badger import (
 from mujoco_playground._src.locomotion.silver_badger import (
     randomize as silver_badger_randomize,
 )
+from mujoco_playground._src.locomotion.silver_badger import (
+    rlx_reward_joystick as silver_badger_rlx_reward_joystick,
+)
 from mujoco_playground._src.locomotion.spot import band_limited_joystick as spot_band_limited_joystick
 from mujoco_playground._src.locomotion.spot import getup as spot_getup
 from mujoco_playground._src.locomotion.spot import joystick as spot_joystick
@@ -130,6 +133,10 @@ _envs = {
     "SilverBadgerJoystickFlatTerrainRLXHard": functools.partial(
         silver_badger_joystick.Joystick, task="flat_terrain"
     ),
+    "SilverBadgerJoystickFlatTerrainRLXHardDefaultReward": functools.partial(
+        silver_badger_rlx_reward_joystick.RLXRewardJoystick,
+        task="flat_terrain",
+    ),
     "SilverBadgerJoystickFlatTerrainRLXHardNoisyHighpassObservation": (
         functools.partial(silver_badger_joystick.Joystick, task="flat_terrain")
     ),
@@ -210,6 +217,9 @@ _cfgs = {
     "SilverBadgerJoystickFlatTerrainRLXHard": (
         silver_badger_joystick.rlx_hard_no_motor_damping_config
     ),
+    "SilverBadgerJoystickFlatTerrainRLXHardDefaultReward": (
+        silver_badger_rlx_reward_joystick.default_config
+    ),
     "SilverBadgerJoystickFlatTerrainRLXHardNoisyHighpassObservation": (
         silver_badger_joystick
         .rlx_hard_no_motor_damping_noisy_highpass_observation_config
@@ -274,6 +284,9 @@ _randomizer = {
         silver_badger_randomize.domain_randomize_rlx_hard
     ),
     "SilverBadgerJoystickFlatTerrainRLXHard": (
+        silver_badger_randomize.domain_randomize_rlx_hard
+    ),
+    "SilverBadgerJoystickFlatTerrainRLXHardDefaultReward": (
         silver_badger_randomize.domain_randomize_rlx_hard
     ),
     "SilverBadgerJoystickFlatTerrainRLXHardNoisyHighpassObservation": (

@@ -180,6 +180,12 @@ for P in 2e-5 4e-5 6e-5 8e-5; do
   #sbatch slurm.sh ts $P SilverBadgerJoystickFlatTerrainRLXHard
   #sbatch slurm.sh hp $P SilverBadgerJoystickFlatTerrainRLXHard 5.0 1.0
 
+  #sbatch slurm.sh ar $P SilverBadgerJoystickFlatTerrainRLXHardDefaultReward
+  #sbatch slurm.sh as $P SilverBadgerJoystickFlatTerrainRLXHardDefaultReward
+  #sbatch slurm.sh tr $P SilverBadgerJoystickFlatTerrainRLXHardDefaultReward
+  #sbatch slurm.sh ts $P SilverBadgerJoystickFlatTerrainRLXHardDefaultReward
+  #sbatch slurm.sh hp $P SilverBadgerJoystickFlatTerrainRLXHardDefaultReward 5.0 1.0
+
   # High-pass causal-memory observation noise: 1% and 5% of actuator
   # capacity, respectively.  Only HP uses this actor-observation memory.
   #sbatch slurm.sh hp $P SilverBadgerJoystickFlatTerrainRLXHardNoisyHighpassObservation 5.0 1.0

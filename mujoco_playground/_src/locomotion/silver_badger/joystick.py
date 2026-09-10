@@ -847,7 +847,7 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
     rewards = {
         k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
     }
-    reward = jp.clip(sum(rewards.values()) * self.dt, 0.0, 10000.0)
+    reward = self._combine_rewards(rewards)
     reward_without_action_rate = jp.clip(
         sum(v for k, v in rewards.items() if k != "action_rate") * self.dt,
         0.0,
@@ -902,12 +902,23 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
     ):
       state.metrics[metric_name] = energy
     state.metrics["swing_peak"] = jp.mean(state.info["swing_peak"])
+    self._update_reward_memory(state.info, data)
 
     done = done.astype(reward.dtype)
     state = state.replace(
         data=data, obs=obs, reward=reward, done=done
     )  # pyrefly: ignore[missing-attribute]
     return state
+
+  def _combine_rewards(self, rewards: dict[str, jax.Array]) -> jax.Array:
+    """Combines scaled reward terms; variants may override the clipping rule."""
+    return jp.clip(sum(rewards.values()) * self.dt, 0.0, 10000.0)
+
+  def _update_reward_memory(
+      self, info: dict[str, Any], data: mjx.Data
+  ) -> None:
+    """Hook for reward variants that require previous-step signals."""
+    del info, data
 
   def _get_termination(self, data: mjx.Data) -> jax.Array:
     fall_termination = self.get_upvector(data)[-1] < 0.0
