@@ -68,8 +68,10 @@ SMOOTHNESS_METRICS = {
 }[SMOOTHNESS_METRIC_LAYOUT]
 METHODS = (
     ("baseline", "Action rate"),
+    ("fixed_action_rate", "Fixed action rate"),
     ("torque_rate", "Torque rate"),
     ("action_smoothness", "Action smoothness"),
+    ("fixed_action_smoothness", "Fixed action smoothness"),
     ("high_pass", "TFR (ours)"),
 )
 

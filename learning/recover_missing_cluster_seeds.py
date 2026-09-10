@@ -104,6 +104,10 @@ def _launcher_arguments(run_config: dict[str, Any]) -> list[str]:
       "reward_config.action_rate_use_second_difference", False
   ):
     method = "as"
+  if method in ("ar", "as") and overrides.get(
+      "reward_config.action_rate_use_fixed_observation", False
+  ):
+    method = "fas" if method == "as" else "far"
   if method == "tr" and overrides.get(
       "reward_config.torque_rate_use_second_difference", False
   ):
@@ -146,6 +150,8 @@ def _launcher_family(arguments: Sequence[str], date_prefix: str) -> str:
   method_name = {
       "ar": "baseline",
       "as": "actionsmoothness",
+      "far": "fixedactionrate",
+      "fas": "fixedactionsmoothness",
       "tr": "torquerate",
       "ts": "torquesmoothness",
       "hp": "highpass",

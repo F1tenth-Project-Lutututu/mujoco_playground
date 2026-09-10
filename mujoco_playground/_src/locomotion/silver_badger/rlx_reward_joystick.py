@@ -49,6 +49,7 @@ def default_config() -> config_dict.ConfigDict:
       tracking_xy_temperature=0.25,
       tracking_yaw_temperature=0.25,
       action_rate_use_second_difference=False,
+      action_rate_use_fixed_observation=False,
       soft_actuator_joint_velocity_limit=0.9,
       foot_clearance_max_height_m=0.25,
       foot_air_time_per_robot_size_m=0.4,

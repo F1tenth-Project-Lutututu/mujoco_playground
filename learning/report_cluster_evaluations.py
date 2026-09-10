@@ -324,6 +324,8 @@ def _short_method_name(method: str) -> str:
   return {
       "action_smoothness": "as",
       "baseline": "ar",
+      "fixed_action_smoothness": "fas",
+      "fixed_action_rate": "far",
       "torque_rate": "tr",
       "torque_smoothness": "ts",
   }.get(method, method)

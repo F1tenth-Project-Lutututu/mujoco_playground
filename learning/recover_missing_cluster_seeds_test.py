@@ -80,6 +80,24 @@ class RecoverMissingClusterSeedsTest(unittest.TestCase):
         ],
     )
 
+  def test_launcher_arguments_identify_fixed_action_variants(self):
+    def config(second_difference):
+      return {
+          "command": [
+              "train-jax-ppo",
+              "--num_timesteps=400000000",
+              "--env_name=Go1JoystickFlatTerrain",
+              "--playground_config_overrides="
+              '{"reward_config.scales.action_rate": -0.02, '
+              '"reward_config.action_rate_use_second_difference": '
+              f'{str(second_difference).lower()}, '
+              '"reward_config.action_rate_use_fixed_observation": true}',
+          ]
+      }
+
+    self.assertEqual(recovery._launcher_arguments(config(False))[0], "far")
+    self.assertEqual(recovery._launcher_arguments(config(True))[0], "fas")
+
   def test_launcher_arguments_remove_binary_float_artifacts(self):
     config = {
         "command": [
@@ -127,6 +145,14 @@ class RecoverMissingClusterSeedsTest(unittest.TestCase):
         (
             ["as", "2e-2", "Env", "5", "1.0", "1000000000"],
             "260817-actionsmoothness-1000M-as2em2",
+        ),
+        (
+            ["far", "2e-2", "Env", "5", "1.0", "400000000"],
+            "260910-fixedactionrate-400M-far2em2",
+        ),
+        (
+            ["fas", "2e-2", "Env", "5", "1.0", "400000000"],
+            "260910-fixedactionsmoothness-400M-fas2em2",
         ),
         (
             ["tr", "6e-4", "Env", "5", "1.0", "400M"],

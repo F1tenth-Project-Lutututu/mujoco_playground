@@ -230,6 +230,8 @@ class EvaluatePolicyTest(absltest.TestCase):
     env_config = config_dict.ConfigDict(
         {
             "reward_config": {
+                "action_rate_use_second_difference": False,
+                "action_rate_use_fixed_observation": False,
                 "torque_highpass_observe_state": False,
                 "torque_highpass_observe_state_in_policy": True,
                 "torque_highpass_cutoff_hz": 2.0,
@@ -245,6 +247,8 @@ class EvaluatePolicyTest(absltest.TestCase):
     saved = {
         "environment_config": {
             "reward_config": {
+                "action_rate_use_second_difference": True,
+                "action_rate_use_fixed_observation": True,
                 "torque_highpass_observe_state": True,
                 "torque_highpass_observe_state_in_policy": False,
                 "torque_highpass_cutoff_hz": 5.0,
@@ -260,6 +264,10 @@ class EvaluatePolicyTest(absltest.TestCase):
 
     evaluate_policy._restore_checkpoint_observation_structure(env_config, saved)
 
+    self.assertTrue(
+        env_config.reward_config.action_rate_use_second_difference
+    )
+    self.assertTrue(env_config.reward_config.action_rate_use_fixed_observation)
     self.assertTrue(env_config.reward_config.torque_highpass_observe_state)
     self.assertFalse(
         env_config.reward_config.torque_highpass_observe_state_in_policy

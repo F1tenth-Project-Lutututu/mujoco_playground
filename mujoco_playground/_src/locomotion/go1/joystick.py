@@ -25,6 +25,7 @@ import numpy as np
 from scipy import signal as scipy_signal
 
 from mujoco_playground._src import mjx_env
+from mujoco_playground._src.locomotion import action_history
 from mujoco_playground._src.locomotion import torque_penalty
 from mujoco_playground._src.locomotion.go1 import base as go1_base
 from mujoco_playground._src.locomotion.go1 import go1_constants as consts
@@ -257,6 +258,7 @@ def default_config() -> config_dict.ConfigDict:
           ),
           tracking_sigma=0.25,
           action_rate_use_second_difference=False,
+          action_rate_use_fixed_observation=False,
           max_foot_height=0.1,
           torque_highpass_cutoff_hz=5.0,
           torque_highpass_order=1,
@@ -656,7 +658,7 @@ class Joystick(go1_base.Go1Env):
         )
     )
     self._advance_command(state.info)
-    obs = self._get_obs(data, state.info)
+    obs = self._get_obs(data, state.info, action)
 
     rewards = self._get_reward(
         data,
@@ -739,7 +741,10 @@ class Joystick(go1_base.Go1Env):
     return fall_termination
 
   def _get_obs(
-      self, data: mjx.Data, info: dict[str, Any]
+      self,
+      data: mjx.Data,
+      info: dict[str, Any],
+      current_action: jax.Array | None = None,
   ) -> Dict[str, jax.Array]:
     gyro = self.get_gyro(data)
     info["rng"], noise_rng = jax.random.split(info["rng"])
@@ -792,7 +797,9 @@ class Joystick(go1_base.Go1Env):
         noisy_gravity,  # 3
         noisy_joint_angles - self._default_pose,  # 12
         noisy_joint_vel,  # 12
-        info["last_act"],  # 12
+        action_history.observation(
+            self._config.reward_config, info, current_action
+        ),  # 12 for AR/FAR, 24 for FAS.
         info["command"],  # 3
     ])
     state = jp.hstack([

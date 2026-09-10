@@ -23,6 +23,7 @@ from mujoco import mjx
 import numpy as np
 
 from mujoco_playground._src import mjx_env
+from mujoco_playground._src.locomotion import action_history
 from mujoco_playground._src.locomotion.go1 import base as go1_base
 from mujoco_playground._src.locomotion.go1 import go1_constants as consts
 
@@ -62,6 +63,7 @@ def default_config() -> config_dict.ConfigDict:
               dof_vel=-0.1,
           ),
           action_rate_use_second_difference=False,
+          action_rate_use_fixed_observation=False,
       ),
       impl="warp",
       naconmax=30 * 8192,
@@ -203,7 +205,7 @@ class Getup(go1_base.Go1Env):
         self.mjx_model, state.data, motor_targets, self.n_substeps
     )
 
-    obs = self._get_obs(data, state.info)
+    obs = self._get_obs(data, state.info, action)
     done = self._get_termination(data)
 
     rewards = self._get_reward(data, action, state.info, state.metrics, done)
@@ -228,7 +230,10 @@ class Getup(go1_base.Go1Env):
     return energy_termination
 
   def _get_obs(
-      self, data: mjx.Data, info: dict[str, Any]
+      self,
+      data: mjx.Data,
+      info: dict[str, Any],
+      current_action: jax.Array | None = None,
   ) -> Dict[str, jax.Array]:
     gyro = self.get_gyro(data)
     info["rng"], noise_rng = jax.random.split(info["rng"])
@@ -271,7 +276,9 @@ class Getup(go1_base.Go1Env):
         noisy_gravity,  # 3
         noisy_joint_angles - self._default_pose,  # 12
         noisy_joint_vel,  # 12
-        info["last_act"],  # 12
+        action_history.observation(
+            self._config.reward_config, info, current_action
+        ),  # 12 for AR/FAR, 24 for FAS.
     ])
 
     accelerometer = self.get_accelerometer(data)

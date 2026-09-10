@@ -24,6 +24,7 @@ import numpy as np
 
 from mujoco_playground._src import gait
 from mujoco_playground._src import mjx_env
+from mujoco_playground._src.locomotion import action_history
 from mujoco_playground._src.locomotion import torque_penalty
 from mujoco_playground._src.locomotion.spot import base as spot_base
 from mujoco_playground._src.locomotion.spot import spot_constants as consts
@@ -68,6 +69,7 @@ def default_config() -> config_dict.ConfigDict:
           ),
           tracking_sigma=0.25,
           action_rate_use_second_difference=False,
+          action_rate_use_fixed_observation=False,
           max_foot_height=0.12,
       ),
       pert_config=config_dict.create(
@@ -304,7 +306,7 @@ class Joystick(spot_base.SpotEnv):
         torque_high_freq, tracking_disturbance + orientation_disturbance
     )
     self._advance_command(state.info)
-    obs = self._get_obs(data, state.info, noise_rng)
+    obs = self._get_obs(data, state.info, noise_rng, action)
     rewards = self._get_reward(
         data,
         action,
@@ -385,6 +387,7 @@ class Joystick(spot_base.SpotEnv):
       data: mjx.Data,
       info: dict[str, Any],
       rng: jax.Array,
+      current_action: jax.Array | None = None,
   ) -> mjx_env.Observation:
     gyro = self.get_gyro(data)  # (3,)
     rng, noise_rng = jax.random.split(rng)
@@ -444,7 +447,9 @@ class Joystick(spot_base.SpotEnv):
         noisy_joint_angles - self._default_pose,
         qpos_error_history,
         noisy_feet_pos,
-        info["last_act"],
+        action_history.observation(
+            self._config.reward_config, info, current_action
+        ),
         info["command"],
     ])
     state = jp.concatenate(

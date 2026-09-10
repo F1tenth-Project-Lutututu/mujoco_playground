@@ -24,6 +24,7 @@ from mujoco.mjx._src import math
 import numpy as np
 
 from mujoco_playground._src import mjx_env
+from mujoco_playground._src.locomotion import action_history
 from mujoco_playground._src.locomotion.go1 import base as go1_base
 from mujoco_playground._src.locomotion.go1 import go1_constants as consts
 
@@ -66,6 +67,7 @@ def default_config() -> config_dict.ConfigDict:
               dof_acc=0.0,
           ),
           action_rate_use_second_difference=False,
+          action_rate_use_fixed_observation=False,
       ),
       impl="warp",
       naconmax=30 * 8192,
@@ -212,7 +214,7 @@ class Handstand(go1_base.Go1Env):
         data.sensordata[self._mj_model.sensor_adr[sensorid]] > 0
         for sensorid in self._fullcollision_floor_found_sensor
     ])
-    obs = self._get_obs(data, state.info, contact)
+    obs = self._get_obs(data, state.info, contact, action)
     done = self._get_termination(data, state.info, contact)
 
     rewards = self._get_reward(data, action, state.info, done)
@@ -242,7 +244,11 @@ class Handstand(go1_base.Go1Env):
     return fall_termination | contact_termination | energy_termination
 
   def _get_obs(
-      self, data: mjx.Data, info: dict[str, Any], contact: jax.Array
+      self,
+      data: mjx.Data,
+      info: dict[str, Any],
+      contact: jax.Array,
+      current_action: jax.Array | None = None,
   ) -> Dict[str, jax.Array]:
     del contact  # Unused.
 
@@ -297,7 +303,9 @@ class Handstand(go1_base.Go1Env):
         noisy_gravity,
         noisy_joint_angles - self._default_pose,
         noisy_joint_vel,
-        info["last_act"],
+        action_history.observation(
+            self._config.reward_config, info, current_action
+        ),
     ])
 
     accelerometer = self.get_accelerometer(data)

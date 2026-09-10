@@ -21,7 +21,7 @@
 #set -euo pipefail
 
 # Usage:
-#   sbatch slurm.sh <ar|as|tr|ts|hp|hpp> <penalty-strength> [environment] \
+#   sbatch slurm.sh <ar|as|far|fas|tr|ts|hp|hpp> <penalty-strength> [environment] \
 #     [cutoff-hz] [difference-order] [num-timesteps] [butterworth-order]
 #
 # Examples:
@@ -239,6 +239,18 @@ case "$METHOD" in
       '{"reward_config.scales.action_rate": -%s, "reward_config.action_rate_use_second_difference": true}' \
       "$PENALTY_STRENGTH")
     ;;
+  far)
+    METHOD_NAME=fixedactionrate
+    PLAYGROUND_OVERRIDES=$(printf \
+      '{"reward_config.scales.action_rate": -%s, "reward_config.action_rate_use_fixed_observation": true}' \
+      "$PENALTY_STRENGTH")
+    ;;
+  fas)
+    METHOD_NAME=fixedactionsmoothness
+    PLAYGROUND_OVERRIDES=$(printf \
+      '{"reward_config.scales.action_rate": -%s, "reward_config.action_rate_use_second_difference": true, "reward_config.action_rate_use_fixed_observation": true}' \
+      "$PENALTY_STRENGTH")
+    ;;
   tr)
     METHOD_NAME=torquerate
     PLAYGROUND_OVERRIDES=$(printf \
@@ -282,7 +294,7 @@ case "$METHOD" in
       "$DIFFERENCE_ORDER")
     ;;
   *)
-    echo "Unknown method '$METHOD'. Choose one of: ar, as, tr, ts, hp, hpp." >&2
+    echo "Unknown method '$METHOD'. Choose one of: ar, as, far, fas, tr, ts, hp, hpp." >&2
     exit 2
     ;;
 esac

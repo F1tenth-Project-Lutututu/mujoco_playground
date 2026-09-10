@@ -24,6 +24,7 @@ import numpy as np
 
 from mujoco_playground._src import gait
 from mujoco_playground._src import mjx_env
+from mujoco_playground._src.locomotion import action_history
 from mujoco_playground._src.locomotion import torque_penalty
 from mujoco_playground._src.locomotion.go1 import joystick as go1_joystick
 from mujoco_playground._src.locomotion.spot import base as spot_base
@@ -70,6 +71,7 @@ def default_config() -> config_dict.ConfigDict:
           ),
           tracking_sigma=0.25,
           action_rate_use_second_difference=False,
+          action_rate_use_fixed_observation=False,
       ),
       command_config=config_dict.create(
           lin_vel_x=[-1.0, 1.0],
@@ -302,7 +304,7 @@ class JoystickGaitTracking(spot_base.SpotEnv):
             torque_high_freq, highpass_disturbance
         )
     )
-    obs = self._get_obs(data, state.info, noise_rng, contact)
+    obs = self._get_obs(data, state.info, noise_rng, contact, action)
     pos, neg = self._get_reward(
         data,
         action,
@@ -400,6 +402,7 @@ class JoystickGaitTracking(spot_base.SpotEnv):
       info: dict[str, Any],
       rng: jax.Array,
       contact: jax.Array,
+      current_action: jax.Array | None = None,
   ) -> jax.Array:
     gyro = self.get_gyro(data)  # (3,)
     rng, noise_rng = jax.random.split(rng)
@@ -448,6 +451,12 @@ class JoystickGaitTracking(spot_base.SpotEnv):
             info["gait_freq"],
             info["gait"],
             info["foot_height"],
+            action_history.observation(
+                self._config.reward_config,
+                info,
+                current_action,
+                include_legacy=False,
+            ),
         ],
     )
     return jp.concatenate([

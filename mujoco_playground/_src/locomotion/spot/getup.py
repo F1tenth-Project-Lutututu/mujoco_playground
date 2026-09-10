@@ -23,6 +23,7 @@ from mujoco import mjx
 import numpy as np
 
 from mujoco_playground._src import mjx_env
+from mujoco_playground._src.locomotion import action_history
 from mujoco_playground._src.locomotion import torque_penalty
 from mujoco_playground._src.locomotion.spot import base as spot_base
 from mujoco_playground._src.locomotion.spot import spot_constants as consts
@@ -57,6 +58,7 @@ def default_config() -> config_dict.ConfigDict:
               action_rate=0.0,
           ),
           action_rate_use_second_difference=False,
+          action_rate_use_fixed_observation=False,
       ),
       impl="warp",
       naconmax=30 * 8192,
@@ -177,7 +179,7 @@ class Getup(spot_base.SpotEnv):
     torque_high_freq, _ = self._torque_penalty.apply_adaptive_weight(
         torque_high_freq, orientation_disturbance
     )
-    obs = self._get_obs(data, state.info, noise_rng)
+    obs = self._get_obs(data, state.info, noise_rng, action)
     rewards = self._get_reward(
         data,
         action,
@@ -208,6 +210,7 @@ class Getup(spot_base.SpotEnv):
       data: mjx.Data,
       info: dict[str, Any],
       rng: jax.Array,
+      current_action: jax.Array | None = None,
   ) -> jax.Array:
     gyro = self.get_gyro(data)
     rng, noise_rng = jax.random.split(rng)
@@ -240,7 +243,9 @@ class Getup(spot_base.SpotEnv):
         noisy_gyro,  # 3
         noisy_gravity,  # 3
         noisy_joint_angles - self._default_pose,  # 12
-        info["last_act"],  # 12
+        action_history.observation(
+            self._config.reward_config, info, current_action
+        ),  # 12 for AR/FAR, 24 for FAS.
     ])
     return jp.concatenate([
         observation,

@@ -898,6 +898,8 @@ def _restore_checkpoint_observation_structure(
   if "reward_config" not in env_config:
     return
   options = (
+      "action_rate_use_second_difference",
+      "action_rate_use_fixed_observation",
       "torque_highpass_observe_state",
       "torque_highpass_observe_state_in_policy",
       "torque_highpass_cutoff_hz",

@@ -59,6 +59,14 @@ LONG_HORIZON_EVALUATION_STEP = 1_000_000_000
 # treated as separate methods; the historical f=5 Hz, m=1 combination keeps
 # the plain ``high_pass`` name for manifest and plotting compatibility.
 RUN_PATTERNS = {
+    "fixed_action_smoothness": re.compile(
+        r"(?P<date>\d{6})-fixedactionsmoothness-(?P<steps>\d+)M-"
+        r"fas(?P<scale>[0-9]+e[mp][0-9]+)-seed(?P<seed>\d+)"
+    ),
+    "fixed_action_rate": re.compile(
+        r"(?P<date>\d{6})-fixedactionrate-(?P<steps>\d+)M-"
+        r"far(?P<scale>[0-9]+e[mp][0-9]+)-seed(?P<seed>\d+)"
+    ),
     "action_smoothness": re.compile(
         r"(?P<date>\d{6})-actionsmoothness-(?P<steps>\d+)M-"
         r"as(?P<scale>[0-9]+e[mp][0-9]+)-seed(?P<seed>\d+)"
@@ -267,6 +275,8 @@ def _write_manifest(
   payload = {
       "environment": environment,
       "selection": {
+          "fixed_action_smoothness": "*fixedactionsmoothness-*M-fas*-seed*",
+          "fixed_action_rate": "*fixedactionrate-*M-far*-seed*",
           "action_smoothness": "*actionsmoothness-*M-as*-seed*",
           "baseline": "*baseline-*M-ar*-seed*",
           "torque_rate": "*torquerate-*M-tr*-seed*",
@@ -381,6 +391,8 @@ def _comparable_run_config(
     result.get("ppo_config", {}).pop("num_timesteps", None)
     result.get("ppo_config", {}).pop("num_evals", None)
   reward_name = {
+      "fixed_action_smoothness": "action_rate",
+      "fixed_action_rate": "action_rate",
       "action_smoothness": "action_rate",
       "baseline": "action_rate",
       "torque_rate": "torque_rate",

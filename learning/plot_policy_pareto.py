@@ -104,8 +104,10 @@ METRIC_LABELS = {
 # line to omit that method from a comparison. Add configured method IDs here
 # when plotting a manifest that contains additional variants.
 PLOTTED_METHODS = (
-    "action_smoothness",
     "baseline",
+    "fixed_action_rate",
+    "action_smoothness",
+    "fixed_action_smoothness",
     "torque_rate",
     "torque_smoothness",
     "high_pass",
@@ -119,6 +121,8 @@ PLOTTED_METHODS = (
 METHOD_LABELS = {
     "action_smoothness": "Action smoothness",
     "baseline": "Action rate",
+    "fixed_action_smoothness": "Fixed action smoothness",
+    "fixed_action_rate": "Fixed action rate",
     "torque_rate": "Torque rate",
     "torque_smoothness": "Torque smoothness",
     "high_pass": "High-pass torque",
@@ -129,6 +133,8 @@ METHOD_LABELS = {
 METHOD_COLORS = {
     "action_smoothness": "#B279A2",
     "baseline": "#4C78A8",
+    "fixed_action_smoothness": "#D45087",
+    "fixed_action_rate": "#72B7B2",
     "torque_rate": "#F58518",
     "torque_smoothness": "#E45756",
     "high_pass": "#54A24B",

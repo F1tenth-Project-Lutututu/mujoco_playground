@@ -50,6 +50,20 @@ class ParetoPolicyPipelineTest(absltest.TestCase):
     ])
     self.assertEqual([run.scale for run in runs], [0.1, 10.0])
 
+  def test_select_runs_recognizes_fixed_action_sweeps(self):
+    runs = pareto_policy_pipeline.select_runs([
+        "260910-fixedactionrate-400M-far1em2-seed0",
+        "260910-fixedactionsmoothness-400M-fas2em2-seed1",
+    ])
+
+    self.assertEqual(
+        [(run.method, run.scale, run.seed) for run in runs],
+        [
+            ("fixed_action_rate", 0.01, 0),
+            ("fixed_action_smoothness", 0.02, 1),
+        ],
+    )
+
   def test_select_runs_recognizes_optional_torque_smoothness_sweep(self):
     runs = pareto_policy_pipeline.select_runs([
         "260817-baseline-400M-ar1em2-seed0",

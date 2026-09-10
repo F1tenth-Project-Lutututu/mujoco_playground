@@ -25,6 +25,7 @@ import numpy as np
 from scipy import signal as scipy_signal
 
 from mujoco_playground._src import mjx_env
+from mujoco_playground._src.locomotion import action_history
 from mujoco_playground._src.locomotion import torque_penalty
 from mujoco_playground._src.locomotion.silver_badger import (
     base as silver_badger_base,
@@ -328,6 +329,7 @@ def default_config() -> config_dict.ConfigDict:
           ),
           tracking_sigma=0.25,
           action_rate_use_second_difference=False,
+          action_rate_use_fixed_observation=False,
           max_foot_height=0.1,
           torque_highpass_cutoff_hz=5.0,
           torque_highpass_order=1,
@@ -831,7 +833,7 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
         )
     )
     self._advance_command(state.info)
-    obs = self._get_obs(data, state.info)
+    obs = self._get_obs(data, state.info, action)
 
     rewards = self._get_reward(
         data,
@@ -925,7 +927,10 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
     return fall_termination
 
   def _get_obs(
-      self, data: mjx.Data, info: dict[str, Any]
+      self,
+      data: mjx.Data,
+      info: dict[str, Any],
+      current_action: jax.Array | None = None,
   ) -> Dict[str, jax.Array]:
     gyro = self.get_gyro(data)
     info["rng"], noise_rng = jax.random.split(info["rng"])
@@ -1016,7 +1021,9 @@ class Joystick(silver_badger_base.SilverBadgerEnv):
         noisy_gravity,  # 3
         policy_joint_angles - policy_default_pose,
         policy_joint_vel,
-        info["last_act"],  # 12 leg actions; the spine is locked.
+        action_history.observation(
+            self._config.reward_config, info, current_action
+        ),  # 12 leg actions for AR/FAR, 24 for FAS; spine is locked.
         info["command"],  # 3
     ])
     state = jp.hstack([

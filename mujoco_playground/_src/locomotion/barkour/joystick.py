@@ -25,6 +25,7 @@ from mujoco import mjx
 import numpy as np
 
 from mujoco_playground._src import mjx_env
+from mujoco_playground._src.locomotion import action_history
 from mujoco_playground._src.locomotion import torque_penalty
 
 _FEET_SITES = [
@@ -94,6 +95,7 @@ def default_config() -> config_dict.ConfigDict:
           # Tracking reward = exp(-error^2/sigma).
           tracking_sigma=0.25,
           action_rate_use_second_difference=False,
+          action_rate_use_fixed_observation=False,
       ),
       # Velocity of perturbation kick applied to the base, in m/s.
       velocity_kick=[0.1, 1.0],
@@ -256,7 +258,13 @@ class Joystick(mjx_env.MjxEnv):
     metrics["reward_without_regularization"] = jp.zeros(())
     metrics["torque_spectrum/total_energy_per_step"] = jp.zeros(())
 
-    obs_history = jp.zeros(15 * 31)  # store 15 steps of history
+    action_observation_size = self.action_size * (
+        2
+        if self._config.reward_config.action_rate_use_fixed_observation
+        and self._config.reward_config.action_rate_use_second_difference
+        else 1
+    )
+    obs_history = jp.zeros(15 * (19 + action_observation_size))
     obs = self._get_obs(data, info, obs_history, noise_rng)
     reward, done = jp.zeros(2)
     return mjx_env.State(data, obs, reward, done, metrics, info)
@@ -308,7 +316,9 @@ class Joystick(mjx_env.MjxEnv):
     torque_high_freq, _ = self._torque_penalty.apply_adaptive_weight(
         torque_high_freq, tracking_disturbance + orientation_disturbance
     )
-    obs = self._get_obs(data, state.info, state.obs, noise_rng)  # pyrefly: ignore[bad-argument-type]
+    obs = self._get_obs(
+        data, state.info, state.obs, noise_rng, action
+    )  # pyrefly: ignore[bad-argument-type]
     rewards = self._get_reward(
         data,
         action,
@@ -378,13 +388,16 @@ class Joystick(mjx_env.MjxEnv):
       info: dict[str, Any],
       obs_history: jax.Array,
       rng: jax.Array,
+      current_action: jax.Array | None = None,
   ) -> jax.Array:
     obs = jp.concatenate([
         self._get_localrpyrate(data)[-1].reshape(1) * 0.25,
         self._get_gravity(data),
         info["command"] * jp.array([2.0, 2.0, 0.25]),
         data.qpos[7:] - self._default_pose,
-        info["last_act"],
+        action_history.observation(
+            self._config.reward_config, info, current_action
+        ),
     ])
     obs = jp.clip(obs, -100.0, 100.0)
     if self._config.obs_noise >= 0.0:
